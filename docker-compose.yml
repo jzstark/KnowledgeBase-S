@@ -57,13 +57,12 @@ services:
 
   summarizer-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/summarizer-worker:latest
+    build:
+      context: ./services/summarizer-worker
     restart: unless-stopped
-    volumes:
-      - ./user_data:/app/user_data
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
       API_BASE_URL: http://api:8000
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
     depends_on:
       - api
     profiles: ["workers"]

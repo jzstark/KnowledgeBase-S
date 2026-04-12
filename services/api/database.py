@@ -73,11 +73,26 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS briefings (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    groups JSONB NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id VARCHAR PRIMARY KEY,
+    settings JSONB NOT NULL DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
+CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 """
 
 

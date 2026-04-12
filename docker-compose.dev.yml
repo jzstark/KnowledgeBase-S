@@ -25,6 +25,16 @@ services:
     environment:
       NODE_ENV: development
 
+  summarizer-worker:
+    build:
+      context: ./services/summarizer-worker
+    volumes:
+      - ./services/summarizer-worker:/app
+    environment:
+      API_BASE_URL: http://api:8000
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
+    profiles: []
+
   ingestion-worker:
     build:
       context: ./services/ingestion-worker
