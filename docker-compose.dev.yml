@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: ./services/api
+    volumes:
+      - ./services/api:/app
+      - ./user_data:/app/user_data
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./services/web
+      target: dev
+    volumes:
+      - ./services/web:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+
+  scheduler:
+    profiles: ["disabled"]
+
+  watchtower:
+    profiles: ["disabled"]

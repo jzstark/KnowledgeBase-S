@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
+    build:
+      context: ./services/api
+    restart: unless-stopped
+    volumes:
+      - ./user_data:/app/user_data
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
+      AUTH_SECRET: ${AUTH_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/web:latest
+    build:
+      context: ./services/web
+    restart: unless-stopped
+    environment:
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost}
+      API_URL: http://api:8000
+    depends_on:
+      - api
+
+  ingestion-worker:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/ingestion-worker:latest
+    restart: unless-stopped
+    volumes:
+      - ./user_data:/app/user_data
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+      - rsshub
+    profiles: ["workers"]
+
+  summarizer-worker:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/summarizer-worker:latest
+    restart: unless-stopped
+    volumes:
+      - ./user_data:/app/user_data
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    profiles: ["workers"]
+
+  feedback-worker:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/feedback-worker:latest
+    restart: unless-stopped
+    volumes:
+      - ./user_data:/app/user_data
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    profiles: ["workers"]
+
+  scheduler:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
+    build:
+      context: ./services/api
+    command: python scheduler.py
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+
+  maintenance-worker:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
+    build:
+      context: ./services/api
+    command: python maintenance.py
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    profiles: ["maintenance"]
+
+  rsshub:
+    image: diygod/rsshub:latest
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 3600
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - web
+      - api
