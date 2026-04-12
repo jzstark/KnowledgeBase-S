@@ -708,7 +708,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 1. ✅ **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
 2. ✅ **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
 3. ✅ **KB API**：search、node、graph、memory、ingest 端点
-4. **今日简报**：summarizer-worker + 首页三栏布局
+4. ✅ **今日简报**：summarizer-worker + 首页三栏布局
 5. **草稿生成**：RAG 检索 + 模板 + 生成端点
 6. **Source 管理**：各类型 source 的添加界面和处理逻辑
 7. **微信快捷指令**：push 端点 + 快捷指令模板生成
@@ -722,81 +722,80 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-12）
 
-### 已完成：第一步 + 第二步
+### 已完成：第一步 ~ 第四步
 
-**第一步验证**：`make dev` 启动 → 访问 `http://localhost` 自动跳转登录页 → 密码认证成功 → 5 张表 + pgvector 扩展就绪。
-
-**第二步验证**：RSS 源抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki/nodes/ md 文件生成，全部通过。
+- **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
+- **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
+- **第三步**：KB API（search/node/graph/memory/ingest）全部通过 ✅
+- **第四步**：简报生成 → 首页三栏布局（选入/跳过/拖拽排序）✅
 
 ### 现有目录结构
 
 ```
 KnowledgeBase-S/
-├── docker-compose.yml          # 生产编排（全部服务）
-├── docker-compose.dev.yml      # dev 覆盖（热重载，ingestion-worker 无 profile 限制）
-├── .env.example                # 环境变量模板（复制为 .env 并填写）
-├── Makefile                    # make dev / build / deploy / backup / down
-├── deploy.sh                   # 生产一键部署
-├── nginx/
-│   └── nginx.conf              # 反代 web:3000 + api:8000，/api 关闭 buffer（SSE）
-├── scripts/
-│   ├── backup.sh               # user_data tar + pg_dump，可选上传 R2
-│   └── restore.sh
+├── docker-compose.yml
+├── docker-compose.dev.yml      # dev 覆盖；summarizer/ingestion-worker 无 profile 限制
+├── .env.example                # 含 OPENAI_API_KEY
+├── Makefile / deploy.sh
+├── nginx/nginx.conf
+├── scripts/backup.sh, restore.sh
 └── services/
-    ├── api/                    # FastAPI，Python 3.12
-    │   ├── Dockerfile
-    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose, httpx
-    │   ├── main.py             # 应用入口 + auth 端点 + 注册 routers
-    │   ├── auth.py             # JWT 签发验证（python-jose），单用户密码比对
-    │   ├── database.py         # asyncpg 连接池，建表，jsonb() 辅助函数
-    │   ├── scheduler.py        # 空壳，待第四步实现
-    │   ├── maintenance.py      # 空壳，待第十二步实现
+    ├── api/                    # FastAPI + Python 3.12
+    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose,
+    │   │                       # httpx, openai, anthropic
+    │   ├── main.py             # auth 端点 + 注册所有 routers
+    │   ├── auth.py             # JWT（python-jose），单用户密码比对
+    │   ├── database.py         # 建表（7张）+ jsonb() 辅助
+    │   ├── scheduler.py        # 空壳
+    │   ├── maintenance.py      # 空壳
     │   └── routers/
     │       ├── sources.py      # GET/POST/PUT/DELETE /api/sources
-    │       │                   # GET 和 PUT 无需认证（worker 内网调用）
-    │       └── kb.py           # POST /api/kb/ingest（写入 knowledge_nodes + 建边）
-    │                           # GET  /api/kb/search?q=&limit=&tags=  语义搜索
-    │                           # GET  /api/kb/node/{id}               单节点 + 边
-    │                           # GET  /api/kb/graph?root={id}&depth=2 BFS 图谱
-    │                           # POST/GET/DELETE /api/kb/memory/...   偏好规则
-    │                           # POST /api/kb/maintenance/run         空壳
-    │                           # embedding/向量查询均用 asyncpg 原生接口绕过 databases 解析问题
-    ├── ingestion-worker/       # Python 3.12
-    │   ├── Dockerfile          # 含 libxml2/libxslt（trafilatura 依赖）
-    │   ├── requirements.txt    # anthropic, openai, feedparser, trafilatura, httpx
-    │   ├── main.py             # 入口：--once 单次 / 默认循环（每小时）
-    │   ├── pipeline.py         # 共用流水线：extract→save_raw→summarize→embed→ingest→wiki
-    │   └── sources/
-    │       ├── base.py         # BaseSource 抽象类，RawItem dataclass
-    │       └── rss.py          # RSSSource：feedparser 拉取，trafilatura 提取正文
-    └── web/                    # Next.js 14 App Router + Tailwind CSS
-        ├── Dockerfile          # 多阶段：dev / builder / runner(standalone)
-        ├── next.config.js      # /api/* → api:8000 rewrite（dev 直连内网）
-        ├── middleware.ts       # 所有路由鉴权，读 token cookie → GET /api/auth/me
+    │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
+    │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate
+    │       └── settings.py     # GET/PUT /api/settings
+    ├── ingestion-worker/
+    │   ├── main.py             # --once 单次 / 默认循环（每小时）
+    │   ├── pipeline.py         # extract→save_raw→summarize→embed→ingest→wiki
+    │   └── sources/base.py, rss.py
+    ├── summarizer-worker/
+    │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
+    └── web/                    # Next.js 14 + Tailwind + dnd-kit
+        ├── middleware.ts       # cookie 鉴权
         └── app/
-            ├── login/page.tsx  # 登录页（完整实现，区分 401/502/网络错误）
-            ├── page.tsx            # 今日简报（占位）
-            ├── sources/page.tsx    # 订阅源管理（占位）
-            ├── knowledge/page.tsx  # 知识库浏览（占位）
-            ├── drafts/page.tsx     # 草稿历史（占位）
-            └── settings/page.tsx   # 设置（占位）
+            ├── login/page.tsx  # 登录页
+            ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿区(占位)
+            ├── sources/        # 占位
+            ├── knowledge/      # 占位
+            ├── drafts/         # 占位
+            └── settings/       # 占位
 ```
+
+### 数据库表（7张）
+
+| 表 | 用途 |
+|----|------|
+| `knowledge_nodes` | 知识节点 + 1536维向量 |
+| `knowledge_edges` | 节点关系图 |
+| `writing_memory` | 写作偏好规则 |
+| `sources` | 订阅源配置 |
+| `drafts` | 草稿记录 |
+| `briefings` | 每日简报（按 user_id+date 唯一） |
+| `user_settings` | 用户设置（topics, briefing_hours_back 等） |
 
 ### 关键约定
 
-- **镜像名**：`image: ghcr.io/${GITHUB_OWNER}/服务名:latest`，`GITHUB_OWNER` 在 `.env` 中设置。  
-  本地开发时 `docker-compose.dev.yml` 挂载源码目录，镜像只提供运行环境，代码实时生效。
-- **数据库密码**：`.env` 中 `DB_PASSWORD` 与 `DATABASE_URL` 里的密码**必须一致**。  
-  首次启动或重置时需删除 `./data/postgres/` 让 postgres 重新初始化。
-- **nginx 配置**：挂载到 `/etc/nginx/conf.d/default.conf`（不是 `/etc/nginx/nginx.conf`）。
-- **Auth**：单用户 JWT，HttpOnly cookie `token`，7 天有效期，secret 存 `AUTH_SECRET`。
-- **databases 库的 pgvector 兼容问题**：  
-  - `:param::vector` 语法会被 SQLAlchemy text() 误解析 → embedding 改用 f-string 内联字面量。  
-  - `<=>` 运算符同样有问题 → 向量相似度查询改用 `asyncpg` 原生接口（`conn.raw_connection.fetch`）。
-- **ingestion-worker 触发方式**：  
+- **databases 库的类型转换问题**：所有含 `::type`（`::vector`、`::date`、`::timestamptz`）的参数都用 f-string 内联，不走 `:param` 绑定；`<=>` 向量运算符用 asyncpg 原生接口（`conn.raw_connection.fetch`）。
+- **数据库密码**：`.env` 中 `DB_PASSWORD` 与 `DATABASE_URL` 里密码必须一致；重置时删除 `./data/postgres/`。
+- **nginx**：挂载到 `/etc/nginx/conf.d/default.conf`。
+- **Auth**：HttpOnly cookie `token`，JWT 7天，`AUTH_SECRET` 签名。
+- **Embedding**：OpenAI text-embedding-3-small，1536 维，对摘要做 embedding。
+- **USER_ID**：固定 `"default"`，单用户。
+- **手动触发方式**：
   ```bash
+  # ingestion
   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
     run --rm ingestion-worker python main.py --once
+  # 简报生成
+  curl -X POST http://localhost/api/briefing/generate -b /tmp/kb_cookies.txt
   ```
-- **Embedding**：OpenAI text-embedding-3-small，1536 维，对摘要（非全文）做 embedding。
-- **USER_ID**：当前固定为 `"default"`，单用户系统无需多用户逻辑。
+- **web 新增 npm 包后**：需在容器内执行 `docker compose ... exec web npm install`，然后 `restart web` 清除 `.next` 缓存。
