@@ -709,7 +709,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 2. ✅ **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
 3. ✅ **KB API**：search、node、graph、memory、ingest 端点
 4. ✅ **今日简报**：summarizer-worker + 首页三栏布局
-5. **草稿生成**：RAG 检索 + 模板 + 生成端点
+5. ✅ **草稿生成**：RAG 检索 + 模板 + 生成端点
 6. **Source 管理**：各类型 source 的添加界面和处理逻辑
 7. **微信快捷指令**：push 端点 + 快捷指令模板生成
 8. **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
@@ -722,12 +722,13 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-12）
 
-### 已完成：第一步 ~ 第四步
+### 已完成：第一步 ~ 第五步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
 - **第三步**：KB API（search/node/graph/memory/ingest）全部通过 ✅
 - **第四步**：简报生成 → 首页三栏布局（选入/跳过/拖拽排序）✅
+- **第五步**：草稿生成（RAG + 模板 + Claude）→ 草稿历史页 ✅
 
 ### 现有目录结构
 
@@ -752,7 +753,8 @@ KnowledgeBase-S/
     │       ├── sources.py      # GET/POST/PUT/DELETE /api/sources
     │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate
-    │       └── settings.py     # GET/PUT /api/settings
+    │       ├── settings.py     # GET/PUT /api/settings
+    │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
     ├── ingestion-worker/
     │   ├── main.py             # --once 单次 / 默认循环（每小时）
     │   ├── pipeline.py         # extract→save_raw→summarize→embed→ingest→wiki
@@ -763,10 +765,10 @@ KnowledgeBase-S/
         ├── middleware.ts       # cookie 鉴权
         └── app/
             ├── login/page.tsx  # 登录页
-            ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿区(占位)
+            ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿生成面板
+            ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制
             ├── sources/        # 占位
             ├── knowledge/      # 占位
-            ├── drafts/         # 占位
             └── settings/       # 占位
 ```
 

@@ -313,25 +313,140 @@ export default function BriefingPage() {
           </div>
         </div>
 
-        {/* 右栏：生成草稿（第五步实现） */}
-        <div className="flex-1 bg-white flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">生成草稿</p>
-          </div>
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6">
-            {selected.length === 0 ? (
-              <p className="text-sm text-gray-400">请先在左侧选择选题</p>
-            ) : (
-              <>
-                <p className="text-sm text-gray-600">
-                  已选 <span className="font-semibold text-gray-900">{selected.length}</span> 篇文章
-                </p>
-                <p className="text-xs text-gray-400">草稿生成功能将在第五步实现</p>
-              </>
-            )}
-          </div>
-        </div>
+        {/* 右栏：生成草稿 */}
+        <DraftPanel selected={selected} />
 
+      </div>
+    </div>
+  );
+}
+
+// ── 右栏：草稿生成面板 ─────────────────────────────────────────────────────────
+
+const TEMPLATES = [
+  { value: "default", label: "默认模板" },
+  { value: "公众号推文", label: "公众号推文" },
+  { value: "周报", label: "周报" },
+];
+
+function DraftPanel({ selected }: { selected: BriefingNode[] }) {
+  const [template, setTemplate] = useState("default");
+  const [drafting, setDrafting] = useState(false);
+  const [draftStatus, setDraftStatus] = useState("");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function handleGenerate() {
+    if (selected.length === 0) return;
+    setDrafting(true);
+    setDraft(null);
+    setDraftId(null);
+    setCopied(false);
+    setDraftStatus("⏳ 正在检索知识库...");
+
+    try {
+      setDraftStatus("⏳ 正在生成草稿...");
+      const res = await fetch("/api/drafts/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selected_node_ids: selected.map((n) => n.id),
+          template_name: template,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setDraft(data.draft_content);
+      setDraftId(data.id);
+      setDraftStatus(`✅ 完成（参考了 ${data.knowledge_count} 条知识）`);
+    } catch (e: unknown) {
+      setDraftStatus(`❌ 生成失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!draft) return;
+    await navigator.clipboard.writeText(draft);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div className="flex-1 bg-white flex flex-col overflow-hidden">
+      {/* 顶부 */}
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide shrink-0">
+          生成草稿
+        </p>
+        <select
+          value={template}
+          onChange={(e) => setTemplate(e.target.value)}
+          disabled={drafting}
+          className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-700
+                     focus:outline-none focus:ring-1 focus:ring-gray-400 disabled:opacity-40"
+        >
+          {TEMPLATES.map((t) => (
+            <option key={t.value} value={t.value}>{t.label}</option>
+          ))}
+        </select>
+        <button
+          onClick={handleGenerate}
+          disabled={drafting || selected.length === 0}
+          className="ml-auto px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg
+                     hover:bg-gray-700 disabled:opacity-40 transition-colors shrink-0"
+        >
+          {drafting ? "生成中..." : "生成草稿"}
+        </button>
+      </div>
+
+      {/* 状态提示 */}
+      {draftStatus && (
+        <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
+          <p className="text-xs text-gray-500">{draftStatus}</p>
+          {draft && (
+            <button
+              onClick={handleCopy}
+              className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
+            >
+              {copied ? "已复制 ✓" : "复制全文"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 主体 */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {selected.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center pt-12">请先在左侧选择选题</p>
+        ) : !draft && !drafting ? (
+          <div className="pt-12 text-center">
+            <p className="text-sm text-gray-400 mb-1">
+              已选 <span className="font-semibold text-gray-700">{selected.length}</span> 篇
+            </p>
+            <p className="text-xs text-gray-300">点击"生成草稿"开始</p>
+          </div>
+        ) : drafting ? (
+          <div className="pt-12 text-center">
+            <p className="text-sm text-gray-400">{draftStatus}</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <textarea
+              value={draft ?? ""}
+              onChange={(e) => setDraft(e.target.value)}
+              className="w-full h-[calc(100vh-220px)] text-sm text-gray-800 leading-relaxed
+                         border border-gray-200 rounded-lg p-3 resize-none
+                         focus:outline-none focus:ring-1 focus:ring-gray-400"
+            />
+            {/* 第八步：提交定稿反馈入口 */}
+            <p className="text-xs text-gray-300 text-center">
+              定稿后可提交反馈以改善未来草稿质量（第八步功能）
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
-from routers import briefing, kb, settings, sources
+from routers import briefing, drafts, kb, settings, sources
 
 
 @asynccontextmanager
@@ -30,6 +30,7 @@ app.include_router(sources.router)
 app.include_router(kb.router)
 app.include_router(briefing.router)
 app.include_router(settings.router)
+app.include_router(drafts.router)
 
 
 class LoginRequest(BaseModel):
