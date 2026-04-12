@@ -1,13 +1,22 @@
+import os
 import secrets
+from datetime import date
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+
 from pydantic import BaseModel
 
 import database
 from auth import require_auth
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+INGESTION_WORKER_URL = os.environ.get("INGESTION_WORKER_URL", "http://ingestion-worker:8001")
+USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
+USER_ID = "default"
 
 
 class SourceCreate(BaseModel):
@@ -27,21 +36,42 @@ class SourceUpdate(BaseModel):
 FETCH_MODES = {
     "wechat": "push",
     "rss": "subscription",
-    "url": "one_shot",
-    "pdf": "one_shot",
-    "image": "one_shot",
-    "plaintext": "one_shot",
-    "word": "one_shot",
+    "url": "manual",
+    "pdf": "manual",
+    "image": "manual",
+    "plaintext": "manual",
+    "word": "manual",
+}
+
+FILE_ACCEPT = {
+    "pdf": ".pdf",
+    "image": ".jpg,.jpeg,.png,.gif,.webp",
+    "plaintext": ".txt,.md",
+    "word": ".doc,.docx",
 }
 
 
 @router.get("")
 async def list_sources():
-    """列出所有 sources（worker 内网调用，无需认证）。"""
+    """列出所有 sources（附带每个 source 的文章数）。"""
     rows = await database.database.fetch_all(
         "SELECT * FROM sources ORDER BY created_at DESC"
     )
-    return [dict(r) for r in rows]
+    counts = await database.database.fetch_all(
+        "SELECT source_id, COUNT(*) AS cnt FROM knowledge_nodes"
+        " WHERE user_id = 'default' GROUP BY source_id"
+    )
+    count_map = {r["source_id"]: int(r["cnt"]) for r in counts}
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["article_count"] = count_map.get(d["id"], 0)
+        if d.get("last_fetched_at"):
+            d["last_fetched_at"] = d["last_fetched_at"].isoformat()
+        if d.get("created_at"):
+            d["created_at"] = d["created_at"].isoformat()
+        result.append(d)
+    return result
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -59,7 +89,7 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
         """,
         {
             "id": source_id,
-            "user_id": "default",
+            "user_id": USER_ID,
             "name": body.name,
             "type": body.type,
             "fetch_mode": FETCH_MODES[body.type],
@@ -71,7 +101,128 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id", {"id": source_id}
     )
-    return dict(row)
+    d = dict(row)
+    if d.get("created_at"):
+        d["created_at"] = d["created_at"].isoformat()
+    d["article_count"] = 0
+    return d
+
+
+@router.post("/{source_id}/upload")
+async def upload_to_source(
+    source_id: str,
+    files: list[UploadFile] = File(...),
+    _: dict = Depends(require_auth),
+):
+    """向已有 source 上传一批文件（支持多文件），存储并触发 ingestion-worker 处理。
+    Source 是持久渠道，可随时追加内容。"""
+    row = await database.database.fetch_one(
+        "SELECT id, type FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    src_type = row["type"]
+    if src_type not in FILE_ACCEPT:
+        raise HTTPException(400, f"source 类型 {src_type} 不支持文件上传")
+
+    raw_dir = USER_DATA_DIR / USER_ID / "raw" / src_type
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    saved: list[str] = []
+    for file in files:
+        safe_name = f"{date.today()}-{secrets.token_hex(4)}-{file.filename or 'upload'}"
+        file_path = raw_dir / safe_name
+        content = await file.read()
+        file_path.write_bytes(content)
+        saved.append(str(file_path))
+
+    # 将文件路径列表写入 source config（追加方式，保留历史）
+    existing = await database.database.fetch_one(
+        "SELECT config FROM sources WHERE id = :id", {"id": source_id}
+    )
+    import json as _json
+    cfg = existing["config"] or {}
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+    uploads: list[dict] = cfg.get("uploads", [])
+    uploads.append({"date": str(date.today()), "files": saved})
+    cfg["uploads"] = uploads
+    await database.database.execute(
+        "UPDATE sources SET config = :config WHERE id = :id",
+        {"id": source_id, "config": database.jsonb(cfg)},
+    )
+
+    # 触发 ingestion-worker（fire-and-forget）
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
+            )
+    except Exception:
+        pass
+
+    return {"ok": True, "files_saved": len(saved)}
+
+
+@router.post("/{source_id}/add-url")
+async def add_url_to_source(
+    source_id: str,
+    body: dict,
+    _: dict = Depends(require_auth),
+):
+    """向已有 URL source 追加一条或多条 URL，触发 ingestion-worker 处理。"""
+    row = await database.database.fetch_one(
+        "SELECT id, type, config FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    if row["type"] != "url":
+        raise HTTPException(400, "仅 url 类型 source 支持此操作")
+
+    import json as _json
+    cfg = row["config"] or {}
+    if isinstance(cfg, str):
+        cfg = _json.loads(cfg)
+
+    urls: list[str] = body.get("urls", [])
+    if not urls:
+        raise HTTPException(400, "至少提供一个 URL")
+
+    pending: list[str] = cfg.get("pending_urls", [])
+    pending.extend(urls)
+    cfg["pending_urls"] = pending
+    await database.database.execute(
+        "UPDATE sources SET config = :config WHERE id = :id",
+        {"id": source_id, "config": database.jsonb(cfg)},
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
+            )
+    except Exception:
+        pass
+
+    return {"ok": True, "urls_queued": len(urls)}
+
+
+@router.post("/{source_id}/fetch")
+async def trigger_fetch(source_id: str, _: dict = Depends(require_auth)):
+    """触发 ingestion-worker 立即抓取指定 source。"""
+    row = await database.database.fetch_one(
+        "SELECT id FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"无法连接 ingestion-worker: {e}")
+    return {"ok": True}
 
 
 @router.put("/{source_id}")
@@ -106,7 +257,12 @@ async def update_source(source_id: str, body: SourceUpdate):
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id", {"id": source_id}
     )
-    return dict(row)
+    d = dict(row)
+    if d.get("last_fetched_at"):
+        d["last_fetched_at"] = d["last_fetched_at"].isoformat()
+    if d.get("created_at"):
+        d["created_at"] = d["created_at"].isoformat()
+    return d
 
 
 @router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)

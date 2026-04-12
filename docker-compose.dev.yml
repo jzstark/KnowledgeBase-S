@@ -10,6 +10,7 @@ services:
       - "8000:8000"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      INGESTION_WORKER_URL: http://ingestion-worker:8001
 
   web:
     build:
@@ -45,6 +46,8 @@ services:
       API_BASE_URL: http://api:8000
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+    expose:
+      - "8001"
     profiles: []   # dev 模式不限制 profile，可直接 docker compose run
 
   scheduler:

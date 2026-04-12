@@ -26,6 +26,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET}
+      INGESTION_WORKER_URL: http://ingestion-worker:8001
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,7 +50,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       API_BASE_URL: http://api:8000
+    expose:
+      - "8001"
     depends_on:
       - api
       - rsshub

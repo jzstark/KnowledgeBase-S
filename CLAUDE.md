@@ -272,6 +272,25 @@ CREATE INDEX ON knowledge_nodes USING ivfflat (embedding vector_cosine_ops);
 
 ---
 
+## Source 的主要 / 非主要属性
+
+每个 source 都有 `is_primary` 布尔字段，这是整个工作流中最重要的过滤器之一：
+
+| | 主要 source（`is_primary = true`） | 非主要 source（`is_primary = false`） |
+|--|--|--|
+| **典型用途** | 你主动关注、希望消化的内容（精选 RSS、微信、自己上传的论文/笔记） | 背景参考资料（词典、手册、百科类文档，你不需要每天读摘要） |
+| **今日简报** | ✅ 出现在首页卡片，参与选题 | ❌ 不出现，不打扰日常流程 |
+| **草稿 RAG** | ✅ 参与语义检索（既是素材也是背景知识） | ✅ 参与语义检索（仅作背景知识） |
+| **知识图谱** | ✅ 参与建边 | ✅ 参与建边 |
+
+**实现要点**：
+- `is_primary` 从 source 继承到 `knowledge_nodes.is_primary`（ingestion pipeline 负责传递）
+- `briefing.py` 查询节点时强制 `AND is_primary = true`，其他查询（search、graph、RAG）不过滤
+- source 创建时默认 `is_primary = true`，可在 source 卡片上随时切换
+- 切换 source 的 `is_primary` 不会追溯修改已入库节点（节点保留入库时的属性）
+
+---
+
 ## Source 抽象层
 
 所有 Source 类型实现统一接口。接口以下各类型提取逻辑不同，接口以上（摘要、embedding、入库）完全一致。
@@ -280,10 +299,10 @@ CREATE INDEX ON knowledge_nodes USING ivfflat (embedding vector_cosine_ops);
 
 ```python
 class BaseSource:
-    fetch_mode: Literal['subscription', 'one_shot', 'push']
+    fetch_mode: Literal['subscription', 'manual', 'push']
     
     def fetch_new_items(self) -> list[RawItem]:
-        """拉取自上次 fetch 以来的新内容。push 型返回空列表。"""
+        """拉取新内容。subscription 型过滤时间；manual/push 型由外部传入待处理项。"""
         raise NotImplementedError
     
     def extract_text(self, raw: RawItem) -> str:
@@ -299,17 +318,26 @@ class RawItem:
     fetched_at: datetime
 ```
 
-### 各 Source 类型
+### Source 分类
 
-| 类型 | fetch_mode | fetch 逻辑 | extract 逻辑 |
-|------|-----------|-----------|-------------|
-| `wechat` | `push` | 接收 iPhone 快捷指令推送，不主动抓取 | 直接使用推送的文本 |
-| `rss` | `subscription` | feedparser，过滤 pub_date > last_fetched | HTML 正文提取 |
-| `url` | `one_shot` | 添加时抓取一次 | trafilatura 提取正文 |
-| `pdf` | `one_shot` | 用户上传触发 | PyMuPDF 提取文本 |
-| `image` | `one_shot` | 用户上传触发 | Claude Vision → 文本描述 |
-| `plaintext` | `one_shot` | 用户上传触发 | 直接读取 |
-| `word` | `one_shot` | 用户上传触发 | python-docx 提取 |
+所有 source 分为两类，区别仅在于内容如何到达：
+
+**自动抓取型**（系统主动获取）：
+| 类型 | fetch_mode | 触发方式 | extract 逻辑 |
+|------|-----------|---------|-------------|
+| `rss` | `subscription` | 定时轮询，过滤 pub_date > last_fetched | trafilatura HTML 正文提取 |
+| `wechat` | `push` | 接收 iPhone 快捷指令推送 | 直接使用推送文本 |
+
+**手动管理型**（用户主动添加内容）：
+| 类型 | fetch_mode | 触发方式 | extract 逻辑 |
+|------|-----------|---------|-------------|
+| `url` | `manual` | 用户添加 URL，可随时追加 | trafilatura 提取正文 |
+| `pdf` | `manual` | 用户上传文件，支持批量、可随时追加 | PyMuPDF 提取文本 |
+| `image` | `manual` | 用户上传文件，支持批量、可随时追加 | Claude Vision → 文本描述 |
+| `plaintext` | `manual` | 用户上传文件，支持批量、可随时追加 | 直接读取 |
+| `word` | `manual` | 用户上传文件，支持批量、可随时追加 | python-docx 提取 |
+
+**关键设计原则**：source 是持久的**内容渠道**，不是一次性触发。例如，创建一个叫"有趣的 Paper"的 PDF source 后，用户每次看到好论文都可以上传到这个 source，每次上传可以包含多个文件；系统对每个文件独立处理，生成各自的知识节点。去重逻辑（按文件哈希）在后续步骤实现。
 
 ### 微信公众号（push 型）专用端点
 
@@ -374,11 +402,14 @@ GET    /api/kb/memory?template_name=...
 POST   /api/kb/maintenance/run
 
 # Source 管理
-GET    /api/sources
-POST   /api/sources
+GET    /api/sources                        # 列表（含每个 source 的文章数）
+POST   /api/sources                        # 创建 source（不含文件，建渠道）
 PUT    /api/sources/:id
 DELETE /api/sources/:id
-POST   /api/sources/wechat/ingest     # 微信 push 专用
+POST   /api/sources/:id/fetch              # 触发 ingestion-worker 抓取（自动型）
+POST   /api/sources/:id/upload             # 上传文件到已有 source，支持多文件（手动型）
+POST   /api/sources/:id/add-url            # 添加 URL 到已有 source（手动型）
+POST   /api/sources/wechat/ingest          # 微信 push 专用（Step 7）
 
 # 草稿
 POST   /api/drafts/generate
@@ -499,14 +530,21 @@ match['confidence'] = min(1.0, match['confidence'] + 0.15)
 
 **`/sources`**
 
-两个 Tab：订阅型（微信/RSS）和一次性（文件/URL）。
+两个 Tab：自动抓取型（RSS/微信）和手动管理型（URL/PDF/图片/文本/Word）。
 
-添加 Source 流程：选类型 → 根据类型渲染表单：
-- 微信公众号：输入名称 → 创建后展示快捷指令配置（接收地址 + Source ID + API Token + 下载快捷指令模板）
-- RSS / URL：输入框
-- PDF / 图片 / 纯文本 / Word：文件上传组件
+**Source 是持久渠道，不是一次性触发。** 同一个 source 可以在任意时间追加新内容。
 
-每个订阅型 source 显示最后抓取时间和文章数量，旁边有"立即抓取"按钮。
+添加 Source 流程：选类型 → 填名称 → 创建（不含文件）：
+- 微信公众号：创建后展示快捷指令配置（接收地址 + API Token）
+- RSS：填写 Feed URL
+- URL/文件类型：先创建渠道，后续通过 source 卡片上传
+
+Source 卡片操作：
+- 所有类型：显示 `is_primary` 状态徽章（"主要"/"参考"）+ 切换按钮；显示文章数
+- 自动型（RSS）：显示最后抓取时间 + "立即抓取"按钮
+- 手动型（URL）：显示文章数 + "添加 URL"按钮（可一次添加多条）
+- 手动型（文件）：显示文章数 + "上传文件"按钮（支持多文件批量上传）
+- 所有类型：删除按钮
 
 **`/knowledge`**
 
@@ -710,7 +748,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 3. ✅ **KB API**：search、node、graph、memory、ingest 端点
 4. ✅ **今日简报**：summarizer-worker + 首页三栏布局
 5. ✅ **草稿生成**：RAG 检索 + 模板 + 生成端点
-6. **Source 管理**：各类型 source 的添加界面和处理逻辑
+6. ✅ **Source 管理**：Source 是持久渠道；自动型（RSS/微信）+ 手动管理型（URL/文件，支持随时追加 + 批量上传）
 7. **微信快捷指令**：push 端点 + 快捷指令模板生成
 8. **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
 9. **知识库浏览**：列表视图 + D3 图谱视图
@@ -722,20 +760,26 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-12）
 
-### 已完成：第一步 ~ 第五步
+### 已完成：第一步 ~ 第六步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
 - **第三步**：KB API（search/node/graph/memory/ingest）全部通过 ✅
 - **第四步**：简报生成 → 首页三栏布局（选入/跳过/拖拽排序）✅
 - **第五步**：草稿生成（RAG + 模板 + Claude）→ 草稿历史页 ✅
+- **第六步**：Source 管理完整实现 ✅
+  - Source 是持久渠道；手动型支持随时批量追加（`/{id}/upload` 多文件、`/{id}/add-url`）
+  - `is_primary` 概念明确：主要型出现在简报，参考型仅参与 RAG；卡片上可切换
+  - ingestion-worker 新增 HTTP trigger server（端口 8001）+ URLSource
+  - fetch_mode: `subscription` / `manual` / `push`（原 `one_shot` 已废弃）
+  - **待完善（Step 7 前）**：文件型 source 处理（image/pdf/plaintext/word 的 Source 类尚未实现，上传后 worker 会跳过）
 
 ### 现有目录结构
 
 ```
 KnowledgeBase-S/
-├── docker-compose.yml
-├── docker-compose.dev.yml      # dev 覆盖；summarizer/ingestion-worker 无 profile 限制
+├── docker-compose.yml          # API 含 INGESTION_WORKER_URL; ingestion-worker expose 8001
+├── docker-compose.dev.yml      # dev 覆盖
 ├── .env.example                # 含 OPENAI_API_KEY
 ├── Makefile / deploy.sh
 ├── nginx/nginx.conf
@@ -743,22 +787,28 @@ KnowledgeBase-S/
 └── services/
     ├── api/                    # FastAPI + Python 3.12
     │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose,
-    │   │                       # httpx, openai, anthropic
+    │   │                       # httpx, openai, anthropic, python-multipart
     │   ├── main.py             # auth 端点 + 注册所有 routers
     │   ├── auth.py             # JWT（python-jose），单用户密码比对
     │   ├── database.py         # 建表（7张）+ jsonb() 辅助
     │   ├── scheduler.py        # 空壳
     │   ├── maintenance.py      # 空壳
     │   └── routers/
-    │       ├── sources.py      # GET/POST/PUT/DELETE /api/sources
+    │       ├── sources.py      # CRUD + /{id}/fetch + /{id}/upload + /{id}/add-url
+    │       │                   # is_primary 可 PUT 切换；article_count 附在列表响应中
     │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
-    │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate
+    │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       ├── settings.py     # GET/PUT /api/settings
     │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
-    ├── ingestion-worker/
-    │   ├── main.py             # --once 单次 / 默认循环（每小时）
+    ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
+    │   ├── requirements.txt    # 新增 fastapi, uvicorn[standard]
+    │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
     │   ├── pipeline.py         # extract→save_raw→summarize→embed→ingest→wiki
-    │   └── sources/base.py, rss.py
+    │   └── sources/
+    │       ├── base.py         # BaseSource + RawItem
+    │       ├── rss.py          # RSSSource（subscription）✅
+    │       └── url.py          # URLSource（manual，trafilatura）✅
+    │       # 待实现：image.py（Claude Vision）, plaintext.py, pdf.py, word.py
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
     └── web/                    # Next.js 14 + Tailwind + dnd-kit
@@ -767,7 +817,7 @@ KnowledgeBase-S/
             ├── login/page.tsx  # 登录页
             ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿生成面板
             ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制
-            ├── sources/        # 占位
+            ├── sources/page.tsx # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── knowledge/      # 占位
             └── settings/       # 占位
 ```
