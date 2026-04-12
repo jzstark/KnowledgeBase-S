@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
+from routers import kb, sources
 
 
 @asynccontextmanager
@@ -24,6 +25,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(sources.router)
+app.include_router(kb.router)
 
 
 class LoginRequest(BaseModel):

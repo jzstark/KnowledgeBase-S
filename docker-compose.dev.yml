@@ -23,6 +23,18 @@ services:
     environment:
       NODE_ENV: development
 
+  ingestion-worker:
+    build:
+      context: ./services/ingestion-worker
+    volumes:
+      - ./services/ingestion-worker:/app
+      - ./user_data:/app/user_data
+    environment:
+      API_BASE_URL: http://api:8000
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    profiles: []   # dev 模式不限制 profile，可直接 docker compose run
+
   scheduler:
     profiles: ["disabled"]
 

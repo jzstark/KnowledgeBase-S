@@ -1,3 +1,4 @@
+import json
 import os
 
 import databases
@@ -5,6 +6,11 @@ import databases
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 database = databases.Database(DATABASE_URL)
+
+
+def jsonb(value: dict) -> str:
+    """将 dict 序列化为 JSON 字符串，供 asyncpg JSONB 参数使用。"""
+    return json.dumps(value, ensure_ascii=False)
 
 SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS vector;

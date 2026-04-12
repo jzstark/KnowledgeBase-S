@@ -706,7 +706,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 按以下顺序实现，每步完成后可独立验证：
 
 1. ✅ **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
-2. **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
+2. ✅ **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
 3. **KB API**：search、node、ingest 端点
 4. **今日简报**：summarizer-worker + 首页三栏布局
 5. **草稿生成**：RAG 检索 + 模板 + 生成端点
@@ -722,16 +722,18 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-12）
 
-### 已完成：第一步 基础骨架
+### 已完成：第一步 + 第二步
 
-**验证通过**：`make dev` 启动 → 访问 `http://localhost` 自动跳转登录页 → 密码认证成功 → 5 张表 + pgvector 扩展就绪。
+**第一步验证**：`make dev` 启动 → 访问 `http://localhost` 自动跳转登录页 → 密码认证成功 → 5 张表 + pgvector 扩展就绪。
+
+**第二步验证**：RSS 源抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki/nodes/ md 文件生成，全部通过。
 
 ### 现有目录结构
 
 ```
 KnowledgeBase-S/
 ├── docker-compose.yml          # 生产编排（全部服务）
-├── docker-compose.dev.yml      # dev 覆盖（热重载，去掉 watchtower）
+├── docker-compose.dev.yml      # dev 覆盖（热重载，ingestion-worker 无 profile 限制）
 ├── .env.example                # 环境变量模板（复制为 .env 并填写）
 ├── Makefile                    # make dev / build / deploy / backup / down
 ├── deploy.sh                   # 生产一键部署
@@ -743,12 +745,26 @@ KnowledgeBase-S/
 └── services/
     ├── api/                    # FastAPI，Python 3.12
     │   ├── Dockerfile
-    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose
-    │   ├── main.py             # 应用入口 + auth 端点（/api/auth/login|logout|me）
+    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose, httpx
+    │   ├── main.py             # 应用入口 + auth 端点 + 注册 routers
     │   ├── auth.py             # JWT 签发验证（python-jose），单用户密码比对
-    │   ├── database.py         # asyncpg 连接池，启动时建表 + CREATE EXTENSION vector
+    │   ├── database.py         # asyncpg 连接池，建表，jsonb() 辅助函数
     │   ├── scheduler.py        # 空壳，待第四步实现
-    │   └── maintenance.py      # 空壳，待第十二步实现
+    │   ├── maintenance.py      # 空壳，待第十二步实现
+    │   └── routers/
+    │       ├── sources.py      # GET/POST/PUT/DELETE /api/sources
+    │       │                   # GET 和 PUT 无需认证（worker 内网调用）
+    │       └── kb.py           # POST /api/kb/ingest（写入 knowledge_nodes + 建边）
+    │                           # embedding 用 f-string 内联（绕过 databases::vector 解析问题）
+    │                           # build_similar_edges 用 asyncpg 原生接口（绕过 <=> 解析问题）
+    ├── ingestion-worker/       # Python 3.12
+    │   ├── Dockerfile          # 含 libxml2/libxslt（trafilatura 依赖）
+    │   ├── requirements.txt    # anthropic, openai, feedparser, trafilatura, httpx
+    │   ├── main.py             # 入口：--once 单次 / 默认循环（每小时）
+    │   ├── pipeline.py         # 共用流水线：extract→save_raw→summarize→embed→ingest→wiki
+    │   └── sources/
+    │       ├── base.py         # BaseSource 抽象类，RawItem dataclass
+    │       └── rss.py          # RSSSource：feedparser 拉取，trafilatura 提取正文
     └── web/                    # Next.js 14 App Router + Tailwind CSS
         ├── Dockerfile          # 多阶段：dev / builder / runner(standalone)
         ├── next.config.js      # /api/* → api:8000 rewrite（dev 直连内网）
@@ -770,3 +786,13 @@ KnowledgeBase-S/
   首次启动或重置时需删除 `./data/postgres/` 让 postgres 重新初始化。
 - **nginx 配置**：挂载到 `/etc/nginx/conf.d/default.conf`（不是 `/etc/nginx/nginx.conf`）。
 - **Auth**：单用户 JWT，HttpOnly cookie `token`，7 天有效期，secret 存 `AUTH_SECRET`。
+- **databases 库的 pgvector 兼容问题**：  
+  - `:param::vector` 语法会被 SQLAlchemy text() 误解析 → embedding 改用 f-string 内联字面量。  
+  - `<=>` 运算符同样有问题 → 向量相似度查询改用 `asyncpg` 原生接口（`conn.raw_connection.fetch`）。
+- **ingestion-worker 触发方式**：  
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+    run --rm ingestion-worker python main.py --once
+  ```
+- **Embedding**：OpenAI text-embedding-3-small，1536 维，对摘要（非全文）做 embedding。
+- **USER_ID**：当前固定为 `"default"`，单用户系统无需多用户逻辑。
