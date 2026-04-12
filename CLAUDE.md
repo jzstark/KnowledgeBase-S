@@ -707,7 +707,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 1. ✅ **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
 2. ✅ **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
-3. **KB API**：search、node、ingest 端点
+3. ✅ **KB API**：search、node、graph、memory、ingest 端点
 4. **今日简报**：summarizer-worker + 首页三栏布局
 5. **草稿生成**：RAG 检索 + 模板 + 生成端点
 6. **Source 管理**：各类型 source 的添加界面和处理逻辑
@@ -755,8 +755,12 @@ KnowledgeBase-S/
     │       ├── sources.py      # GET/POST/PUT/DELETE /api/sources
     │       │                   # GET 和 PUT 无需认证（worker 内网调用）
     │       └── kb.py           # POST /api/kb/ingest（写入 knowledge_nodes + 建边）
-    │                           # embedding 用 f-string 内联（绕过 databases::vector 解析问题）
-    │                           # build_similar_edges 用 asyncpg 原生接口（绕过 <=> 解析问题）
+    │                           # GET  /api/kb/search?q=&limit=&tags=  语义搜索
+    │                           # GET  /api/kb/node/{id}               单节点 + 边
+    │                           # GET  /api/kb/graph?root={id}&depth=2 BFS 图谱
+    │                           # POST/GET/DELETE /api/kb/memory/...   偏好规则
+    │                           # POST /api/kb/maintenance/run         空壳
+    │                           # embedding/向量查询均用 asyncpg 原生接口绕过 databases 解析问题
     ├── ingestion-worker/       # Python 3.12
     │   ├── Dockerfile          # 含 libxml2/libxslt（trafilatura 依赖）
     │   ├── requirements.txt    # anthropic, openai, feedparser, trafilatura, httpx
