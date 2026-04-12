@@ -65,7 +65,7 @@ jobs:
   # 以此类推
 ```
 
-构建完成后推送到 `ghcr.io` / dockerhub。用户服务器上运行 Watchtower，每小时自动检测新镜像并重启对应服务。
+构建完成后推送到 `ghcr.io`。用户服务器上运行 Watchtower，每小时自动检测新镜像并重启对应服务。
 
 ---
 
@@ -705,7 +705,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 按以下顺序实现，每步完成后可独立验证：
 
-1. **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
+1. ✅ **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
 2. **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
 3. **KB API**：search、node、ingest 端点
 4. **今日简报**：summarizer-worker + 首页三栏布局
@@ -717,3 +717,56 @@ rclone delete --min-age 30d r2:bucket/backups/
 10. **Obsidian 同步**：单向 md 文件生成
 11. **备份 + 导出**：backup.sh + 导出功能
 12. **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
+
+---
+
+## 当前项目状态（2026-04-12）
+
+### 已完成：第一步 基础骨架
+
+**验证通过**：`make dev` 启动 → 访问 `http://localhost` 自动跳转登录页 → 密码认证成功 → 5 张表 + pgvector 扩展就绪。
+
+### 现有目录结构
+
+```
+KnowledgeBase-S/
+├── docker-compose.yml          # 生产编排（全部服务）
+├── docker-compose.dev.yml      # dev 覆盖（热重载，去掉 watchtower）
+├── .env.example                # 环境变量模板（复制为 .env 并填写）
+├── Makefile                    # make dev / build / deploy / backup / down
+├── deploy.sh                   # 生产一键部署
+├── nginx/
+│   └── nginx.conf              # 反代 web:3000 + api:8000，/api 关闭 buffer（SSE）
+├── scripts/
+│   ├── backup.sh               # user_data tar + pg_dump，可选上传 R2
+│   └── restore.sh
+└── services/
+    ├── api/                    # FastAPI，Python 3.12
+    │   ├── Dockerfile
+    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose
+    │   ├── main.py             # 应用入口 + auth 端点（/api/auth/login|logout|me）
+    │   ├── auth.py             # JWT 签发验证（python-jose），单用户密码比对
+    │   ├── database.py         # asyncpg 连接池，启动时建表 + CREATE EXTENSION vector
+    │   ├── scheduler.py        # 空壳，待第四步实现
+    │   └── maintenance.py      # 空壳，待第十二步实现
+    └── web/                    # Next.js 14 App Router + Tailwind CSS
+        ├── Dockerfile          # 多阶段：dev / builder / runner(standalone)
+        ├── next.config.js      # /api/* → api:8000 rewrite（dev 直连内网）
+        ├── middleware.ts       # 所有路由鉴权，读 token cookie → GET /api/auth/me
+        └── app/
+            ├── login/page.tsx  # 登录页（完整实现，区分 401/502/网络错误）
+            ├── page.tsx            # 今日简报（占位）
+            ├── sources/page.tsx    # 订阅源管理（占位）
+            ├── knowledge/page.tsx  # 知识库浏览（占位）
+            ├── drafts/page.tsx     # 草稿历史（占位）
+            └── settings/page.tsx   # 设置（占位）
+```
+
+### 关键约定
+
+- **镜像名**：`image: ghcr.io/${GITHUB_OWNER}/服务名:latest`，`GITHUB_OWNER` 在 `.env` 中设置。  
+  本地开发时 `docker-compose.dev.yml` 挂载源码目录，镜像只提供运行环境，代码实时生效。
+- **数据库密码**：`.env` 中 `DB_PASSWORD` 与 `DATABASE_URL` 里的密码**必须一致**。  
+  首次启动或重置时需删除 `./data/postgres/` 让 postgres 重新初始化。
+- **nginx 配置**：挂载到 `/etc/nginx/conf.d/default.conf`（不是 `/etc/nginx/nginx.conf`）。
+- **Auth**：单用户 JWT，HttpOnly cookie `token`，7 天有效期，secret 存 `AUTH_SECRET`。
