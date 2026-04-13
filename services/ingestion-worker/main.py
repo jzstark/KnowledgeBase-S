@@ -21,6 +21,7 @@ from sources.pdf import PDFSource
 from sources.plaintext import PlaintextSource
 from sources.rss import RSSSource
 from sources.url import URLSource
+from sources.wechat import WechatSource
 from sources.word import WordSource
 
 logging.basicConfig(
@@ -83,6 +84,8 @@ def build_source(config: dict):
     elif t == "url":
         url = raw_config.get("url", "")
         return URLSource(source_id=config["id"], url=url)
+    elif t == "wechat":
+        return WechatSource(source_id=config["id"], config=raw_config)
     elif t in ("pdf", "image", "plaintext", "word"):
         uploads = raw_config.get("uploads", [])
         cls = {"pdf": PDFSource, "image": ImageSource,

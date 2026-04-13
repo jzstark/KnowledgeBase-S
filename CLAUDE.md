@@ -749,7 +749,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 4. ✅ **今日简报**：summarizer-worker + 首页三栏布局
 5. ✅ **草稿生成**：RAG 检索 + 模板 + 生成端点
 6. ✅ **Source 管理**：Source 是持久渠道；自动型（RSS/微信）+ 手动管理型（URL/文件，支持随时追加 + 批量上传）
-7. **微信快捷指令**：push 端点 + 快捷指令模板生成
+7. ✅ **微信快捷指令**：push 端点 + 快捷指令模板生成
 8. **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
 9. **知识库浏览**：列表视图 + D3 图谱视图
 10. **Obsidian 同步**：单向 md 文件生成
@@ -758,9 +758,9 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ---
 
-## 当前项目状态（2026-04-12）
+## 当前项目状态（2026-04-13）
 
-### 已完成：第一步 ~ 第六步
+### 已完成：第一步 ~ 第七步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -773,6 +773,12 @@ rclone delete --min-age 30d r2:bucket/backups/
   - ingestion-worker 新增 HTTP trigger server（端口 8001）+ URLSource
   - fetch_mode: `subscription` / `manual` / `push`（原 `one_shot` 已废弃）
   - 文件型 source 处理 ✅：image/pdf/plaintext/word Source 类已实现，上传后 worker 可正常处理
+- **第七步**：微信快捷指令 ✅
+  - `POST /api/sources/wechat/ingest`：`X-API-Token` 鉴权，保存正文到 `raw/wechat/`，追加到 `config.pending_items`，触发 worker
+  - WechatSource：从 `pending_items` 读取推送条目，按 `pushed_at` 精确过滤，`extract_text` 直接解码纯文本
+  - 微信 source 卡片新增"查看配置"入口 → `/sources/[id]` 详情页（连接配置 + 快捷指令指南 + 扩展占位）
+  - `GET /api/sources/{id}` 单条查询端点
+  - **待改进（最后处理）**：快捷指令的分发体验还有很大改进空间——例如生成可一键导入的 `.shortcut` 文件、展示 QR Code 供扫码、提供分步骤截图安装说明等。当前仅提供文字配置指南，功能可用但不够友好。
 
 ### 现有目录结构
 
@@ -794,8 +800,8 @@ KnowledgeBase-S/
     │   ├── scheduler.py        # 空壳
     │   ├── maintenance.py      # 空壳
     │   └── routers/
-    │       ├── sources.py      # CRUD + /{id}/fetch + /{id}/upload + /{id}/add-url
-    │       │                   # is_primary 可 PUT 切换；article_count 附在列表响应中
+    │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
+    │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
     │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       ├── settings.py     # GET/PUT /api/settings
@@ -812,7 +818,8 @@ KnowledgeBase-S/
     │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
     │       ├── pdf.py          # PDFSource（PyMuPDF）✅
     │       ├── image.py        # ImageSource（Claude Vision）✅
-    │       └── word.py         # WordSource（python-docx）✅
+    │       ├── word.py         # WordSource（python-docx）✅
+    │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
     └── web/                    # Next.js 14 + Tailwind + dnd-kit
@@ -821,9 +828,10 @@ KnowledgeBase-S/
             ├── login/page.tsx  # 登录页
             ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿生成面板
             ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制
-            ├── sources/page.tsx # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
-            ├── knowledge/      # 占位
-            └── settings/       # 占位
+            ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
+            ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
+            ├── knowledge/            # 占位
+            └── settings/             # 占位
 ```
 
 ### 数据库表（7张）

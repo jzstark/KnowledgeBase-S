@@ -289,12 +289,22 @@ function SourceCard({
             </button>
           )}
 
-          {/* WeChat：复制 token */}
-          {source.type === "wechat" && source.api_token && (
-            <button onClick={copyToken}
-              className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 transition-colors">
-              {copied ? "已复制 ✓" : "复制 Token"}
-            </button>
+          {/* WeChat：查看配置 + 复制 token */}
+          {source.type === "wechat" && (
+            <>
+              <Link
+                href={`/sources/${source.id}`}
+                className="text-xs px-2 py-1 rounded border border-green-200 text-green-700 hover:bg-green-50 transition-colors"
+              >
+                查看配置
+              </Link>
+              {source.api_token && (
+                <button onClick={copyToken}
+                  className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 transition-colors">
+                  {copied ? "已复制 ✓" : "复制 Token"}
+                </button>
+              )}
+            </>
           )}
 
           {/* URL：添加 URL */}
@@ -334,6 +344,7 @@ function SourceCard({
 
 function WechatInfo({ source, onClose }: { source: Source; onClose: () => void }) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [showGuide, setShowGuide] = useState(false);
   const pushUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/api/sources/wechat/ingest`;
 
   async function copy(text: string, key: string) {
@@ -342,12 +353,21 @@ function WechatInfo({ source, onClose }: { source: Source; onClose: () => void }
     setTimeout(() => setCopied(null), 2000);
   }
 
+  const bodyTemplate = JSON.stringify({
+    source_id: source.id,
+    title: "文章标题",
+    content: "正文全文",
+    url: "原文链接",
+  }, null, 2);
+
   return (
     <div className="mb-6 bg-green-50 border border-green-200 rounded-lg p-4">
       <div className="flex justify-between items-start mb-3">
         <p className="text-sm font-medium text-green-800">微信公众号 Source 已创建 — 配置快捷指令：</p>
         <button onClick={onClose} className="text-green-600 hover:text-green-800 text-xs">关闭</button>
       </div>
+
+      {/* 三个可复制字段 */}
       <div className="space-y-2 text-xs">
         <InfoRow label="推送地址" value={pushUrl} onCopy={() => copy(pushUrl, "url")} copied={copied === "url"} />
         <InfoRow label="Source ID" value={source.id} onCopy={() => copy(source.id, "id")} copied={copied === "id"} />
@@ -355,7 +375,54 @@ function WechatInfo({ source, onClose }: { source: Source; onClose: () => void }
           <InfoRow label="API Token" value={source.api_token} onCopy={() => copy(source.api_token!, "token")} copied={copied === "token"} />
         )}
       </div>
-      <p className="mt-3 text-xs text-green-700">第七步完成后将提供完整的快捷指令模板下载。</p>
+
+      {/* 快捷指令配置指南 */}
+      <div className="mt-3">
+        <button
+          onClick={() => setShowGuide((v) => !v)}
+          className="text-xs text-green-700 hover:text-green-900 flex items-center gap-1"
+        >
+          <span>{showGuide ? "▼" : "▶"}</span>
+          <span>iPhone 快捷指令配置方法</span>
+        </button>
+
+        {showGuide && (
+          <div className="mt-2 space-y-2 text-xs text-green-800 bg-white border border-green-100 rounded p-3">
+            <p className="font-medium">在「快捷指令」App 中新建快捷指令，添加以下操作：</p>
+            <ol className="list-decimal list-inside space-y-1.5 text-green-700">
+              <li>操作：<strong>获取 URL 的内容</strong></li>
+              <li>URL 填写上方「推送地址」</li>
+              <li>方法：<strong>POST</strong></li>
+              <li>
+                标头添加一项：
+                <code className="mx-1 bg-green-50 border border-green-200 px-1 rounded">X-API-Token</code>
+                值填写上方「API Token」
+              </li>
+              <li>
+                请求体选 <strong>JSON</strong>，内容参考下方模板
+                （title / content / url 替换为快捷指令变量）
+              </li>
+              <li>将快捷指令加入「共享表单」，在微信 / Safari 分享文章时触发</li>
+            </ol>
+
+            {/* 请求体模板 */}
+            <div className="mt-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium text-green-700">请求体模板（source_id 已预填）</span>
+                <button
+                  onClick={() => copy(bodyTemplate, "body")}
+                  className="px-2 py-0.5 border border-green-200 rounded bg-green-50 hover:bg-green-100 text-green-700"
+                >
+                  {copied === "body" ? "已复制 ✓" : "复制"}
+                </button>
+              </div>
+              <pre className="bg-gray-50 border border-gray-200 rounded p-2 text-gray-600 overflow-x-auto text-xs leading-relaxed">
+                {bodyTemplate}
+              </pre>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

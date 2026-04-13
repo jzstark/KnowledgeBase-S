@@ -1,11 +1,13 @@
+import hashlib
+import json
 import os
 import secrets
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
 from pydantic import BaseModel
 
@@ -49,6 +51,84 @@ FILE_ACCEPT = {
     "plaintext": ".txt,.md",
     "word": ".doc,.docx",
 }
+
+
+class WechatIngestBody(BaseModel):
+    source_id: str
+    title: str
+    content: str
+    url: str = ""
+
+
+# ── 微信 push 端点（无需登录 cookie，靠 X-API-Token 鉴权）────────────────────
+
+@router.post("/wechat/ingest")
+async def wechat_ingest(request: Request, body: WechatIngestBody):
+    """接收 iPhone 快捷指令推送的微信公众号文章，入库并触发 ingestion-worker。"""
+    token = request.headers.get("X-API-Token", "")
+
+    row = await database.database.fetch_one(
+        "SELECT id, type, api_token, config, is_primary FROM sources WHERE id = :id",
+        {"id": body.source_id},
+    )
+    if not row or row["type"] != "wechat":
+        raise HTTPException(404, "source 不存在")
+    if not secrets.compare_digest(token, row["api_token"] or ""):
+        raise HTTPException(401, "token 无效")
+
+    # 保存原始正文到 raw/wechat/
+    raw_dir = USER_DATA_DIR / USER_ID / "raw" / "wechat"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    content_hash = hashlib.md5(body.content.encode()).hexdigest()[:8]
+    file_name = f"{date.today()}-{content_hash}.txt"
+    (raw_dir / file_name).write_text(body.content, encoding="utf-8")
+
+    # 追加到 source.config.pending_items
+    cfg = row["config"] or {}
+    if isinstance(cfg, str):
+        cfg = json.loads(cfg)
+    cfg.setdefault("pending_items", []).append({
+        "title": body.title,
+        "url": body.url,
+        "file_path": str(raw_dir / file_name),
+        "pushed_at": datetime.utcnow().isoformat() + "Z",
+    })
+    await database.database.execute(
+        "UPDATE sources SET config = :config WHERE id = :id",
+        {"id": body.source_id, "config": database.jsonb(cfg)},
+    )
+
+    # 触发 ingestion-worker（fire-and-forget）
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{body.source_id}", timeout=5
+            )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+@router.get("/{source_id}")
+async def get_source(source_id: str):
+    """获取单个 source 详情（含文章数）。"""
+    row = await database.database.fetch_one(
+        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    count = await database.database.fetch_val(
+        "SELECT COUNT(*) FROM knowledge_nodes WHERE source_id = :id AND user_id = 'default'",
+        {"id": source_id},
+    )
+    d = dict(row)
+    d["article_count"] = int(count or 0)
+    if d.get("last_fetched_at"):
+        d["last_fetched_at"] = d["last_fetched_at"].isoformat()
+    if d.get("created_at"):
+        d["created_at"] = d["created_at"].isoformat()
+    return d
 
 
 @router.get("")
