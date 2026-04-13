@@ -881,4 +881,8 @@ KnowledgeBase-S/
   # 简报生成
   curl -X POST http://localhost/api/briefing/generate -b /tmp/kb_cookies.txt
   ```
-- **web 新增 npm 包后**：需在容器内执行 `docker compose ... exec web npm install`，然后 `restart web` 清除 `.next` 缓存。
+- **web 新增 npm 包后**：
+  1. 在宿主机 `services/web/` 下运行 `npm install --package-lock-only` 更新 `package-lock.json`，并提交到 git
+  2. 重建容器时必须加 `--no-cache`，否则 Docker 会复用旧的 npm install 层：
+     `sudo docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache web && sudo docker compose ... up -d web`
+  3. 直接在运行中容器内安装也可：`sudo docker compose ... exec web npm install`
