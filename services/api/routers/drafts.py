@@ -11,6 +11,7 @@ import secrets
 from pathlib import Path
 
 import anthropic
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/api/drafts", tags=["drafts"])
 
 USER_ID = "default"
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
+FEEDBACK_WORKER_URL = os.environ.get("FEEDBACK_WORKER_URL", "http://feedback-worker:8002")
 
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
@@ -37,6 +39,10 @@ MAX_KNOWLEDGE_CHARS = 6000   # 背景知识截断上限
 class GenerateRequest(BaseModel):
     selected_node_ids: list[str]
     template_name: str = "default"
+
+
+class FeedbackRequest(BaseModel):
+    final_content: str
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -239,6 +245,44 @@ async def list_drafts(_: dict = Depends(require_auth)):
             d["created_at"] = d["created_at"].isoformat()
         result.append(d)
     return result
+
+
+@router.post("/{draft_id}/feedback")
+async def submit_feedback(draft_id: str, body: FeedbackRequest):
+    """用户提交定稿，调用 feedback-worker 分析并学习偏好规则。"""
+    row = await database.database.fetch_one(
+        "SELECT id, template_name, draft_content FROM drafts WHERE id = :id AND user_id = :user_id",
+        {"id": draft_id, "user_id": USER_ID},
+    )
+    if not row:
+        raise HTTPException(404, "草稿不存在")
+
+    # 保存定稿
+    await database.database.execute(
+        "UPDATE drafts SET final_content = :fc WHERE id = :id",
+        {"fc": body.final_content, "id": draft_id},
+    )
+
+    # 同步调用 feedback-worker，取得学习到的规则数
+    rules_extracted = 0
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{FEEDBACK_WORKER_URL}/analyze",
+                json={
+                    "draft_id": draft_id,
+                    "draft_content": row["draft_content"] or "",
+                    "final_content": body.final_content,
+                    "template_name": row["template_name"] or "default",
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                rules_extracted = resp.json().get("rules_extracted", 0)
+    except Exception:
+        pass  # feedback-worker 不可用时静默失败
+
+    return {"ok": True, "rules_extracted": rules_extracted}
 
 
 @router.get("/{draft_id}")

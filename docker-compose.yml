@@ -27,6 +27,7 @@ services:
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET}
       INGESTION_WORKER_URL: http://ingestion-worker:8001
+      FEEDBACK_WORKER_URL: http://feedback-worker:8002
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,6 +74,8 @@ services:
 
   feedback-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/feedback-worker:latest
+    build:
+      context: ./services/feedback-worker
     restart: unless-stopped
     volumes:
       - ./user_data:/app/user_data

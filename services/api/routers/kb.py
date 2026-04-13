@@ -245,7 +245,7 @@ class MemoryFeedback(BaseModel):
 
 
 @router.post("/memory/feedback")
-async def add_memory(body: MemoryFeedback, _: dict = Depends(require_auth)):
+async def add_memory(body: MemoryFeedback):
     """写入或更新偏好规则。同一 (template_name, rule) 已存在则 confidence +0.15。"""
     existing = await database.database.fetch_one(
         """

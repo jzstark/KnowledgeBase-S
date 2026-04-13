@@ -50,6 +50,18 @@ services:
       - "8001"
     profiles: []   # dev 模式不限制 profile，可直接 docker compose run
 
+  feedback-worker:
+    build:
+      context: ./services/feedback-worker
+    volumes:
+      - ./services/feedback-worker:/app
+    environment:
+      API_BASE_URL: http://api:8000
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+    expose:
+      - "8002"
+    profiles: []
+
   scheduler:
     profiles: ["disabled"]
 

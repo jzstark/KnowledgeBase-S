@@ -750,7 +750,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 5. ✅ **草稿生成**：RAG 检索 + 模板 + 生成端点
 6. ✅ **Source 管理**：Source 是持久渠道；自动型（RSS/微信）+ 手动管理型（URL/文件，支持随时追加 + 批量上传）
 7. ✅ **微信快捷指令**：push 端点 + 快捷指令模板生成
-8. **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
+8. ✅ **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
 9. **知识库浏览**：列表视图 + D3 图谱视图
 10. **Obsidian 同步**：单向 md 文件生成
 11. **备份 + 导出**：backup.sh + 导出功能
@@ -760,7 +760,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-13）
 
-### 已完成：第一步 ~ 第七步
+### 已完成：第一步 ~ 第八步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -779,12 +779,19 @@ rclone delete --min-age 30d r2:bucket/backups/
   - 微信 source 卡片新增"查看配置"入口 → `/sources/[id]` 详情页（连接配置 + 快捷指令指南 + 扩展占位）
   - `GET /api/sources/{id}` 单条查询端点
   - **待改进（最后处理）**：快捷指令的分发体验还有很大改进空间——例如生成可一键导入的 `.shortcut` 文件、展示 QR Code 供扫码、提供分步骤截图安装说明等。当前仅提供文字配置指南，功能可用但不够友好。
+- **第八步**：反馈学习 ✅
+  - `services/feedback-worker/`：独立 FastAPI 服务（端口 8002），`POST /analyze` 接收 draft diff，difflib 计算差异，Claude Haiku 提炼偏好规则（JSON），逐条写入 `writing_memory`
+  - `POST /api/drafts/:id/feedback`：保存 `final_content`，同步调用 feedback-worker，返回 `{rules_extracted: N}`
+  - `POST /api/kb/memory/feedback` 移除 `require_auth`（内部 worker 调用无 cookie）
+  - `/settings` 页完整实现：流程节奏 / 选题方向 / 模板管理（GET/PUT/DELETE `/api/settings/templates/:name`）/ 偏好规则展示（按置信度排序 + 进度条 + 删除）
+  - 草稿历史页新增"提交定稿"折叠区：粘贴定稿 → 提交 → 显示"已学习 N 条偏好规则"
+  - **⚠️ 已知疑点**：当用户提交的定稿与草稿差异极大（几乎全文替换）时，`rules_extracted` 可能为 0。两种可能原因：① feedback-worker 未运行（连接失败被 `except Exception: pass` 静默吞掉，API 仍返回 `{ok:true, rules_extracted:0}`，无法区分）；② diff 全为增删行、Claude 无法归纳出具体可复用的偏好规则，返回 `[]`。**待改进方向**：当 diff 超过阈值（如 >70% 不同）时切换为"直接风格分析"模式，让 Claude 分析定稿本身的风格特征而非 diff；同时在 API 层区分"worker 不可达"与"worker 返回 0 条"，给前端不同的提示。
 
 ### 现有目录结构
 
 ```
 KnowledgeBase-S/
-├── docker-compose.yml          # API 含 INGESTION_WORKER_URL; ingestion-worker expose 8001
+├── docker-compose.yml          # API 含 INGESTION_WORKER_URL + FEEDBACK_WORKER_URL; workers expose 8001/8002
 ├── docker-compose.dev.yml      # dev 覆盖
 ├── .env.example                # 含 OPENAI_API_KEY
 ├── Makefile / deploy.sh
@@ -804,8 +811,13 @@ KnowledgeBase-S/
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
     │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
-    │       ├── settings.py     # GET/PUT /api/settings
+    │       ├── settings.py     # GET/PUT /api/settings; GET/PUT/DELETE /api/settings/templates/:name
     │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
+    │                           # POST /api/drafts/:id/feedback（定稿提交 → feedback-worker）
+    ├── feedback-worker/        # FastAPI + uvicorn（端口 8002）
+    │   ├── Dockerfile
+    │   ├── requirements.txt    # anthropic, httpx, fastapi, uvicorn
+    │   └── main.py             # POST /analyze：difflib diff + Claude Haiku → 规则提炼 → writing_memory
     ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
     │   ├── requirements.txt    # 新增 fastapi, uvicorn[standard]
     │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
@@ -827,11 +839,11 @@ KnowledgeBase-S/
         └── app/
             ├── login/page.tsx  # 登录页
             ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿生成面板
-            ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制
+            ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制 + 提交定稿反馈
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
             ├── knowledge/            # 占位
-            └── settings/             # 占位
+            └── settings/page.tsx     # 流程节奏 + 选题方向 + 模板管理 + 偏好规则
 ```
 
 ### 数据库表（7张）
