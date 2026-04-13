@@ -772,7 +772,7 @@ rclone delete --min-age 30d r2:bucket/backups/
   - `is_primary` 概念明确：主要型出现在简报，参考型仅参与 RAG；卡片上可切换
   - ingestion-worker 新增 HTTP trigger server（端口 8001）+ URLSource
   - fetch_mode: `subscription` / `manual` / `push`（原 `one_shot` 已废弃）
-  - **待完善（Step 7 前）**：文件型 source 处理（image/pdf/plaintext/word 的 Source 类尚未实现，上传后 worker 会跳过）
+  - 文件型 source 处理 ✅：image/pdf/plaintext/word Source 类已实现，上传后 worker 可正常处理
 
 ### 现有目录结构
 
@@ -807,8 +807,12 @@ KnowledgeBase-S/
     │   └── sources/
     │       ├── base.py         # BaseSource + RawItem
     │       ├── rss.py          # RSSSource（subscription）✅
-    │       └── url.py          # URLSource（manual，trafilatura）✅
-    │       # 待实现：image.py（Claude Vision）, plaintext.py, pdf.py, word.py
+    │       ├── url.py          # URLSource（manual，trafilatura）✅
+    │       ├── file_base.py    # FileSourceMixin（文件型共用 fetch 逻辑）✅
+    │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
+    │       ├── pdf.py          # PDFSource（PyMuPDF）✅
+    │       ├── image.py        # ImageSource（Claude Vision）✅
+    │       └── word.py         # WordSource（python-docx）✅
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
     └── web/                    # Next.js 14 + Tailwind + dnd-kit

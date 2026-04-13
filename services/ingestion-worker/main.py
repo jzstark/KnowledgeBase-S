@@ -16,8 +16,12 @@ import uvicorn
 from fastapi import FastAPI
 
 from pipeline import run_pipeline
+from sources.image import ImageSource
+from sources.pdf import PDFSource
+from sources.plaintext import PlaintextSource
 from sources.rss import RSSSource
 from sources.url import URLSource
+from sources.word import WordSource
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,7 +83,11 @@ def build_source(config: dict):
     elif t == "url":
         url = raw_config.get("url", "")
         return URLSource(source_id=config["id"], url=url)
-    # 其他类型（pdf/image/plaintext/word）后续步骤实现
+    elif t in ("pdf", "image", "plaintext", "word"):
+        uploads = raw_config.get("uploads", [])
+        cls = {"pdf": PDFSource, "image": ImageSource,
+               "plaintext": PlaintextSource, "word": WordSource}[t]
+        return cls(source_id=config["id"], uploads=uploads)
     return None
 
 
