@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import {
   DndContext,
   closestCenter,
@@ -172,6 +173,11 @@ export default function BriefingPage() {
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="text-base font-semibold text-gray-900">今日简报</h1>
+          <nav className="flex items-center gap-3 ml-2">
+            <Link href="/knowledge" className="text-xs text-gray-500 hover:text-gray-900">知识库</Link>
+            <Link href="/drafts" className="text-xs text-gray-500 hover:text-gray-900">草稿</Link>
+            <Link href="/settings" className="text-xs text-gray-500 hover:text-gray-900">设置</Link>
+          </nav>
           {briefing?.created_at && (
             <span className="text-xs text-gray-400">
               更新于 {new Date(briefing.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}

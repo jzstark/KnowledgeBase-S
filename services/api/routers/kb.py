@@ -236,6 +236,115 @@ async def get_graph(root: str, depth: int = Query(2, ge=1, le=3)):
     return {"nodes": nodes_out, "edges": edges_out}
 
 
+# ── 节点列表（分页） ─────────────────────────────────────────────────────────────
+
+@router.get("/nodes")
+async def list_nodes(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    tags: str | None = None,
+    q: str | None = None,
+):
+    """分页列出节点，支持文本搜索和标签过滤，无需认证。"""
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    conditions = ["user_id = $1"]
+    params: list = [USER_ID]
+
+    if tag_list:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(tag_list)))
+        conditions.append(f"tags && ARRAY[{placeholders}]::text[]")
+        params.extend(tag_list)
+
+    if q and q.strip():
+        qi = len(params) + 1
+        conditions.append(f"(title ILIKE ${qi} OR summary ILIKE ${qi})")
+        params.append(f"%{q.strip()}%")
+
+    where = " AND ".join(conditions)
+    limit_idx = len(params) + 1
+    offset_idx = len(params) + 2
+
+    async with database.database.connection() as conn:
+        total = await conn.raw_connection.fetchval(
+            f"SELECT COUNT(*) FROM knowledge_nodes WHERE {where}", *params
+        )
+        rows = await conn.raw_connection.fetch(
+            f"""
+            SELECT id, title, summary, source_type, tags, created_at
+            FROM knowledge_nodes
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ${limit_idx} OFFSET ${offset_idx}
+            """,
+            *params, limit, offset,
+        )
+
+    return {
+        "nodes": [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "summary": r["summary"],
+                "source_type": r["source_type"],
+                "tags": list(r["tags"]) if r["tags"] else [],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ],
+        "total": total,
+    }
+
+
+# ── 全量图谱（D3 用） ─────────────────────────────────────────────────────────
+
+@router.get("/graph/all")
+async def get_full_graph(limit: int = Query(300, ge=1, le=500)):
+    """返回全量节点和边（含 degree），用于 D3 力导向图，无需认证。"""
+    async with database.database.connection() as conn:
+        node_rows = await conn.raw_connection.fetch(
+            """
+            SELECT n.id, n.title, n.source_type, n.tags,
+                   COUNT(e.id)::int AS degree
+            FROM knowledge_nodes n
+            LEFT JOIN knowledge_edges e ON e.from_node_id = n.id OR e.to_node_id = n.id
+            WHERE n.user_id = $1
+            GROUP BY n.id
+            ORDER BY n.created_at DESC
+            LIMIT $2
+            """,
+            USER_ID, limit,
+        )
+        edge_rows = await conn.raw_connection.fetch(
+            "SELECT id, from_node_id, to_node_id, relation_type, weight FROM knowledge_edges LIMIT 600"
+        )
+
+    node_ids = {r["id"] for r in node_rows}
+    return {
+        "nodes": [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "source_type": r["source_type"],
+                "tags": list(r["tags"]) if r["tags"] else [],
+                "degree": r["degree"],
+            }
+            for r in node_rows
+        ],
+        "edges": [
+            {
+                "id": e["id"],
+                "from_node_id": e["from_node_id"],
+                "to_node_id": e["to_node_id"],
+                "relation_type": e["relation_type"],
+                "weight": float(e["weight"]) if e["weight"] is not None else 0.0,
+            }
+            for e in edge_rows
+            if e["from_node_id"] in node_ids and e["to_node_id"] in node_ids
+        ],
+    }
+
+
 # ── 写作偏好记忆 ───────────────────────────────────────────────────────────────
 
 class MemoryFeedback(BaseModel):

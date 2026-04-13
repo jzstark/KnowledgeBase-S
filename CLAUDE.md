@@ -751,7 +751,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 6. ✅ **Source 管理**：Source 是持久渠道；自动型（RSS/微信）+ 手动管理型（URL/文件，支持随时追加 + 批量上传）
 7. ✅ **微信快捷指令**：push 端点 + 快捷指令模板生成
 8. ✅ **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
-9. **知识库浏览**：列表视图 + D3 图谱视图
+9. ✅ **知识库浏览**：列表视图 + D3 图谱视图
 10. **Obsidian 同步**：单向 md 文件生成
 11. **备份 + 导出**：backup.sh + 导出功能
 12. **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
@@ -760,7 +760,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 当前项目状态（2026-04-13）
 
-### 已完成：第一步 ~ 第八步
+### 已完成：第一步 ~ 第九步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -786,6 +786,13 @@ rclone delete --min-age 30d r2:bucket/backups/
   - `/settings` 页完整实现：流程节奏 / 选题方向 / 模板管理（GET/PUT/DELETE `/api/settings/templates/:name`）/ 偏好规则展示（按置信度排序 + 进度条 + 删除）
   - 草稿历史页新增"提交定稿"折叠区：粘贴定稿 → 提交 → 显示"已学习 N 条偏好规则"
   - **⚠️ 已知疑点**：当用户提交的定稿与草稿差异极大（几乎全文替换）时，`rules_extracted` 可能为 0。两种可能原因：① feedback-worker 未运行（连接失败被 `except Exception: pass` 静默吞掉，API 仍返回 `{ok:true, rules_extracted:0}`，无法区分）；② diff 全为增删行、Claude 无法归纳出具体可复用的偏好规则，返回 `[]`。**待改进方向**：当 diff 超过阈值（如 >70% 不同）时切换为"直接风格分析"模式，让 Claude 分析定稿本身的风格特征而非 diff；同时在 API 层区分"worker 不可达"与"worker 返回 0 条"，给前端不同的提示。
+- **第九步**：知识库浏览 ✅
+  - `GET /api/kb/nodes`：分页列表（LIMIT/OFFSET），支持文本搜索（ILIKE）和标签过滤（`tags && ARRAY[...]::text[]`），返回 `{nodes, total}`
+  - `GET /api/kb/graph/all`：全量节点 + 边，节点含 `degree`（关联边数），用于 D3 力导向图
+  - `/knowledge` 页：列表视图（2列卡片网格，搜索/标签过滤，分页）+ 图谱视图（D3 force-directed，节点大小=degree，边颜色=relation_type，支持拖拽+缩放）+ 点击节点展示右侧详情侧边栏
+  - 首页 header 新增"知识库/草稿/设置"导航链接
+  - d3 + @types/d3 已加入 `services/web/package.json`
+  - "立即运行维护"按钮为 stub（第十二步实现）
 
 ### 现有目录结构
 
@@ -809,7 +816,7 @@ KnowledgeBase-S/
     │   └── routers/
     │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
-    │       ├── kb.py           # /api/kb/ingest, search, node, graph, memory, maintenance
+    │       ├── kb.py           # /api/kb/ingest, search, node, nodes, graph, graph/all, memory
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       ├── settings.py     # GET/PUT /api/settings; GET/PUT/DELETE /api/settings/templates/:name
     │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
@@ -834,7 +841,7 @@ KnowledgeBase-S/
     │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
-    └── web/                    # Next.js 14 + Tailwind + dnd-kit
+    └── web/                    # Next.js 14 + Tailwind + dnd-kit + d3
         ├── middleware.ts       # cookie 鉴权
         └── app/
             ├── login/page.tsx  # 登录页
@@ -842,7 +849,7 @@ KnowledgeBase-S/
             ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制 + 提交定稿反馈
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
-            ├── knowledge/            # 占位
+            ├── knowledge/page.tsx    # 列表视图（搜索/过滤/分页）+ D3 图谱视图 + 详情侧边栏
             └── settings/page.tsx     # 流程节奏 + 选题方向 + 模板管理 + 偏好规则
 ```
 
