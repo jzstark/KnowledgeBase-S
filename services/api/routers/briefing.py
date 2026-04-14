@@ -1,12 +1,14 @@
 """
 今日简报路由。
 
-GET  /api/briefing        — 获取今日（或指定日期）简报
-POST /api/briefing/generate — 立即生成简报（调用 summarizer 逻辑）
+GET   /api/briefing                  — 获取今日（或指定日期）选题列表
+POST  /api/briefing/generate         — 立即生成选题
+PATCH /api/briefing/topics/{id}      — 更新选题状态（selected / skipped / pending）
 """
 
 import json
 import os
+import secrets
 from datetime import date, datetime, timedelta
 
 import anthropic
@@ -23,43 +25,55 @@ USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
 
-# ── 获取简报 ────────────────────────────────────────────────────────────────
+# ── 获取今日选题 ─────────────────────────────────────────────────────────────
 
 @router.get("")
 async def get_briefing(target_date: str | None = Query(default=None)):
     """
-    返回指定日期的简报（默认今日）。
-    响应格式：{date, groups: [{name, nodes: [{id, title, summary, tags, edge_count}]}]}
+    返回指定日期的选题列表（默认今日）。
+    响应格式：{date, topics: [{id, title, description, source_count, status}], generated}
     """
     d = date.fromisoformat(target_date) if target_date else date.today()
 
-    row = await database.database.fetch_one(
-        f"SELECT * FROM briefings WHERE user_id = :user_id AND date = '{d}'::date",
-        {"user_id": USER_ID},
+    rows = await database.database.fetch_all(
+        "SELECT * FROM topics WHERE user_id = :user_id AND date = :date ORDER BY created_at ASC",
+        {"user_id": USER_ID, "date": d},
     )
-    if not row:
-        return {"date": str(d), "groups": [], "generated": False}
 
-    groups_raw = row["groups"]
-    groups = json.loads(groups_raw) if isinstance(groups_raw, str) else list(groups_raw)
+    if not rows:
+        return {"date": str(d), "topics": [], "generated": False}
+
+    topics = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "description": r["description"],
+            "source_count": len(r["source_node_ids"] or []),
+            "source_node_ids": list(r["source_node_ids"] or []),
+            "status": r["status"],
+            "created_at": r["created_at"].isoformat(),
+        }
+        for r in rows
+    ]
+
     return {
         "date": str(d),
-        "groups": groups,
+        "topics": topics,
         "generated": True,
-        "created_at": row["created_at"].isoformat(),
+        "created_at": rows[0]["created_at"].isoformat(),
     }
 
 
-# ── 生成简报 ────────────────────────────────────────────────────────────────
+# ── 生成选题 ─────────────────────────────────────────────────────────────────
 
 @router.post("/generate")
 async def generate_briefing(_: dict = Depends(require_auth)):
-    """立即生成今日简报：取最近 N 小时入库的节点 → Claude 分类 → 存库。"""
+    """立即生成今日选题：取最近 N 小时入库的节点 → Claude 生成写作角度 → 存库。"""
     settings = await get_settings_dict()
     hours_back = int(settings.get("briefing_hours_back", 24))
-    topics = settings.get("topics", "")
+    topics_setting = settings.get("topics", "")
 
-    # 1. 取最近 N 小时的节点
+    # 1. 取最近 N 小时的主要节点
     since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
     rows = await database.database.fetch_all(
         f"""
@@ -73,73 +87,96 @@ async def generate_briefing(_: dict = Depends(require_auth)):
         {"user_id": USER_ID},
     )
 
-    if not rows:
-        groups: list[dict] = []
-    else:
-        # 2. 查每个节点的关联边数量
-        node_list = []
-        for r in rows:
-            edge_count = await database.database.fetch_val(
-                """
-                SELECT COUNT(*) FROM knowledge_edges
-                WHERE from_node_id = :id OR to_node_id = :id
-                """,
-                {"id": r["id"]},
-            )
-            node_list.append({
-                "id": r["id"],
-                "title": r["title"] or "",
-                "summary": r["summary"] or "",
-                "tags": r["tags"] or [],
-                "edge_count": int(edge_count or 0),
-                "created_at": r["created_at"].isoformat(),
-            })
-
-        # 3. Claude 分类
-        groups = await _classify_nodes(node_list, topics)
-
-    # 4. 存库（upsert 当日简报）
     today = date.today()
-    groups_json = database.jsonb(groups)
+
+    # 先清除今日已有选题
     await database.database.execute(
-        f"""
-        INSERT INTO briefings (user_id, date, groups)
-        VALUES (:user_id, '{today}'::date, :groups)
-        ON CONFLICT (user_id, date) DO UPDATE SET groups = :groups, created_at = NOW()
-        """,
-        {"user_id": USER_ID, "groups": groups_json},
+        "DELETE FROM topics WHERE user_id = :user_id AND date = :date",
+        {"user_id": USER_ID, "date": today},
     )
 
-    return {"date": str(today), "groups": groups, "generated": True}
+    if not rows:
+        return {"date": str(today), "topics": [], "generated": True}
+
+    node_list = [
+        {
+            "id": r["id"],
+            "title": r["title"] or "",
+            "summary": r["summary"] or "",
+            "tags": list(r["tags"] or []),
+        }
+        for r in rows
+    ]
+
+    # 2. Claude 生成选题
+    generated_topics = await _generate_topics(node_list, topics_setting)
+
+    # 3. 存库
+    result = []
+    for t in generated_topics:
+        topic_id = f"topic_{secrets.token_hex(6)}"
+        source_ids = [
+            node_list[i - 1]["id"]
+            for i in t.get("source_indices", [])
+            if 1 <= i <= len(node_list)
+        ]
+        await database.database.execute(
+            """
+            INSERT INTO topics (id, user_id, date, title, description, source_node_ids)
+            VALUES (:id, :user_id, :date, :title, :description, :source_node_ids)
+            """,
+            {
+                "id": topic_id,
+                "user_id": USER_ID,
+                "date": today,
+                "title": t["title"],
+                "description": t.get("description", ""),
+                "source_node_ids": source_ids,
+            },
+        )
+        result.append({
+            "id": topic_id,
+            "title": t["title"],
+            "description": t.get("description", ""),
+            "source_count": len(source_ids),
+            "source_node_ids": source_ids,
+            "status": "pending",
+        })
+
+    return {"date": str(today), "topics": result, "generated": True}
 
 
-async def _classify_nodes(nodes: list[dict], topics: str) -> list[dict]:
-    """用 Claude 把节点按主题分组，返回 [{name, nodes}]。"""
+async def _generate_topics(nodes: list[dict], topics_setting: str) -> list[dict]:
+    """用 Claude 基于今日原文生成写作选题角度，返回 [{title, description, source_indices}]。"""
     if not nodes:
         return []
 
     summaries = "\n".join(
-        f"[{i+1}] {n['title']} — {n['summary'][:120]}"
+        f"[{i+1}] {n['title']}：{n['summary'][:150]}"
         for i, n in enumerate(nodes)
     )
 
-    prompt = f"""你是一个内容分类助手。用户的关注方向是：{topics}
+    prompt = f"""你是内容创作助手。用户的写作方向是：{topics_setting}
 
-以下是今日新增的文章列表（序号对应）：
+以下是今日新增的文章（序号对应）：
 {summaries}
 
-请将这些文章按主题分组，每组给一个简短的中文名称（4字以内）。
-优先按用户关注方向分组，无关内容归入"其他"。
+请基于这些文章，生成若干值得写作的选题角度。要求：
+- 选题是"可以写的文章角度"，不是文章摘要
+- 一个选题可来自1篇或多篇文章，同一篇文章也可衍生多个选题
+- 优先贴合用户的写作方向
+- 标题：10字以内，点明写作角度
+- 说明：一句话说明为何这个角度值得写
 
-严格按以下 JSON 格式输出，不要有其他文字：
+严格按以下 JSON 格式输出，不要有任何其他文字：
 [
-  {{"name": "主题名", "indices": [1, 3, 5]}},
-  {{"name": "主题名", "indices": [2, 4]}}
+  {{"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [1, 3]}},
+  {{"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [2]}}
 ]"""
 
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=512,
+        max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
     raw = message.content[0].text.strip()
@@ -148,23 +185,19 @@ async def _classify_nodes(nodes: list[dict], topics: str) -> list[dict]:
         if raw.startswith("json"):
             raw = raw[4:]
 
-    classification = json.loads(raw)
+    return json.loads(raw)
 
-    groups = []
-    used_indices: set[int] = set()
-    for group in classification:
-        group_nodes = []
-        for idx in group.get("indices", []):
-            i = idx - 1
-            if 0 <= i < len(nodes) and i not in used_indices:
-                used_indices.add(i)
-                group_nodes.append(nodes[i])
-        if group_nodes:
-            groups.append({"name": group["name"], "nodes": group_nodes})
 
-    # 未分类的节点归入"其他"
-    others = [nodes[i] for i in range(len(nodes)) if i not in used_indices]
-    if others:
-        groups.append({"name": "其他", "nodes": others})
+# ── 更新选题状态 ──────────────────────────────────────────────────────────────
 
-    return groups
+class TopicStatusUpdate(BaseModel):
+    status: str  # "selected" | "skipped" | "pending"
+
+
+@router.patch("/topics/{topic_id}")
+async def update_topic_status(topic_id: str, body: TopicStatusUpdate):
+    await database.database.execute(
+        "UPDATE topics SET status = :status WHERE id = :id AND user_id = :user_id",
+        {"status": body.status, "id": topic_id, "user_id": USER_ID},
+    )
+    return {"ok": True}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
 import {
   DndContext,
   closestCenter,
@@ -22,38 +21,34 @@ import { CSS } from "@dnd-kit/utilities";
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
-interface BriefingNode {
+interface Topic {
   id: string;
   title: string;
-  summary: string;
-  tags: string[];
-  edge_count: number;
-  created_at: string;
-}
-
-interface BriefingGroup {
-  name: string;
-  nodes: BriefingNode[];
+  description: string;
+  source_count: number;
+  source_node_ids: string[];
+  status: string;
+  created_at?: string;
 }
 
 interface Briefing {
   date: string;
-  groups: BriefingGroup[];
+  topics: Topic[];
   generated: boolean;
   created_at?: string;
 }
 
-// ── 可拖拽卡片 ────────────────────────────────────────────────────────────────
+// ── 可拖拽卡片（中栏） ────────────────────────────────────────────────────────
 
 function SortableCard({
-  node,
+  topic,
   onRemove,
 }: {
-  node: BriefingNode;
+  topic: Topic;
   onRemove: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id: node.id });
+    useSortable({ id: topic.id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -74,11 +69,13 @@ function SortableCard({
         ⠿
       </span>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 truncate">{node.title || "（无标题）"}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{node.tags?.slice(0, 3).join(" · ")}</p>
+        <p className="text-sm font-medium text-gray-900 truncate">{topic.title}</p>
+        {topic.description && (
+          <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{topic.description}</p>
+        )}
       </div>
       <button
-        onClick={() => onRemove(node.id)}
+        onClick={() => onRemove(topic.id)}
         className="text-gray-300 hover:text-red-400 text-xs shrink-0"
       >
         ✕
@@ -95,7 +92,7 @@ export default function BriefingPage() {
   const [generating, setGenerating] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
 
-  const [selected, setSelected] = useState<BriefingNode[]>([]);
+  const [selected, setSelected] = useState<Topic[]>([]);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
 
   const sensors = useSensors(
@@ -105,7 +102,6 @@ export default function BriefingPage() {
     })
   );
 
-  // 拉取今日简报
   const fetchBriefing = useCallback(async () => {
     setLoading(true);
     try {
@@ -121,10 +117,9 @@ export default function BriefingPage() {
 
   useEffect(() => { fetchBriefing(); }, [fetchBriefing]);
 
-  // 立即生成简报
   async function handleGenerate() {
     setGenerating(true);
-    setStatusMsg("⏳ 正在生成简报...");
+    setStatusMsg("⏳ 正在生成选题...");
     try {
       const res = await fetch("/api/briefing/generate", { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
@@ -132,8 +127,7 @@ export default function BriefingPage() {
       setBriefing(data);
       setSelected([]);
       setSkipped(new Set());
-      const total = data.groups.reduce((s, g) => s + g.nodes.length, 0);
-      setStatusMsg(`✅ 完成，共 ${total} 条，${data.groups.length} 个分组`);
+      setStatusMsg(`✅ 完成，共 ${data.topics.length} 个选题`);
     } catch (e: unknown) {
       setStatusMsg(`❌ 生成失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -141,25 +135,25 @@ export default function BriefingPage() {
     }
   }
 
-  function selectNode(node: BriefingNode) {
-    if (selected.some((n) => n.id === node.id)) return;
-    setSelected((prev) => [...prev, node]);
+  function selectTopic(topic: Topic) {
+    if (selected.some((t) => t.id === topic.id)) return;
+    setSelected((prev) => [...prev, topic]);
   }
 
-  function skipNode(id: string) {
+  function skipTopic(id: string) {
     setSkipped((prev) => new Set([...prev, id]));
   }
 
   function removeSelected(id: string) {
-    setSelected((prev) => prev.filter((n) => n.id !== id));
+    setSelected((prev) => prev.filter((t) => t.id !== id));
   }
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (over && active.id !== over.id) {
       setSelected((items) => {
-        const oldIndex = items.findIndex((n) => n.id === active.id);
-        const newIndex = items.findIndex((n) => n.id === over.id);
+        const oldIndex = items.findIndex((t) => t.id === active.id);
+        const newIndex = items.findIndex((t) => t.id === over.id);
         return arrayMove(items, oldIndex, newIndex);
       });
     }
@@ -188,24 +182,24 @@ export default function BriefingPage() {
           className="px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg
                      hover:bg-gray-700 disabled:opacity-40 transition-colors"
         >
-          {generating ? "生成中..." : "立即生成简报"}
+          {generating ? "生成中..." : "立即生成选题"}
         </button>
       </header>
 
       {/* 三栏布局 */}
       <div className="flex h-[calc(100vh-57px)]">
 
-        {/* 左栏：今日文章 */}
+        {/* 左栏：今日选题 */}
         <div className="w-80 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">今日文章</p>
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">今日选题</p>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {loading ? (
               <p className="text-sm text-gray-400 text-center pt-8">加载中...</p>
             ) : !briefing?.generated ? (
               <div className="pt-8 text-center">
-                <p className="text-sm text-gray-400 mb-3">暂无今日简报</p>
+                <p className="text-sm text-gray-400 mb-3">暂无今日选题</p>
                 <button
                   onClick={handleGenerate}
                   disabled={generating}
@@ -214,66 +208,52 @@ export default function BriefingPage() {
                   点击生成
                 </button>
               </div>
-            ) : briefing.groups.length === 0 ? (
+            ) : briefing.topics.length === 0 ? (
               <p className="text-sm text-gray-400 text-center pt-8">今日暂无新内容</p>
             ) : (
-              briefing.groups.map((group) => (
-                <div key={group.name}>
-                  <p className="text-xs font-semibold text-gray-400 mb-2 px-1">{group.name}</p>
-                  <div className="space-y-2">
-                    {group.nodes.map((node) => {
-                      const isSelected = selected.some((n) => n.id === node.id);
-                      const isSkipped = skipped.has(node.id);
-                      return (
-                        <div
-                          key={node.id}
-                          className={`rounded-lg border p-3 transition-opacity ${
-                            isSkipped ? "opacity-30" : "opacity-100"
-                          } ${isSelected ? "border-gray-900 bg-gray-50" : "border-gray-200 bg-white"}`}
-                        >
-                          <p className="text-sm font-medium text-gray-900 leading-snug mb-1">
-                            {node.title || "（无标题）"}
-                          </p>
-                          <p className="text-xs text-gray-500 line-clamp-2 mb-2">{node.summary}</p>
-                          <div className="flex items-center justify-between">
-                            <div className="flex gap-1 flex-wrap">
-                              {node.tags?.slice(0, 3).map((t) => (
-                                <span key={t} className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
-                                  {t}
-                                </span>
-                              ))}
-                              {node.edge_count > 0 && (
-                                <span className="text-xs text-blue-400">
-                                  {node.edge_count} 关联
-                                </span>
-                              )}
-                            </div>
-                            {!isSkipped && !isSelected && (
-                              <div className="flex gap-1 shrink-0">
-                                <button
-                                  onClick={() => selectNode(node)}
-                                  className="text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-gray-700"
-                                >
-                                  选入
-                                </button>
-                                <button
-                                  onClick={() => skipNode(node.id)}
-                                  className="text-xs px-2 py-0.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
-                                >
-                                  跳过
-                                </button>
-                              </div>
-                            )}
-                            {isSelected && (
-                              <span className="text-xs text-gray-400">已选</span>
-                            )}
-                          </div>
+              briefing.topics.map((topic) => {
+                const isSelected = selected.some((t) => t.id === topic.id);
+                const isSkipped = skipped.has(topic.id);
+                return (
+                  <div
+                    key={topic.id}
+                    className={`rounded-lg border p-3 transition-opacity ${
+                      isSkipped ? "opacity-30" : "opacity-100"
+                    } ${isSelected ? "border-gray-900 bg-gray-50" : "border-gray-200 bg-white"}`}
+                  >
+                    <p className="text-sm font-medium text-gray-900 leading-snug mb-1">
+                      {topic.title}
+                    </p>
+                    {topic.description && (
+                      <p className="text-xs text-gray-500 line-clamp-2 mb-2">{topic.description}</p>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-300">
+                        {topic.source_count} 篇来源
+                      </span>
+                      {!isSkipped && !isSelected && (
+                        <div className="flex gap-1 shrink-0">
+                          <button
+                            onClick={() => selectTopic(topic)}
+                            className="text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-gray-700"
+                          >
+                            选入
+                          </button>
+                          <button
+                            onClick={() => skipTopic(topic.id)}
+                            className="text-xs px-2 py-0.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
+                          >
+                            跳过
+                          </button>
                         </div>
-                      );
-                    })}
+                      )}
+                      {isSelected && (
+                        <span className="text-xs text-gray-400">已选</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -282,12 +262,12 @@ export default function BriefingPage() {
         <div className="w-72 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">已选选题</p>
-            <span className="text-xs text-gray-400">{selected.length} 篇</span>
+            <span className="text-xs text-gray-400">{selected.length} 个</span>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
             {selected.length === 0 ? (
               <p className="text-sm text-gray-400 text-center pt-8">
-                从左侧选入文章
+                从左侧选入选题
               </p>
             ) : (
               <DndContext
@@ -296,14 +276,14 @@ export default function BriefingPage() {
                 onDragEnd={handleDragEnd}
               >
                 <SortableContext
-                  items={selected.map((n) => n.id)}
+                  items={selected.map((t) => t.id)}
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="space-y-2">
-                    {selected.map((node) => (
+                    {selected.map((topic) => (
                       <SortableCard
-                        key={node.id}
-                        node={node}
+                        key={topic.id}
+                        topic={topic}
                         onRemove={removeSelected}
                       />
                     ))}
@@ -330,7 +310,7 @@ const TEMPLATES = [
   { value: "周报", label: "周报" },
 ];
 
-function DraftPanel({ selected }: { selected: BriefingNode[] }) {
+function DraftPanel({ selected }: { selected: Topic[] }) {
   const [template, setTemplate] = useState("default");
   const [drafting, setDrafting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
@@ -352,7 +332,7 @@ function DraftPanel({ selected }: { selected: BriefingNode[] }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          selected_node_ids: selected.map((n) => n.id),
+          selected_topic_ids: selected.map((t) => t.id),
           template_name: template,
         }),
       });
@@ -377,7 +357,6 @@ function DraftPanel({ selected }: { selected: BriefingNode[] }) {
 
   return (
     <div className="flex-1 bg-white flex flex-col overflow-hidden">
-      {/* 顶부 */}
       <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide shrink-0">
           生成草稿
@@ -403,7 +382,6 @@ function DraftPanel({ selected }: { selected: BriefingNode[] }) {
         </button>
       </div>
 
-      {/* 状态提示 */}
       {draftStatus && (
         <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
           <p className="text-xs text-gray-500">{draftStatus}</p>
@@ -418,14 +396,13 @@ function DraftPanel({ selected }: { selected: BriefingNode[] }) {
         </div>
       )}
 
-      {/* 主体 */}
       <div className="flex-1 overflow-y-auto p-4">
         {selected.length === 0 ? (
           <p className="text-sm text-gray-400 text-center pt-12">请先在左侧选择选题</p>
         ) : !draft && !drafting ? (
           <div className="pt-12 text-center">
             <p className="text-sm text-gray-400 mb-1">
-              已选 <span className="font-semibold text-gray-700">{selected.length}</span> 篇
+              已选 <span className="font-semibold text-gray-700">{selected.length}</span> 个选题
             </p>
             <p className="text-xs text-gray-300">点击"生成草稿"开始</p>
           </div>
@@ -442,7 +419,6 @@ function DraftPanel({ selected }: { selected: BriefingNode[] }) {
                          border border-gray-200 rounded-lg p-3 resize-none
                          focus:outline-none focus:ring-1 focus:ring-gray-400"
             />
-            {/* 第八步：提交定稿反馈入口 */}
             <p className="text-xs text-gray-300 text-center">
               定稿后可提交反馈以改善未来草稿质量（第八步功能）
             </p>

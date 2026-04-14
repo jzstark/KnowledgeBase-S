@@ -37,7 +37,7 @@ MAX_KNOWLEDGE_CHARS = 6000   # 背景知识截断上限
 # ── 请求/响应模型 ─────────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
-    selected_node_ids: list[str]
+    selected_topic_ids: list[str]
     template_name: str = "default"
 
 
@@ -64,6 +64,14 @@ async def fetch_node(node_id: str) -> dict | None:
     row = await database.database.fetch_one(
         "SELECT id, title, summary, tags FROM knowledge_nodes WHERE id = :id",
         {"id": node_id},
+    )
+    return dict(row) if row else None
+
+
+async def fetch_topic(topic_id: str) -> dict | None:
+    row = await database.database.fetch_one(
+        "SELECT id, title, description, source_node_ids FROM topics WHERE id = :id",
+        {"id": topic_id},
     )
     return dict(row) if row else None
 
@@ -137,34 +145,48 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
 @router.post("/generate")
 async def generate_draft(body: GenerateRequest):
     """RAG 检索 + 模板 + 偏好规则 → Claude 生成草稿。"""
-    if not body.selected_node_ids:
-        raise HTTPException(400, "至少选择一篇文章")
+    if not body.selected_topic_ids:
+        raise HTTPException(400, "至少选择一个选题")
 
-    # 1. 获取已选节点
-    selected = []
-    for nid in body.selected_node_ids:
+    # 1. 获取已选选题
+    topics = []
+    for tid in body.selected_topic_ids:
+        topic = await fetch_topic(tid)
+        if topic:
+            topics.append(topic)
+
+    if not topics:
+        raise HTTPException(404, "所选选题不存在")
+
+    # 2. 通过选题的 source_node_ids 获取来源原文节点
+    all_source_ids: list[str] = []
+    for t in topics:
+        all_source_ids.extend(t.get("source_node_ids") or [])
+    all_source_ids = list(dict.fromkeys(all_source_ids))  # 去重保序
+
+    source_nodes = []
+    for nid in all_source_ids:
         node = await fetch_node(nid)
         if node:
-            selected.append(node)
+            source_nodes.append(node)
 
-    if not selected:
-        raise HTTPException(404, "所选节点不存在")
+    # 3. 语义检索更多相关知识（以选题标题+说明为查询）
+    query = " ".join(
+        f"{t['title']} {t.get('description', '')}" for t in topics
+    )
+    related = await semantic_search_related(query, all_source_ids, limit=8)
 
-    # 2. 语义检索相关知识
-    query = " ".join(n.get("summary", "") or n.get("title", "") for n in selected)
-    direct_hits = await semantic_search_related(query, body.selected_node_ids, limit=8)
+    # 4. 沿边扩展一跳（background_of / extends）
+    related_ids = [n["id"] for n in related]
+    extended = await expand_one_hop(related_ids, ["background_of", "extends"])
 
-    # 3. 沿边扩展一跳（background_of / extends）
-    hit_ids = [n["id"] for n in direct_hits]
-    extended = await expand_one_hop(hit_ids, ["background_of", "extends"])
-
-    # 4. 组合知识上下文，截断
-    knowledge_text = format_nodes(direct_hits, "相关知识")
+    # 5. 组合知识上下文，截断
+    knowledge_text = format_nodes(related, "相关知识")
     if extended:
         knowledge_text += "\n\n" + format_nodes(extended, "背景知识")
     knowledge_text = truncate_to_chars(knowledge_text, MAX_KNOWLEDGE_CHARS)
 
-    # 5. 读取偏好规则（confidence >= 0.8）
+    # 6. 读取偏好规则（confidence >= 0.8）
     pref_rows = await database.database.fetch_all(
         """
         SELECT rule FROM writing_memory
@@ -178,19 +200,28 @@ async def generate_draft(body: GenerateRequest):
     )
     preferences = "\n".join(f"- {r['rule']}" for r in pref_rows)
 
-    # 6. 读取模板
+    # 7. 读取模板
     template = read_template(body.template_name)
 
-    # 7. 组合 Prompt
-    selected_text = format_nodes(selected, "选题素材")
-    prompt_parts = [template, "", "请基于以下素材完成这篇文章：", selected_text]
+    # 8. 组合 Prompt：选题角度在前，来源原文和背景知识在后
+    topic_lines = "\n".join(
+        f"- 【{t['title']}】{t.get('description', '')}" for t in topics
+    )
+    prompt_parts = [
+        template,
+        "",
+        "本次写作的选题角度：",
+        topic_lines,
+    ]
+    if source_nodes:
+        prompt_parts += ["", "相关来源原文摘要：", format_nodes(source_nodes, "来源原文")]
     if knowledge_text:
-        prompt_parts += ["", "相关背景知识：", knowledge_text]
+        prompt_parts += ["", "知识库背景知识：", knowledge_text]
     if preferences:
         prompt_parts += ["", "根据用户历史反馈，额外注意：", preferences]
     prompt = "\n".join(prompt_parts)
 
-    # 8. 调用 Claude
+    # 9. 调用 Claude
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=2048,
@@ -198,18 +229,19 @@ async def generate_draft(body: GenerateRequest):
     )
     draft_content = message.content[0].text.strip()
 
-    # 9. 写入 drafts 表
+    # 10. 写入 drafts 表
     draft_id = f"draft_{secrets.token_hex(6)}"
     await database.database.execute(
         """
-        INSERT INTO drafts (id, user_id, template_name, selected_node_ids, draft_content)
-        VALUES (:id, :user_id, :template_name, :selected_node_ids, :draft_content)
+        INSERT INTO drafts (id, user_id, template_name, selected_node_ids, selected_topic_ids, draft_content)
+        VALUES (:id, :user_id, :template_name, :selected_node_ids, :selected_topic_ids, :draft_content)
         """,
         {
             "id": draft_id,
             "user_id": USER_ID,
             "template_name": body.template_name,
-            "selected_node_ids": body.selected_node_ids,
+            "selected_node_ids": all_source_ids,
+            "selected_topic_ids": body.selected_topic_ids,
             "draft_content": draft_content,
         },
     )
@@ -218,8 +250,8 @@ async def generate_draft(body: GenerateRequest):
         "id": draft_id,
         "draft_content": draft_content,
         "template_name": body.template_name,
-        "selected_count": len(selected),
-        "knowledge_count": len(direct_hits) + len(extended),
+        "selected_count": len(topics),
+        "knowledge_count": len(related) + len(extended),
     }
 
 

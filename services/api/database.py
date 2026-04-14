@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS briefings (
     UNIQUE(user_id, date)
 );
 
+CREATE TABLE IF NOT EXISTS topics (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    title TEXT NOT NULL,
+    description TEXT,
+    source_node_ids TEXT[] DEFAULT '{}',
+    status VARCHAR DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS user_settings (
     user_id VARCHAR PRIMARY KEY,
     settings JSONB NOT NULL DEFAULT '{}'
@@ -93,6 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);
+
+ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
 """
 
 
