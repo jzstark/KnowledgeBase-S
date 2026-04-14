@@ -1,0 +1,131 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      api: ${{ steps.filter.outputs.api }}
+      ingestion: ${{ steps.filter.outputs.ingestion }}
+      summarizer: ${{ steps.filter.outputs.summarizer }}
+      feedback: ${{ steps.filter.outputs.feedback }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'services/web/**'
+            api:
+              - 'services/api/**'
+            ingestion:
+              - 'services/ingestion-worker/**'
+            summarizer:
+              - 'services/summarizer-worker/**'
+            feedback:
+              - 'services/feedback-worker/**'
+
+  build-web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/web
+          push: true
+          tags: ghcr.io/jzstark/web:latest
+
+  build-api:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/api
+          push: true
+          tags: ghcr.io/jzstark/api:latest
+
+  build-ingestion:
+    needs: changes
+    if: needs.changes.outputs.ingestion == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/ingestion-worker
+          push: true
+          tags: ghcr.io/jzstark/ingestion-worker:latest
+
+  build-summarizer:
+    needs: changes
+    if: needs.changes.outputs.summarizer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/summarizer-worker
+          push: true
+          tags: ghcr.io/jzstark/summarizer-worker:latest
+
+  build-feedback:
+    needs: changes
+    if: needs.changes.outputs.feedback == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/feedback-worker
+          push: true
+          tags: ghcr.io/jzstark/feedback-worker:latest
