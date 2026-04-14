@@ -122,6 +122,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/.docker/config.json:/config.json:ro
+    environment:
+      DOCKER_API_VERSION: "1.41"
     command: --interval 3600
 
   nginx:
