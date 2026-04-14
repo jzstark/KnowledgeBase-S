@@ -32,7 +32,7 @@ class FileSourceMixin(BaseSource):
                 try:
                     from datetime import date
                     batch_date = date.fromisoformat(batch_date_str)
-                    if batch_date <= last_fetched_at.date():
+                    if batch_date < last_fetched_at.date():
                         continue
                 except ValueError:
                     pass  # 日期格式异常时不过滤，保守处理

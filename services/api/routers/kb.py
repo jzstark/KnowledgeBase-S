@@ -38,6 +38,16 @@ class IngestRequest(BaseModel):
 @router.post("/ingest")
 async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     """内容入库唯一写入入口（ingestion-worker 调用，无需认证）。"""
+    # Dedup: skip if a node with the same file path already exists
+    raw_path = (body.raw_ref or {}).get("path")
+    if raw_path:
+        existing = await database.database.fetch_one(
+            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND raw_ref->>'path' = :path",
+            {"uid": body.user_id, "path": raw_path},
+        )
+        if existing:
+            return {"id": existing["id"], "duplicate": True}
+
     node_id = f"node_{secrets.token_hex(6)}"
     embedding_literal = "[" + ",".join(repr(x) for x in body.embedding) + "]"
 
