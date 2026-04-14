@@ -44,7 +44,7 @@ def _image_to_b64(img: Image.Image, media_type: str) -> str:
 
 
 def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
-    prompt = "请完整转录这张图片中的所有文字，保持原有格式，输出中文。不要遗漏任何文字内容。"
+    prompt = "请完整转录这张图片中的所有文字，保持原有格式。不要遗漏任何文字内容。"
     if tile_info:
         prompt += f"（{tile_info}）"
     msg = _claude.messages.create(
