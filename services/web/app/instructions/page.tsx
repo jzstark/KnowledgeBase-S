@@ -234,7 +234,6 @@ export default function InstructionsPage() {
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-gray-900">指令设置</h1>
-          <Link href="/" className="text-sm text-blue-600 hover:underline">← 返回首页</Link>
         </div>
 
         {/* ① 选题方向 */}

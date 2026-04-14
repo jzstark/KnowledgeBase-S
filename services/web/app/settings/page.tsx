@@ -174,7 +174,6 @@ export default function SettingsPage() {
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-gray-900">系统设置</h1>
-          <Link href="/" className="text-sm text-blue-600 hover:underline">← 返回首页</Link>
         </div>
 
         {/* ① 流程节奏 */}

@@ -446,9 +446,6 @@ export default function KnowledgePage() {
       {/* 顶部工具栏 */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <Link href="/" className="text-sm text-blue-600 hover:underline">
-            ← 首页
-          </Link>
           <h1 className="text-base font-semibold text-gray-900">知识库</h1>
           <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
             <button

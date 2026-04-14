@@ -124,7 +124,6 @@ export default function SourcesPage() {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-semibold text-gray-900">订阅源管理</h1>
           <div className="flex items-center gap-3">
-            <Link href="/" className="text-sm text-blue-600 hover:underline">← 返回首页</Link>
             <button
               onClick={() => { setShowAdd((v) => !v); setNewlyCreatedWechat(null); }}
               className="px-3 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 transition-colors"

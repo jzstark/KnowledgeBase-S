@@ -98,9 +98,6 @@ export default function DraftsPage() {
       <div className="max-w-6xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-semibold text-gray-900">草稿历史</h1>
-          <Link href="/" className="text-sm text-blue-600 hover:underline">
-            ← 返回首页
-          </Link>
         </div>
 
         {loading ? (
