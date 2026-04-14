@@ -5,6 +5,9 @@ import Nav from "./components/Nav";
 export const metadata: Metadata = {
   title: "知识库",
   description: "个人知识管理与 AI 辅助写作",
+  icons: {
+    icon: "/logo.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

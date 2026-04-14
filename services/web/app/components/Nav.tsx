@@ -19,6 +19,9 @@ export default function Nav() {
 
   return (
     <nav className="bg-white border-b border-gray-200 px-6 py-2.5 flex items-center gap-4">
+      <Link href="/" className="shrink-0 mr-2">
+        <img src="/logo.svg" alt="logo" className="h-6 w-6" />
+      </Link>
       {links.map(({ href, label }) => {
         const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
         return (

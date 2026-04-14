@@ -327,7 +327,7 @@ async def update_source(source_id: str, body: SourceUpdate):
         params["is_primary"] = body.is_primary
     if body.last_fetched_at is not None:
         updates.append("last_fetched_at = :last_fetched_at")
-        params["last_fetched_at"] = body.last_fetched_at
+        params["last_fetched_at"] = datetime.fromisoformat(body.last_fetched_at)
 
     if updates:
         await database.database.execute(
