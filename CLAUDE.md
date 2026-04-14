@@ -754,13 +754,13 @@ rclone delete --min-age 30d r2:bucket/backups/
 9. ✅ **知识库浏览**：列表视图 + D3 图谱视图
 10. ✅ **Obsidian 同步**：单向 md 文件生成
 11. ✅ **指令设置页 + 数据导出**：/instructions 页面（选题方向/模板/Schema）+ 导出 zip
-12. **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
+12. ✅ **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
 
 ---
 
-## 当前项目状态（2026-04-14）
+## 当前项目状态（2026-04-15）
 
-### 已完成：第一步 ~ 第十一步
+### 已完成：第一步 ~ 第十二步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -792,7 +792,7 @@ rclone delete --min-age 30d r2:bucket/backups/
   - `/knowledge` 页：列表视图（2列卡片网格，搜索/标签过滤，分页）+ 图谱视图（D3 force-directed，节点大小=degree，边颜色=relation_type，支持拖拽+缩放）+ 点击节点展示右侧详情侧边栏
   - 首页 header 新增"知识库/草稿/设置"导航链接
   - d3 + @types/d3 已加入 `services/web/package.json`
-  - "立即运行维护"按钮为 stub（第十二步实现）
+  - "立即运行维护"按钮调用 `POST /api/kb/maintenance/run`，后台触发三项维护任务
 - **第十步**：Obsidian 同步 ✅
   - `write_wiki_node(node_id, user_id)`：每次节点入库后，在 `build_similar_edges` 完成后异步写入 `user_data/{user_id}/wiki/nodes/{node_id}.md`（Obsidian 兼容 frontmatter + 双链格式）
   - `write_wiki_index(user_id)`：重建 `wiki/index.md`，按日期分组列出所有节点
@@ -815,6 +815,18 @@ rclone delete --min-age 30d r2:bucket/backups/
       schema.md       ← 知识库宪法
       templates/      ← 写作模板
     ```
+- **第十二步**：Maintenance Worker ✅
+  - `services/api/maintenance.py` 实现三项维护任务：
+    - **孤岛检测** `fix_islands()`：查找无任何边的节点（最多 20 个），找 top-3 相似节点（similarity > 0.55），调用 Claude Haiku 分析关系，confidence ≥ 0.70 则建边（created_by = 'auto_llm'）
+    - **补边** `supplement_edges()`：找仅有 similar_to 边且无 auto_llm 边的节点对（最多 20 对，按 weight DESC），LLM 分析是否存在更精确关系（excludes none/similar_to），confidence ≥ 0.70 则新增边
+    - **矛盾发现** `detect_contradictions()`：找 similar_to 边 weight 0.75~0.92 的节点对（最多 10 对），LLM 判断是否矛盾，confidence ≥ 0.75 则建 contradicts 边
+  - `analyze_relation()`：Claude Haiku 单次调用，返回 `{relation, direction, confidence}`，方向 a_to_b/b_to_a/symmetric
+  - `upsert_llm_edge()`：插入前检查 (from, to, type) 是否已存在，避免重复
+  - `run_maintenance(user_id)`：顺序执行三任务，返回汇总 dict；不调用 `database.init()`（API 模式已连接）
+  - `__main__` 入口：`database.init()` + `asyncio.run(run_maintenance())`，支持 Docker 独立运行
+  - `POST /api/kb/maintenance/run`（需认证）：从 stub 改为实际触发，`background_tasks.add_task(run_maintenance, USER_ID)`
+  - `/knowledge` 页"立即运行维护"按钮：从 stub 改为调用 API，显示"维护中…" → "维护已触发，后台运行中"
+  - LLM 模型：`claude-haiku-4-5-20251001`（低成本，每次维护最多调用 ~50 次）
 
 ### 现有目录结构
 
@@ -834,12 +846,14 @@ KnowledgeBase-S/
     │   ├── auth.py             # JWT（python-jose），单用户密码比对
     │   ├── database.py         # 建表（7张）+ jsonb() 辅助
     │   ├── scheduler.py        # 空壳
-    │   ├── maintenance.py      # 空壳
+    │   ├── maintenance.py      # 维护任务：fix_islands / supplement_edges / detect_contradictions
+    │   │                       # run_maintenance(user_id)；standalone: python maintenance.py
     │   └── routers/
     │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
     │       ├── kb.py           # /api/kb/ingest, search, node, nodes, graph, graph/all, memory
     │       │                   # wiki/rebuild, wiki/status（Obsidian 同步）
+    │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
     │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）

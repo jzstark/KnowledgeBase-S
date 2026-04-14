@@ -575,6 +575,8 @@ async def delete_memory(memory_id: int, _: dict = Depends(require_auth)):
 # ── 维护触发（空壳） ───────────────────────────────────────────────────────────
 
 @router.post("/maintenance/run")
-async def trigger_maintenance(_: dict = Depends(require_auth)):
-    """触发知识库维护（第十二步实现）。"""
+async def trigger_maintenance(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+    """触发知识库维护（孤岛检测 + 补边 + 矛盾发现），后台运行。"""
+    from maintenance import run_maintenance
+    background_tasks.add_task(run_maintenance, USER_ID)
     return {"status": "triggered"}

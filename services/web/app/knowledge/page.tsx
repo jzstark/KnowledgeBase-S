@@ -423,9 +423,22 @@ export default function KnowledgePage() {
     return () => simulation.stop();
   }
 
-  function handleMaintenance() {
-    setMaintenanceMsg("维护功能将在第十二步实现");
-    setTimeout(() => setMaintenanceMsg(""), 3000);
+  async function handleMaintenance() {
+    setMaintenanceMsg("维护中…");
+    try {
+      const r = await fetch("/api/kb/maintenance/run", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (r.ok) {
+        setMaintenanceMsg("维护已触发，后台运行中");
+      } else {
+        setMaintenanceMsg("触发失败，请重试");
+      }
+    } catch {
+      setMaintenanceMsg("网络错误");
+    }
+    setTimeout(() => setMaintenanceMsg(""), 4000);
   }
 
   return (
