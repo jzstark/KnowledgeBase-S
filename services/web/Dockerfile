@@ -13,7 +13,7 @@ CMD ["npm", "run", "dev"]
 FROM base AS builder
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN mkdir -p public && npm run build
 
 # 生产镜像
 FROM node:20-alpine AS runner
