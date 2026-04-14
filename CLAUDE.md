@@ -139,11 +139,11 @@ user_data/{user_id}/
 │       └── 2026-04-11-{title}.md # 生成的草稿
 │
 └── config/
-    ├── schema.md                 # Wiki 宪法，用户可编辑
-    ├── templates/
-    │   ├── 公众号推文.md          # 用户自定义模板，纯自然语言描述
-    │   └── 周报.md
-    └── settings.json             # 所有系统配置
+    ├── topics.md                 # 选题方向，用户可编辑（/instructions 页面）
+    ├── schema.md                 # 知识库宪法，用户可编辑（/instructions 页面，谨慎修改）
+    └── templates/
+        ├── 公众号推文.md          # 用户自定义模板，纯自然语言描述
+        └── 周报.md
 ```
 
 ### wiki/nodes/{node-id}.md 格式
@@ -752,15 +752,15 @@ rclone delete --min-age 30d r2:bucket/backups/
 7. ✅ **微信快捷指令**：push 端点 + 快捷指令模板生成
 8. ✅ **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
 9. ✅ **知识库浏览**：列表视图 + D3 图谱视图
-10. **Obsidian 同步**：单向 md 文件生成
-11. **备份 + 导出**：backup.sh + 导出功能
+10. ✅ **Obsidian 同步**：单向 md 文件生成
+11. ✅ **指令设置页 + 数据导出**：/instructions 页面（选题方向/模板/Schema）+ 导出 zip
 12. **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
 
 ---
 
-## 当前项目状态（2026-04-13）
+## 当前项目状态（2026-04-14）
 
-### 已完成：第一步 ~ 第九步
+### 已完成：第一步 ~ 第十一步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -793,6 +793,28 @@ rclone delete --min-age 30d r2:bucket/backups/
   - 首页 header 新增"知识库/草稿/设置"导航链接
   - d3 + @types/d3 已加入 `services/web/package.json`
   - "立即运行维护"按钮为 stub（第十二步实现）
+- **第十步**：Obsidian 同步 ✅
+  - `write_wiki_node(node_id, user_id)`：每次节点入库后，在 `build_similar_edges` 完成后异步写入 `user_data/{user_id}/wiki/nodes/{node_id}.md`（Obsidian 兼容 frontmatter + 双链格式）
+  - `write_wiki_index(user_id)`：重建 `wiki/index.md`，按日期分组列出所有节点
+  - `POST /api/kb/wiki/rebuild`（需认证）：后台重建全量 wiki 文件
+  - `GET /api/kb/wiki/status`（无需认证）：返回 `{synced_count, index_exists}`
+  - `/settings` 页新增 "Obsidian 同步" Section：显示同步状态 + "全量重建"按钮
+  - wiki 文件路径：`/app/user_data/{user_id}/wiki/nodes/{node_id}.md`（容器内，宿主机同路径通过 volume 共享）
+  - 用户可将 `user_data/default/wiki/` 目录设为 Obsidian vault 直接使用
+- **第十一步**：指令设置页 + 数据导出 ✅
+  - 新建 `/instructions` 页面，集中管理三类内容文档：选题方向 / 写作模板 / 知识库宪法（Schema）
+  - **选题方向**：改为文件存储 `config/topics.md`；`get_settings_dict()` 优先读文件，向后兼容 DB；`GET/PUT /api/settings/topics`
+  - **Schema.md**：全新实现，`GET/PUT /api/settings/schema`；默认内容包含分类体系/摘要规范/关系规则/准入标准/词汇表；文件不存在时返回默认内容（系统不中断）
+  - **数据导出**：`GET /api/settings/export`（需认证）→ `shutil.make_archive` 打包 `user_data/default/` → 返回 `knowledgebase-export.zip`
+  - `/settings` 页重构为"系统设置"：只保留流程节奏/偏好规则/Obsidian 同步/数据导出；选题方向和模板已迁出
+  - 首页导航新增"指令设置"链接
+  - 三类文档统一落在 `user_data/default/config/`，打包导出时一并包含：
+    ```
+    config/
+      topics.md       ← 选题方向
+      schema.md       ← 知识库宪法
+      templates/      ← 写作模板
+    ```
 
 ### 现有目录结构
 
@@ -817,8 +839,13 @@ KnowledgeBase-S/
     │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
     │       ├── kb.py           # /api/kb/ingest, search, node, nodes, graph, graph/all, memory
+    │       │                   # wiki/rebuild, wiki/status（Obsidian 同步）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
-    │       ├── settings.py     # GET/PUT /api/settings; GET/PUT/DELETE /api/settings/templates/:name
+    │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
+    │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
+    │       │                   # GET/PUT /api/settings/schema（知识库宪法，文件存储）
+    │       │                   # GET/PUT/DELETE /api/settings/templates/:name
+    │       │                   # GET /api/settings/export（打包下载 user_data zip）
     │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
     │                           # POST /api/drafts/:id/feedback（定稿提交 → feedback-worker）
     ├── feedback-worker/        # FastAPI + uvicorn（端口 8002）
@@ -850,7 +877,8 @@ KnowledgeBase-S/
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
             ├── knowledge/page.tsx    # 列表视图（搜索/过滤/分页）+ D3 图谱视图 + 详情侧边栏
-            └── settings/page.tsx     # 流程节奏 + 选题方向 + 模板管理 + 偏好规则
+            ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
+            └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
 ```
 
 ### 数据库表（7张）
@@ -863,7 +891,7 @@ KnowledgeBase-S/
 | `sources` | 订阅源配置 |
 | `drafts` | 草稿记录 |
 | `briefings` | 每日简报（按 user_id+date 唯一） |
-| `user_settings` | 用户设置（topics, briefing_hours_back 等） |
+| `user_settings` | 用户设置（briefing_hours_back, briefing_time 等；topics 已迁到 config/topics.md） |
 
 ### 关键约定
 

@@ -6,7 +6,6 @@ import Link from "next/link";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Settings {
-  topics: string;
   briefing_hours_back: number;
   briefing_time: string;
   maintenance_frequency: string;
@@ -40,28 +39,6 @@ function Section({
   );
 }
 
-// ── 保存按钮 ──────────────────────────────────────────────────────────────────
-
-function SaveButton({
-  onClick,
-  saving,
-  saved,
-}: {
-  onClick: () => void;
-  saving: boolean;
-  saved: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={saving}
-      className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-    >
-      {saving ? "保存中…" : saved ? "已保存" : "保存"}
-    </button>
-  );
-}
-
 // ── 置信度进度条 ──────────────────────────────────────────────────────────────
 
 function ConfidenceBar({ value }: { value: number }) {
@@ -90,7 +67,6 @@ const RULE_TYPE_LABELS: Record<string, string> = {
 export default function SettingsPage() {
   // ── 基本设置 ────────────────────────────────────────────────────────────────
   const [settings, setSettings] = useState<Settings>({
-    topics: "",
     briefing_hours_back: 24,
     briefing_time: "08:00",
     maintenance_frequency: "weekly",
@@ -98,22 +74,17 @@ export default function SettingsPage() {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
 
-  // ── 模板管理 ────────────────────────────────────────────────────────────────
-  const [templates, setTemplates] = useState<string[]>([]);
-  const [selectedTpl, setSelectedTpl] = useState<string>("");
-  const [tplContent, setTplContent] = useState("");
-  const [newTplName, setNewTplName] = useState("");
-  const [tplSaving, setTplSaving] = useState(false);
-  const [tplSaved, setTplSaved] = useState(false);
-  const [tplMsg, setTplMsg] = useState("");
-
   // ── 偏好规则 ────────────────────────────────────────────────────────────────
   const [rules, setRules] = useState<MemoryRule[]>([]);
   const [rulesLoading, setRulesLoading] = useState(true);
 
+  // ── Obsidian 同步 ────────────────────────────────────────────────────────────
+  const [wikiStatus, setWikiStatus] = useState<{ synced_count: number; index_exists: boolean } | null>(null);
+  const [wikiRebuilding, setWikiRebuilding] = useState(false);
+  const [wikiMsg, setWikiMsg] = useState("");
+
   // ── 初始加载 ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    // 设置
     fetch("/api/settings", { credentials: "include" })
       .then((r) => r.json())
       .then((d) => {
@@ -121,51 +92,13 @@ export default function SettingsPage() {
       })
       .catch(() => {});
 
-    // 模板列表
-    fetch("/api/settings/templates", { credentials: "include" })
-      .then((r) => r.json())
-      .then((list) => {
-        if (Array.isArray(list)) setTemplates(list);
-      })
-      .catch(() => {});
-
-    // 偏好规则
     loadRules();
+    loadWikiStatus();
   }, []);
 
-  async function loadRules() {
-    setRulesLoading(true);
-    try {
-      const r = await fetch("/api/kb/memory", { credentials: "include" });
-      if (r.ok) {
-        const data = await r.json();
-        if (Array.isArray(data)) setRules(data);
-      }
-    } finally {
-      setRulesLoading(false);
-    }
-  }
-
-  // ── 加载模板内容 ─────────────────────────────────────────────────────────────
-  async function loadTemplate(name: string) {
-    setSelectedTpl(name);
-    setTplMsg("");
-    if (!name) { setTplContent(""); return; }
-    try {
-      const r = await fetch(`/api/settings/templates/${encodeURIComponent(name)}`, {
-        credentials: "include",
-      });
-      if (r.ok) {
-        const d = await r.json();
-        setTplContent(d.content || "");
-      }
-    } catch { /* ignore */ }
-  }
-
-  // ── 保存设置 ────────────────────────────────────────────────────────────────
-  async function saveSettings() {
+  // ── 流程节奏 ─────────────────────────────────────────────────────────────────
+  async function saveSchedule() {
     setSettingsSaving(true);
-    setSettingsSaved(false);
     try {
       await fetch("/api/settings", {
         method: "PUT",
@@ -180,58 +113,59 @@ export default function SettingsPage() {
     }
   }
 
-  // ── 保存模板 ────────────────────────────────────────────────────────────────
-  async function saveTemplate() {
-    const name = selectedTpl || newTplName.trim();
-    if (!name) { setTplMsg("请选择或输入模板名称"); return; }
-    setTplSaving(true);
-    setTplSaved(false);
-    setTplMsg("");
+  // ── 偏好规则 ────────────────────────────────────────────────────────────────
+  async function loadRules() {
+    setRulesLoading(true);
     try {
-      const r = await fetch(`/api/settings/templates/${encodeURIComponent(name)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ content: tplContent }),
-      });
+      const r = await fetch("/api/kb/memory", { credentials: "include" });
       if (r.ok) {
-        setTplSaved(true);
-        setTimeout(() => setTplSaved(false), 2000);
-        if (!templates.includes(name)) {
-          setTemplates((prev) => [...prev, name].sort());
-          setSelectedTpl(name);
-          setNewTplName("");
-        }
-      } else {
-        const d = await r.json();
-        setTplMsg(d.detail || "保存失败");
+        const data = await r.json();
+        if (Array.isArray(data)) setRules(data);
       }
     } finally {
-      setTplSaving(false);
+      setRulesLoading(false);
     }
   }
 
-  // ── 删除模板 ────────────────────────────────────────────────────────────────
-  async function deleteTemplate() {
-    if (!selectedTpl) return;
-    if (!confirm(`确认删除模板「${selectedTpl}」？`)) return;
-    await fetch(`/api/settings/templates/${encodeURIComponent(selectedTpl)}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    setTemplates((prev) => prev.filter((t) => t !== selectedTpl));
-    setSelectedTpl("");
-    setTplContent("");
-  }
-
-  // ── 删除偏好规则 ─────────────────────────────────────────────────────────────
   async function deleteRule(id: number) {
-    await fetch(`/api/kb/memory/${id}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
+    await fetch(`/api/kb/memory/${id}`, { method: "DELETE", credentials: "include" });
     setRules((prev) => prev.filter((r) => r.id !== id));
   }
+
+  // ── Wiki 同步 ────────────────────────────────────────────────────────────────
+  async function loadWikiStatus() {
+    try {
+      const r = await fetch("/api/kb/wiki/status");
+      if (r.ok) setWikiStatus(await r.json());
+    } catch { /* ignore */ }
+  }
+
+  async function rebuildWiki() {
+    setWikiRebuilding(true);
+    setWikiMsg("");
+    try {
+      const r = await fetch("/api/kb/wiki/rebuild", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (r.ok) {
+        setWikiMsg("重建已触发，后台运行中…");
+        setTimeout(async () => {
+          await loadWikiStatus();
+          setWikiMsg("");
+          setWikiRebuilding(false);
+        }, 3000);
+      } else {
+        setWikiMsg("触发失败，请重试");
+        setWikiRebuilding(false);
+      }
+    } catch {
+      setWikiMsg("网络错误");
+      setWikiRebuilding(false);
+    }
+  }
+
+  // ── 渲染 ──────────────────────────────────────────────────────────────────────
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -239,7 +173,7 @@ export default function SettingsPage() {
 
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold text-gray-900">设置</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">系统设置</h1>
           <Link href="/" className="text-sm text-blue-600 hover:underline">← 返回首页</Link>
         </div>
 
@@ -269,83 +203,18 @@ export default function SettingsPage() {
               />
             </div>
             <div className="pt-1">
-              <SaveButton onClick={saveSettings} saving={settingsSaving} saved={settingsSaved} />
+              <button
+                onClick={saveSchedule}
+                disabled={settingsSaving}
+                className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              >
+                {settingsSaving ? "保存中…" : settingsSaved ? "已保存" : "保存"}
+              </button>
             </div>
           </div>
         </Section>
 
-        {/* ② 选题方向 */}
-        <Section title="选题方向">
-          <p className="text-xs text-gray-400 mb-2">
-            用自然语言描述你关注的领域，用于每日简报分类和草稿生成。
-          </p>
-          <textarea
-            value={settings.topics}
-            onChange={(e) => setSettings({ ...settings, topics: e.target.value })}
-            rows={3}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-none"
-            placeholder="例如：AI 行业动态、创业融资、产品设计"
-          />
-          <div className="mt-2">
-            <SaveButton onClick={saveSettings} saving={settingsSaving} saved={settingsSaved} />
-          </div>
-        </Section>
-
-        {/* ③ 写作模板 */}
-        <Section title="写作模板">
-          <p className="text-xs text-gray-400 mb-3">
-            模板是纯自然语言描述，告诉 AI「你想要什么样的文章」。
-          </p>
-
-          {/* 模板选择 */}
-          <div className="flex items-center gap-2 mb-3">
-            <select
-              value={selectedTpl}
-              onChange={(e) => loadTemplate(e.target.value)}
-              className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-400"
-            >
-              <option value="">-- 新建模板 --</option>
-              {templates.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            {selectedTpl && (
-              <button
-                onClick={deleteTemplate}
-                className="text-sm text-red-500 hover:text-red-700 px-2"
-              >
-                删除
-              </button>
-            )}
-          </div>
-
-          {/* 新建时输入名称 */}
-          {!selectedTpl && (
-            <input
-              type="text"
-              value={newTplName}
-              onChange={(e) => setNewTplName(e.target.value)}
-              placeholder="新模板名称（如：公众号推文）"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-400 mb-3"
-            />
-          )}
-
-          {/* 模板内容 */}
-          <textarea
-            value={tplContent}
-            onChange={(e) => setTplContent(e.target.value)}
-            rows={6}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-none font-mono"
-            placeholder="用自然语言描述你想要的文章风格、结构、长度等…"
-          />
-
-          <div className="mt-2 flex items-center gap-3">
-            <SaveButton onClick={saveTemplate} saving={tplSaving} saved={tplSaved} />
-            {tplMsg && <span className="text-xs text-red-500">{tplMsg}</span>}
-          </div>
-        </Section>
-
-        {/* ④ 偏好规则 */}
+        {/* ② 写作偏好规则 */}
         <Section title="写作偏好规则">
           <p className="text-xs text-gray-400 mb-3">
             由系统从你的定稿修改中自动学习。置信度 ≥ 80% 的规则会在生成草稿时自动应用。
@@ -373,9 +242,7 @@ export default function SettingsPage() {
                       <ConfidenceBar value={r.confidence} />
                       <span className="text-xs text-gray-400">出现 {r.count} 次</span>
                       {r.template_name && (
-                        <span className="text-xs text-blue-500">
-                          {r.template_name}
-                        </span>
+                        <span className="text-xs text-blue-500">{r.template_name}</span>
                       )}
                     </div>
                   </div>
@@ -390,6 +257,50 @@ export default function SettingsPage() {
               ))}
             </div>
           )}
+        </Section>
+
+        {/* ③ Obsidian 同步 */}
+        <Section title="Obsidian 同步">
+          <p className="text-xs text-gray-400 mb-3">
+            单向同步：将知识库节点写入{" "}
+            <code className="bg-gray-100 px-1 rounded">user_data/wiki/nodes/</code>
+            ，可将该目录作为 Obsidian vault 打开（支持双链与图谱视图）。
+            新节点入库时自动同步，此处可触发全量重建。
+          </p>
+
+          {wikiStatus && (
+            <div className="flex items-center gap-4 mb-3 text-sm text-gray-600">
+              <span>已同步节点：<strong>{wikiStatus.synced_count}</strong></span>
+              <span className={wikiStatus.index_exists ? "text-green-600" : "text-gray-400"}>
+                {wikiStatus.index_exists ? "✓ index.md 存在" : "× index.md 未生成"}
+              </span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={rebuildWiki}
+              disabled={wikiRebuilding}
+              className="text-sm px-4 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 disabled:opacity-50 transition-colors"
+            >
+              {wikiRebuilding ? "重建中…" : "全量重建"}
+            </button>
+            {wikiMsg && <span className="text-xs text-blue-600">{wikiMsg}</span>}
+          </div>
+        </Section>
+
+        {/* ④ 数据导出 */}
+        <Section title="数据导出">
+          <p className="text-xs text-gray-400 mb-3">
+            打包下载 user_data/ 目录，包含 wiki 文件、原始内容、配置（选题方向、写作模板、Schema）。
+            解压后 wiki/ 目录可直接作为 Obsidian vault 打开。
+          </p>
+          <a
+            href="/api/settings/export"
+            className="inline-block text-sm px-4 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors"
+          >
+            下载数据包
+          </a>
         </Section>
 
       </div>

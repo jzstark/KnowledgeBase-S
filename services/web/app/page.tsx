@@ -176,6 +176,7 @@ export default function BriefingPage() {
           <nav className="flex items-center gap-3 ml-2">
             <Link href="/knowledge" className="text-xs text-gray-500 hover:text-gray-900">知识库</Link>
             <Link href="/drafts" className="text-xs text-gray-500 hover:text-gray-900">草稿</Link>
+            <Link href="/instructions" className="text-xs text-gray-500 hover:text-gray-900">指令设置</Link>
             <Link href="/settings" className="text-xs text-gray-500 hover:text-gray-900">设置</Link>
           </nav>
           {briefing?.created_at && (

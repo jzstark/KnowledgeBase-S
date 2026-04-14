@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import secrets
 from collections import deque
 from typing import Any
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 
 import database
 from auth import require_auth
+
+USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -58,7 +61,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "is_primary": body.is_primary,
         },
     )
-    background_tasks.add_task(build_similar_edges, node_id, body.user_id)
+    background_tasks.add_task(build_similar_edges_and_wiki, node_id, body.user_id)
     return {"id": node_id}
 
 
@@ -91,6 +94,147 @@ async def build_similar_edges(node_id: str, user_id: str):
             """,
             {"from_id": node_id, "to_id": r["id"], "weight": sim},
         )
+
+
+async def build_similar_edges_and_wiki(node_id: str, user_id: str):
+    """先建相似边，再写 wiki 文件。"""
+    await build_similar_edges(node_id, user_id)
+    await write_wiki_node(node_id, user_id)
+
+
+# ── Obsidian Wiki 同步 ─────────────────────────────────────────────────────────
+
+async def write_wiki_node(node_id: str, user_id: str) -> None:
+    """将单个知识节点写入 wiki/nodes/{node_id}.md（Obsidian 兼容格式）。"""
+    row = await database.database.fetch_one(
+        """
+        SELECT id, title, summary, source_type, raw_ref, tags, created_at
+        FROM knowledge_nodes WHERE id = :id
+        """,
+        {"id": node_id},
+    )
+    if not row:
+        return
+
+    node = dict(row)
+
+    edges = await database.database.fetch_all(
+        "SELECT from_node_id, to_node_id, relation_type FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id",
+        {"id": node_id},
+    )
+
+    tags: list[str] = list(node["tags"]) if node["tags"] else []
+    created_at = node["created_at"].isoformat() if node["created_at"] else ""
+
+    raw_ref = node["raw_ref"]
+    if isinstance(raw_ref, str):
+        raw_ref = json.loads(raw_ref)
+    raw_ref_str = ""
+    if raw_ref:
+        if raw_ref.get("type") == "file":
+            raw_ref_str = raw_ref.get("path", "")
+        elif raw_ref.get("type") == "url":
+            raw_ref_str = raw_ref.get("url", "")
+
+    relations = []
+    for e in edges:
+        ed = dict(e)
+        other = ed["to_node_id"] if ed["from_node_id"] == node_id else ed["from_node_id"]
+        relations.append({"id": other, "type": ed["relation_type"]})
+
+    tags_yaml = "[" + ", ".join(tags) + "]"
+    relations_yaml = ""
+    if relations:
+        relations_yaml = "\nrelations:"
+        for rel in relations:
+            relations_yaml += f"\n  - id: {rel['id']}\n    type: {rel['type']}"
+
+    title = node["title"] or node_id
+    summary = node["summary"] or ""
+
+    content = f"""---
+id: {node_id}
+source_type: {node["source_type"] or ""}
+raw_ref: {raw_ref_str}
+tags: {tags_yaml}
+created_at: {created_at}{relations_yaml}
+---
+
+# {title}
+
+{summary}
+"""
+    if relations:
+        content += "\n## 关联节点\n"
+        for rel in relations:
+            content += f"- [[{rel['id']}]] · {rel['type']}\n"
+
+    wiki_dir = USER_DATA_DIR / user_id / "wiki" / "nodes"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")
+
+
+async def write_wiki_index(user_id: str) -> None:
+    """重新生成 wiki/index.md（按日期分组，列出所有节点）。"""
+    rows = await database.database.fetch_all(
+        """
+        SELECT id, title, source_type, tags, created_at
+        FROM knowledge_nodes WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        """,
+        {"user_id": user_id},
+    )
+
+    lines = ["# 知识库索引\n\n> 自动生成，请勿手动修改。\n\n"]
+    lines.append(f"共 **{len(rows)}** 个节点。\n")
+
+    current_date = None
+    for r in rows:
+        r = dict(r)
+        date_str = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else "未知"
+        if date_str != current_date:
+            current_date = date_str
+            lines.append(f"\n## {date_str}\n\n")
+        title = r["title"] or r["id"]
+        tags_str = " ".join(f"#{t}" for t in (r["tags"] or []))
+        lines.append(f"- [[nodes/{r['id']}|{title}]] {tags_str}\n")
+
+    wiki_dir = USER_DATA_DIR / user_id / "wiki"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    (wiki_dir / "index.md").write_text("".join(lines), encoding="utf-8")
+
+
+async def _do_rebuild_wiki(user_id: str) -> dict:
+    """重建全部 wiki 文件，返回统计信息。"""
+    rows = await database.database.fetch_all(
+        "SELECT id FROM knowledge_nodes WHERE user_id = :user_id",
+        {"user_id": user_id},
+    )
+    for r in rows:
+        await write_wiki_node(r["id"], user_id)
+    await write_wiki_index(user_id)
+    return {"rebuilt": len(rows)}
+
+
+@router.post("/wiki/rebuild")
+async def rebuild_wiki(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+    """触发全量重建 wiki/nodes/*.md 及 wiki/index.md，需要认证。"""
+    background_tasks.add_task(_do_rebuild_wiki, USER_ID)
+    return {"status": "rebuilding"}
+
+
+@router.get("/wiki/status")
+async def wiki_status():
+    """返回 wiki 目录中已生成的 .md 文件数量，无需认证。"""
+    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "nodes"
+    if not wiki_dir.exists():
+        return {"synced_count": 0, "index_exists": False}
+    md_files = list(wiki_dir.glob("*.md"))
+    index_path = USER_DATA_DIR / USER_ID / "wiki" / "index.md"
+    return {
+        "synced_count": len(md_files),
+        "index_exists": index_path.exists(),
+    }
 
 
 # ── 语义搜索 ───────────────────────────────────────────────────────────────────
