@@ -148,8 +148,8 @@ async def run_pipeline(source: BaseSource, source_config: dict):
             })
             logger.info(f"[{source_id}] 入库成功: {node_id} — {item.title}")
 
-            # 6. 生成 wiki/nodes/ md 文件
-            write_wiki_node(node_id, item, summary, tags, raw_ref)
+            # 6. 生成 wiki/nodes/ md 文件（正文为全量清洗后原文，非摘要）
+            write_wiki_node(node_id, item, text, tags, raw_ref)
 
         except Exception as e:
             logger.error(f"[{source_id}] 处理失败: {item.title} — {e}", exc_info=True)
@@ -158,8 +158,8 @@ async def run_pipeline(source: BaseSource, source_config: dict):
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
 
 
-def write_wiki_node(node_id: str, item: RawItem, summary: str, tags: list[str], raw_ref: dict):
-    """生成 wiki/nodes/{node_id}.md，兼容 Obsidian。"""
+def write_wiki_node(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict):
+    """生成 wiki/nodes/{node_id}.md，兼容 Obsidian。正文为全量清洗后原文，非摘要。"""
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "nodes"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +177,6 @@ created_at: {created}
 
 # {item.title or "（无标题）"}
 
-{summary}
+{text}
 """
     (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")

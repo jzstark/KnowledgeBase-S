@@ -160,7 +160,29 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
             relations_yaml += f"\n  - id: {rel['id']}\n    type: {rel['type']}"
 
     title = node["title"] or node_id
-    summary = node["summary"] or ""
+
+    wiki_dir = USER_DATA_DIR / user_id / "wiki" / "nodes"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    wiki_file = wiki_dir / f"{node_id}.md"
+
+    # 保留 pipeline 写入的全量正文，仅更新 frontmatter 和关联节点区块
+    existing_body = node["summary"] or ""  # 兜底：若文件不存在则用摘要
+    if wiki_file.exists():
+        raw_content = wiki_file.read_text(encoding="utf-8")
+        parts = raw_content.split("---", 2)
+        if len(parts) >= 3:
+            body_section = parts[2].strip()
+            # 去掉旧的关联节点区块
+            if "\n## 关联节点\n" in body_section:
+                body_section = body_section[:body_section.index("\n## 关联节点\n")].strip()
+            # 去掉首行的 "# 标题" 行，保留正文
+            lines = body_section.split("\n", 2)
+            if len(lines) >= 3:
+                existing_body = lines[2].strip()
+            elif len(lines) == 2:
+                existing_body = ""
+            else:
+                existing_body = body_section
 
     content = f"""---
 id: {node_id}
@@ -172,16 +194,14 @@ created_at: {created_at}{relations_yaml}
 
 # {title}
 
-{summary}
+{existing_body}
 """
     if relations:
         content += "\n## 关联节点\n"
         for rel in relations:
             content += f"- [[{rel['id']}]] · {rel['type']}\n"
 
-    wiki_dir = USER_DATA_DIR / user_id / "wiki" / "nodes"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-    (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")
+    wiki_file.write_text(content, encoding="utf-8")
 
 
 async def write_wiki_index(user_id: str) -> None:

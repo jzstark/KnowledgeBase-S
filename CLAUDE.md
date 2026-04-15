@@ -171,12 +171,14 @@ relations:
 
 # 文章标题
 
-[AI 生成的摘要内容]
+[全量清洁后原文内容 —— extract_text() 的输出，非 AI 摘要]
 
 ## 关联节点
 - [[node-xyz456]] · extends
 - [[node-def789]] · background_of
 ```
+
+**重要**：wiki 正文 = `extract_text()` 的完整输出（plaintext 直接读取，image 经 OCR+image_cleanup.md 清洗，pdf 经 PyMuPDF 提取，等等）。`summary` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见。wiki 生成完全自动，不受用户 config（schema.md、模板）控制。
 
 ### config/settings.json 结构
 
@@ -378,16 +380,19 @@ Headers: X-API-Token: {source.api_token}
 Source.fetch_new_items()
         ↓ RawItem 列表
 Source.extract_text()        ← 各类型自己实现
-        ↓ 纯文本
+        ↓ 纯文本（全量清洁后原文）
 保存原始文件到 raw/                    ← 永久存档
         ↓
-Claude API → 清洁文本 + 摘要 + 标签   ← 统一逻辑；摘要仅供内部索引，不对用户展示
+Claude API → summary + 标签            ← 仅内部使用；summary 存 DB 供 embedding，不写 wiki
         ↓
-Embedding API（基于 summary）         ← 统一逻辑
+Embedding API（基于 summary）          ← 统一逻辑
         ↓
-POST /api/kb/ingest                   ← 写入数据库 + 生成 wiki/nodes/{id}.md
+POST /api/kb/ingest                    ← 写入数据库（summary 存 DB）
+        ↓
+write_wiki_node()                      ← wiki 正文 = 全量原文（非 summary）
         ↓ 异步
 计算与现有节点的语义相似度 → 建 similar_to 边（阈值 > 0.75）
+→ 重写 wiki 文件（保留原文正文，仅更新 frontmatter + 关联节点区块）
 ```
 
 ---
@@ -862,6 +867,12 @@ rclone delete --min-age 30d r2:bucket/backups/
   - `ExplorerPanel` 组件：可折叠树，原始文件支持删除（✕ 按钮），md 文件点击后在右侧 `FilePanel` 查看/编辑
   - `FilePanel` 组件：查看（`<pre>` 展示）/ 编辑（textarea + 保存）两种模式，占据资源管理器右侧全部剩余空间
 
+- **修正：Wiki 正文改为全量原文** ✅
+  - `pipeline.py` `write_wiki_node()` 正文由 150 字 summary 改为 `extract_text()` 完整输出（`text`）
+  - `kb.py` `write_wiki_node()`（相似边建立后重写 wiki）改为读取已有文件保留正文，只更新 YAML 头和关联节点区块；若文件不存在则兜底用 summary
+  - summary 继续存入 DB 用于 embedding，完全不写入 wiki，用户不可见
+  - wiki 生成不受用户 config（schema.md、模板）控制，完全自动
+
 - **第十二步**：Maintenance Worker ✅
   - `services/api/maintenance.py` 实现三项维护任务：
     - **孤岛检测** `fix_islands()`：查找无任何边的节点（最多 20 个），找 top-3 相似节点（similarity > 0.55），调用 Claude Haiku 分析关系，confidence ≥ 0.70 则建边（created_by = 'auto_llm'）
@@ -919,7 +930,7 @@ KnowledgeBase-S/
     ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
     │   ├── requirements.txt    # 新增 fastapi, uvicorn[standard]
     │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
-    │   ├── pipeline.py         # extract→save_raw→summarize→embed→ingest→wiki
+    │   ├── pipeline.py         # extract→save_raw→summarize(内部)→embed→ingest→write_wiki(全量原文)
     │   └── sources/
     │       ├── base.py         # BaseSource + RawItem
     │       ├── rss.py          # RSSSource（subscription）✅
