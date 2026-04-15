@@ -6,6 +6,7 @@ Ingestion 流水线（所有 source 类型共用）：
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,8 +68,25 @@ def summarize(text: str) -> tuple[str, list[str]]:
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    data = json.loads(raw)
-    return data["summary"], data.get("tags", [])
+    raw = raw.strip()
+
+    # 先尝试严格解析
+    try:
+        data = json.loads(raw)
+        return data["summary"], data.get("tags", [])
+    except json.JSONDecodeError:
+        pass
+
+    # 降级：用正则分别提取 summary 和 tags，容忍摘要中含有未转义引号的情况
+    summary = ""
+    tags: list[str] = []
+    m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    if m:
+        summary = m.group(1)
+    m = re.search(r'"tags"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
+    if m:
+        tags = re.findall(r'"([^"]*)"', m.group(1))
+    return summary, tags
 
 
 async def embed(text: str) -> list[float]:
