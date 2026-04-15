@@ -343,6 +343,48 @@ async def get_node(node_id: str):
     }
 
 
+# ── 节点删除 ──────────────────────────────────────────────────────────────────
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(node_id: str, _: dict = Depends(require_auth)):
+    """删除节点：原始文件 + wiki 文件 + 边 + DB 记录。"""
+    row = await database.database.fetch_one(
+        "SELECT raw_ref, user_id FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+    if not row:
+        raise HTTPException(404, "节点不存在")
+
+    raw_ref = row["raw_ref"]
+    if isinstance(raw_ref, str):
+        raw_ref = json.loads(raw_ref)
+
+    # 删除原始文件
+    if raw_ref and raw_ref.get("path"):
+        raw_file = pathlib.Path(raw_ref["path"])
+        if raw_file.exists():
+            raw_file.unlink()
+
+    # 删除 wiki 节点文件
+    wiki_file = USER_DATA_DIR / (row["user_id"] or USER_ID) / "wiki" / "nodes" / f"{node_id}.md"
+    if wiki_file.exists():
+        wiki_file.unlink()
+
+    # 删除边
+    await database.database.execute(
+        "DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id",
+        {"id": node_id},
+    )
+
+    # 删除节点
+    await database.database.execute(
+        "DELETE FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+
+    return {"ok": True}
+
+
 # ── 图谱查询（BFS） ────────────────────────────────────────────────────────────
 
 @router.get("/graph")

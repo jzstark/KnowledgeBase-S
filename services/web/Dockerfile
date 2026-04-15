@@ -5,9 +5,11 @@ COPY package.json package-lock.json* ./
 
 # 开发阶段（docker-compose.dev.yml 指定 target: dev）
 FROM base AS dev
-RUN npm install
+RUN npm install && mv /app/node_modules /node_modules
+ENV NODE_PATH=/node_modules
+ENV PATH=/node_modules/.bin:$PATH
 COPY . .
-CMD ["npm", "run", "dev"]
+CMD ["next", "dev"]
 
 # 构建阶段
 FROM base AS builder

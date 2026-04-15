@@ -1,4 +1,8 @@
 services:
+  postgres:
+    volumes:
+      - postgres_dev:/var/lib/postgresql/data
+
   api:
     build:
       context: ./services/api
@@ -18,8 +22,7 @@ services:
       target: dev
     volumes:
       - ./services/web:/app
-      - /app/node_modules
-      - /app/.next
+      - web_next:/app/.next
     command: npm run dev
     ports:
       - "3000:3000"
@@ -67,3 +70,7 @@ services:
 
   watchtower:
     profiles: ["disabled"]
+
+volumes:
+  postgres_dev:
+  web_next:

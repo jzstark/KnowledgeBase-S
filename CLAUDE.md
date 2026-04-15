@@ -580,7 +580,12 @@ Source 卡片操作：
 
 **`/knowledge`**
 
-列表视图（默认）+ 图谱视图切换。图谱视图用 D3.js 渲染，节点大小表示关联数量，边颜色表示 relation_type。顶部有"立即运行维护"按钮。
+三种视图切换：列表视图（默认）、图谱视图、资源管理器视图。
+- 列表视图：2 列卡片网格，支持搜索/标签过滤/分页
+- 图谱视图：D3 力导向图，节点大小=degree，边颜色=relation_type，支持拖拽+缩放
+- 资源管理器视图：左侧可折叠树（原始文件/Wiki/配置模板），右侧文件内容查看/编辑面板；可删除原始文件（联动删除知识节点）、编辑 wiki md 和 config md
+
+顶部有"立即运行维护"按钮。
 
 **`/settings`**
 
@@ -847,6 +852,16 @@ rclone delete --min-age 30d r2:bucket/backups/
       schema.md       ← 知识库宪法
       templates/      ← 写作模板
     ```
+- **第十三步**：Explorer 资源管理器视图 + 文件管理 API ✅
+  - `/knowledge` 页新增第三视图"资源管理器"，左侧树 + 右侧内容面板布局
+  - `services/api/routers/files.py`（新文件）：
+    - `GET /api/files/tree`：扫描 `user_data/{user_id}/`，返回 raw（按 source type 分组，关联 node_id）/ wiki / config 三区树结构
+    - `GET /api/files/content?rel_path=...`：读取 wiki/ 或 config/ 下的 md 文件（路径遍历保护）
+    - `PUT /api/files/content`：写入 wiki/ 或 config/ 下的 md 文件
+  - `DELETE /api/kb/nodes/{node_id}`（新端点，需认证）：删除原始文件 + wiki node md + knowledge_edges + knowledge_nodes 记录
+  - `ExplorerPanel` 组件：可折叠树，原始文件支持删除（✕ 按钮），md 文件点击后在右侧 `FilePanel` 查看/编辑
+  - `FilePanel` 组件：查看（`<pre>` 展示）/ 编辑（textarea + 保存）两种模式，占据资源管理器右侧全部剩余空间
+
 - **第十二步**：Maintenance Worker ✅
   - `services/api/maintenance.py` 实现三项维护任务：
     - **孤岛检测** `fix_islands()`：查找无任何边的节点（最多 20 个），找 top-3 相似节点（similarity > 0.55），调用 Claude Haiku 分析关系，confidence ≥ 0.70 则建边（created_by = 'auto_llm'）
@@ -886,6 +901,9 @@ KnowledgeBase-S/
     │       ├── kb.py           # /api/kb/ingest, search, node, nodes, graph, graph/all, memory
     │       │                   # wiki/rebuild, wiki/status（Obsidian 同步）
     │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
+    │       │                   # DELETE /api/kb/nodes/{id}（删节点+原始文件+wiki文件+边）
+    │       ├── files.py        # GET /api/files/tree（目录树）
+    │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
     │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
@@ -909,9 +927,13 @@ KnowledgeBase-S/
     │       ├── file_base.py    # FileSourceMixin（文件型共用 fetch 逻辑）✅
     │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
     │       ├── pdf.py          # PDFSource（PyMuPDF）✅
-    │       ├── image.py        # ImageSource（Claude Vision）✅
+    │       ├── image.py        # ImageSource（Claude Vision + 高图切片 + AI 清洗）✅
+    │       │                   # 宽>7800px 等比缩小，高>7800px 按 7000px/200px重叠切片分段识别
+    │       │                   # 两步：① OCR 转录 ② Claude 清洗噪音（读 config/image_cleanup.md）
     │       ├── word.py         # WordSource（python-docx）✅
     │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
+    │   └── config/
+    │       └── image_cleanup.md  # 图片 OCR 后清洗 prompt（删 UI 噪音/保留正文/输出 Markdown）
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
     └── web/                    # Next.js 14 + Tailwind + dnd-kit + d3
@@ -923,6 +945,7 @@ KnowledgeBase-S/
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
             ├── knowledge/page.tsx    # 列表视图（搜索/过滤/分页）+ D3 图谱视图 + 详情侧边栏
+            │                         # + 资源管理器视图（ExplorerPanel + FilePanel）
             ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
             └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
 ```
@@ -955,8 +978,19 @@ KnowledgeBase-S/
   # 简报生成
   curl -X POST http://localhost/api/briefing/generate -b /tmp/kb_cookies.txt
   ```
+- **本地开发（Docker Desktop，无需 sudo）**：
+  - 首次或修改 Dockerfile 后：`make build-dev`（用 dev compose 覆盖构建，包含 `target: dev`）
+  - 日常启动：`make dev`
+  - Postgres 数据：使用 named volume `postgres_dev`（非 bind mount），避免 Docker Desktop 权限问题
+  - web node_modules：dev Dockerfile 将 `node_modules` 移至 `/node_modules`（容器根目录），不受 `./services/web:/app` bind mount 覆盖影响
+  - `.next` 构建缓存：named volume `web_next`，不污染宿主机目录
+  - 若 `next: not found`：说明用了旧缓存镜像，执行 `docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache web`
+
 - **web 新增 npm 包后**：
   1. 在宿主机 `services/web/` 下运行 `npm install --package-lock-only` 更新 `package-lock.json`，并提交到 git
-  2. 重建容器时必须加 `--no-cache`，否则 Docker 会复用旧的 npm install 层：
-     `sudo docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache web && sudo docker compose ... up -d web`
-  3. 直接在运行中容器内安装也可：`sudo docker compose ... exec web npm install`
+  2. 重建时加 `--no-cache`：`make build-dev` 或 `docker compose ... build --no-cache web`
+  3. 直接在运行中容器内安装也可：`docker compose ... exec web npm install`
+
+- **VPS（Aliyun HK）已知限制**：Anthropic API 对 AS45102（Alibaba Cloud HK）IP 段返回 403 "Request not allowed"。Claude API 调用（摘要、OCR、维护）全部失败。解决方案：迁移到新加坡/东京节点，或通过非受限地区代理转发 Anthropic API 流量（设置 `HTTPS_PROXY` 环境变量）。
+
+- **同日重复上传去重**：`file_base.py` 用 `batch_date < last_fetched_at.date()`（严格小于）过滤旧批次，同日新批次不跳过；`kb.py/ingest` 在写入前按 `raw_ref->>'path'` 去重，避免同一文件重复入库。

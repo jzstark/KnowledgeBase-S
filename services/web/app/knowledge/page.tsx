@@ -44,6 +44,32 @@ type SimLink = {
   id: number;
 };
 
+// ── 资源管理器类型 ────────────────────────────────────────────────────────────
+
+interface RawFile {
+  name: string;
+  rel_path: string;
+  size: number;
+  node_id: string | null;
+}
+
+interface MdFile {
+  name: string;
+  rel_path: string;
+}
+
+interface FileTree {
+  raw: Record<string, RawFile[]>;
+  wiki: MdFile[];
+  config: MdFile[];
+}
+
+interface OpenFile {
+  rel_path: string;
+  name: string;
+  writable: boolean;
+}
+
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
 const EDGE_COLORS: Record<string, string> = {
@@ -246,10 +272,313 @@ function ListPanel({
   );
 }
 
+// ── 资源管理器面板 ────────────────────────────────────────────────────────────
+
+const RAW_TYPE_LABELS: Record<string, string> = {
+  pdf: "PDF",
+  image: "图片",
+  wechat: "微信",
+  plaintext: "文本",
+  word: "Word",
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ExplorerPanel({
+  onOpenFile,
+  onDeleted,
+}: {
+  onOpenFile: (f: OpenFile) => void;
+  onDeleted: () => void;
+}) {
+  const [tree, setTree] = useState<FileTree | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["raw", "wiki", "config"]));
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  async function loadTree() {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/files/tree", { credentials: "include" });
+      if (r.ok) setTree(await r.json());
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadTree(); }, []);
+
+  function toggle(key: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  async function handleDelete(nodeId: string, name: string) {
+    if (!confirm(`确认删除「${name}」及其知识节点？此操作不可撤销。`)) return;
+    setDeleting(nodeId);
+    try {
+      const r = await fetch(`/api/kb/nodes/${nodeId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (r.ok) {
+        await loadTree();
+        onDeleted();
+      }
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  if (loading) {
+    return <div className="p-5 text-sm text-gray-400">加载中…</div>;
+  }
+  if (!tree) {
+    return <div className="p-5 text-sm text-red-400">加载失败</div>;
+  }
+
+  const chevron = (key: string) => (
+    <span className="text-gray-400 text-xs mr-1">{expanded.has(key) ? "▾" : "▸"}</span>
+  );
+
+  return (
+    <div className="h-full overflow-auto p-3 text-sm select-none">
+      {/* ── 原始文件 ── */}
+      <div>
+        <button
+          onClick={() => toggle("raw")}
+          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+        >
+          {chevron("raw")} 原始文件
+        </button>
+        {expanded.has("raw") && (
+          <div className="ml-3">
+            {Object.entries(tree.raw).map(([type, files]) => {
+              if (files.length === 0) return null;
+              const key = `raw-${type}`;
+              return (
+                <div key={type}>
+                  <button
+                    onClick={() => toggle(key)}
+                    className="flex items-center w-full text-left text-gray-500 py-0.5 hover:text-gray-700"
+                  >
+                    {chevron(key)}
+                    <span className="text-xs">{RAW_TYPE_LABELS[type] ?? type}</span>
+                    <span className="ml-1 text-xs text-gray-300">({files.length})</span>
+                  </button>
+                  {expanded.has(key) && (
+                    <div className="ml-3 space-y-0.5">
+                      {files.map((f) => (
+                        <div
+                          key={f.rel_path}
+                          className="flex items-center gap-1 group py-0.5"
+                        >
+                          <span className="flex-1 text-xs text-gray-600 truncate" title={f.name}>
+                            {f.name}
+                          </span>
+                          <span className="text-xs text-gray-300 shrink-0">
+                            {formatBytes(f.size)}
+                          </span>
+                          {f.node_id && (
+                            <button
+                              onClick={() => handleDelete(f.node_id!, f.name)}
+                              disabled={deleting === f.node_id}
+                              className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 ml-1"
+                              title="删除"
+                            >
+                              {deleting === f.node_id ? "…" : "✕"}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-gray-100 my-2" />
+
+      {/* ── Wiki ── */}
+      <div>
+        <button
+          onClick={() => toggle("wiki")}
+          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+        >
+          {chevron("wiki")} Wiki
+          <span className="ml-1 text-xs text-gray-300">({tree.wiki.length})</span>
+        </button>
+        {expanded.has("wiki") && (
+          <div className="ml-3 space-y-0.5">
+            {tree.wiki.map((f) => (
+              <button
+                key={f.rel_path}
+                onClick={() => onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true })}
+                className="flex items-center w-full text-left text-xs text-blue-600 hover:text-blue-800 py-0.5 truncate"
+                title={f.name}
+              >
+                📄 {f.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-gray-100 my-2" />
+
+      {/* ── 配置模板 ── */}
+      <div>
+        <button
+          onClick={() => toggle("config")}
+          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+        >
+          {chevron("config")} 配置模板
+          <span className="ml-1 text-xs text-gray-300">({tree.config.length})</span>
+        </button>
+        {expanded.has("config") && (
+          <div className="ml-3 space-y-0.5">
+            {tree.config.map((f) => (
+              <button
+                key={f.rel_path}
+                onClick={() => onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true })}
+                className="flex items-center w-full text-left text-xs text-blue-600 hover:text-blue-800 py-0.5 truncate"
+                title={f.name}
+              >
+                📄 {f.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── 文件内容面板 ──────────────────────────────────────────────────────────────
+
+function FilePanel({
+  file,
+  onClose,
+}: {
+  file: OpenFile;
+  onClose: () => void;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    setEditing(false);
+    setSaveMsg("");
+    fetch(`/api/files/content?rel_path=${encodeURIComponent(file.rel_path)}`, {
+      credentials: "include",
+    })
+      .then((r) => r.json())
+      .then((d) => setContent(d.content ?? ""))
+      .catch(() => setContent(null))
+      .finally(() => setLoading(false));
+  }, [file.rel_path]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const r = await fetch("/api/files/content", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rel_path: file.rel_path, content: draft }),
+      });
+      if (r.ok) {
+        setContent(draft);
+        setEditing(false);
+        setSaveMsg("已保存");
+        setTimeout(() => setSaveMsg(""), 2000);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <aside className="flex-1 border-l border-gray-200 bg-white flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 shrink-0">
+        <span className="flex-1 text-xs font-medium text-gray-700 truncate" title={file.name}>
+          {file.name}
+        </span>
+        {saveMsg && <span className="text-xs text-green-500">{saveMsg}</span>}
+        {file.writable && !editing && (
+          <button
+            onClick={() => { setDraft(content ?? ""); setEditing(true); }}
+            className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-0.5"
+          >
+            编辑
+          </button>
+        )}
+        {editing && (
+          <>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="text-xs text-white bg-gray-900 rounded px-2 py-0.5 disabled:opacity-40"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="text-xs text-gray-500 hover:text-gray-800"
+            >
+              取消
+            </button>
+          </>
+        )}
+        <button
+          onClick={onClose}
+          className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-1"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        {loading ? (
+          <div className="p-4 text-sm text-gray-400">加载中…</div>
+        ) : content === null ? (
+          <div className="p-4 text-sm text-red-400">加载失败</div>
+        ) : editing ? (
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="w-full h-full p-4 text-xs font-mono text-gray-800 resize-none outline-none"
+            spellCheck={false}
+          />
+        ) : (
+          <pre className="p-4 text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+            {content}
+          </pre>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function KnowledgePage() {
-  const [view, setView] = useState<"list" | "graph">("list");
+  const [view, setView] = useState<"list" | "graph" | "explorer">("list");
   const [maintenanceMsg, setMaintenanceMsg] = useState("");
 
   // 图谱状态
@@ -260,6 +589,10 @@ export default function KnowledgePage() {
   // 侧边栏详情
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // 资源管理器状态
+  const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  const [explorerKey, setExplorerKey] = useState(0); // 删除后刷新树
 
   // 切到图谱视图时加载数据
   useEffect(() => {
@@ -468,6 +801,16 @@ export default function KnowledgePage() {
             >
               图谱
             </button>
+            <button
+              onClick={() => { setView("explorer"); setDetail(null); }}
+              className={
+                view === "explorer"
+                  ? "px-3 py-1 bg-gray-900 text-white"
+                  : "px-3 py-1 text-gray-600 hover:bg-gray-50"
+              }
+            >
+              资源管理器
+            </button>
           </div>
         </div>
         <button
@@ -478,14 +821,25 @@ export default function KnowledgePage() {
         </button>
       </header>
 
-      {/* 主体：内容区 + 详情侧边栏 */}
+      {/* 主体：内容区 + 侧边栏 */}
       <div className="flex flex-1 min-h-0">
+        {/* 资源管理器：左侧树 */}
+        {view === "explorer" && (
+          <div className="w-72 shrink-0 border-r border-gray-200 bg-white overflow-hidden">
+            <ExplorerPanel
+              key={explorerKey}
+              onOpenFile={(f) => setOpenFile(f)}
+              onDeleted={() => setExplorerKey((k) => k + 1)}
+            />
+          </div>
+        )}
+
         {/* 内容区 */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden flex">
           {view === "list" ? (
             <ListPanel onSelectNode={loadDetail} selectedId={detail?.id} />
-          ) : (
-            <div className="relative h-full">
+          ) : view === "graph" ? (
+            <div className="relative flex-1 h-full">
               {graphLoading && (
                 <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm z-10 bg-white/60">
                   加载图谱中…
@@ -493,11 +847,17 @@ export default function KnowledgePage() {
               )}
               <svg ref={svgRef} className="w-full h-full" />
             </div>
+          ) : openFile ? (
+            <FilePanel file={openFile} onClose={() => setOpenFile(null)} />
+          ) : (
+            <div className="flex-1 h-full flex items-center justify-center text-sm text-gray-400">
+              从左侧选择文件查看内容
+            </div>
           )}
         </div>
 
-        {/* 详情侧边栏 */}
-        {(detail || detailLoading) && (
+        {/* 详情侧边栏（列表/图谱视图） */}
+        {view !== "explorer" && (detail || detailLoading) && (
           <aside className="w-80 shrink-0 border-l border-gray-200 bg-white overflow-auto">
             {detailLoading ? (
               <div className="p-5 text-sm text-gray-400">加载中…</div>
@@ -580,6 +940,7 @@ export default function KnowledgePage() {
             ) : null}
           </aside>
         )}
+
       </div>
     </main>
   );

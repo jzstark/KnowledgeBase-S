@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
-from routers import briefing, drafts, kb, settings, sources
+from routers import briefing, drafts, files, kb, settings, sources
 
 
 @asynccontextmanager
@@ -28,6 +28,7 @@ app.add_middleware(
 
 app.include_router(sources.router)
 app.include_router(kb.router)
+app.include_router(files.router)
 app.include_router(briefing.router)
 app.include_router(settings.router)
 app.include_router(drafts.router)
