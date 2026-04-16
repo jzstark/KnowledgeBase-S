@@ -26,21 +26,16 @@ class FileSourceMixin(BaseSource):
         items: list[RawItem] = []
 
         for batch in self.uploads:
-            batch_date_str: str = batch.get("date", "")
-            # 跳过已处理的批次（上传日期 <= last_fetched_at 的日期部分）
-            if last_fetched_at and batch_date_str:
-                try:
-                    from datetime import date
-                    batch_date = date.fromisoformat(batch_date_str)
-                    if batch_date < last_fetched_at.date():
-                        continue
-                except ValueError:
-                    pass  # 日期格式异常时不过滤，保守处理
-
             for abs_path in batch.get("files", []):
                 p = Path(abs_path)
                 if not p.exists():
                     continue
+
+                # 用文件 mtime 判断是否已处理（比批次日期更精确，避免同日重复入库）
+                if last_fetched_at:
+                    file_mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                    if file_mtime <= last_fetched_at:
+                        continue
 
                 item = RawItem(
                     source_id=self.source_id,
