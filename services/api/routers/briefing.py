@@ -7,7 +7,9 @@ PATCH /api/briefing/topics/{id}      — 更新选题状态（selected / skipped
 """
 
 import json
+import logging
 import os
+import re
 import secrets
 from datetime import date, datetime, timedelta
 
@@ -24,6 +26,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
+BATCH_SIZE = 15  # 每批最多发送给 Claude 的节点数，控制每次调用的 token 消耗
 
 
 # ── 获取今日选题 ─────────────────────────────────────────────────────────────
@@ -69,112 +72,143 @@ async def get_briefing(target_date: str | None = Query(default=None)):
 
 @router.post("/generate")
 async def generate_briefing(_: dict = Depends(require_auth)):
-    """立即生成今日选题：取最近 N 小时入库的节点 → Claude 生成写作角度 → 存库。"""
+    """立即生成今日选题（增量式）：
+    - 首次：取最近 N 小时的节点全量生成
+    - 再次按下：只处理上次生成后新入库的节点，追加到已有选题
+    - 无新节点：直接返回已有选题，不调用 Claude
+    """
     settings = await get_settings_dict()
     hours_back = int(settings.get("briefing_hours_back", 24))
     topics_setting = settings.get("topics", "")
+    today = date.today()
 
-    # 1. 取最近 N 小时的主要节点
-    since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
+    # 查询今日是否已有选题，有则只处理更新的节点
+    last_topic = await database.database.fetch_one(
+        "SELECT created_at FROM topics WHERE user_id = :user_id AND date = :date"
+        " ORDER BY created_at DESC LIMIT 1",
+        {"user_id": USER_ID, "date": today},
+    )
+
+    if last_topic:
+        # 增量：只取上次生成之后新入库的节点
+        since_dt = last_topic["created_at"]
+        node_cutoff = f"created_at > '{since_dt.strftime('%Y-%m-%d %H:%M:%S')}'::timestamptz"
+    else:
+        # 今日首次生成：取最近 N 小时
+        since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
+        node_cutoff = f"created_at >= '{since}'::timestamptz"
+
     rows = await database.database.fetch_all(
         f"""
         SELECT id, title, summary, tags, created_at
         FROM knowledge_nodes
         WHERE user_id = :user_id
           AND is_primary = true
-          AND created_at >= '{since}'::timestamptz
+          AND {node_cutoff}
         ORDER BY created_at DESC
         """,
         {"user_id": USER_ID},
     )
 
-    today = date.today()
+    if rows:
+        node_list = [
+            {
+                "id": r["id"],
+                "title": r["title"] or "",
+                "summary": r["summary"] or "",
+                "tags": list(r["tags"] or []),
+            }
+            for r in rows
+        ]
+        generated = await _generate_topics(node_list, topics_setting)
+        for t in generated:
+            topic_id = f"topic_{secrets.token_hex(6)}"
+            await database.database.execute(
+                """
+                INSERT INTO topics (id, user_id, date, title, description, source_node_ids)
+                VALUES (:id, :user_id, :date, :title, :description, :source_node_ids)
+                """,
+                {
+                    "id": topic_id,
+                    "user_id": USER_ID,
+                    "date": today,
+                    "title": t["title"],
+                    "description": t.get("description", ""),
+                    "source_node_ids": t.get("resolved_node_ids", []),
+                },
+            )
 
-    # 先清除今日已有选题
-    await database.database.execute(
-        "DELETE FROM topics WHERE user_id = :user_id AND date = :date",
+    # 返回今日全部选题（已有 + 新增）
+    return await _fetch_today(today)
+
+
+async def _fetch_today(today: date) -> dict:
+    """返回指定日期的全部选题（格式与 GET /api/briefing 一致）。"""
+    rows = await database.database.fetch_all(
+        "SELECT * FROM topics WHERE user_id = :user_id AND date = :date ORDER BY created_at ASC",
         {"user_id": USER_ID, "date": today},
     )
-
-    if not rows:
-        return {"date": str(today), "topics": [], "generated": True}
-
-    node_list = [
+    topics = [
         {
             "id": r["id"],
-            "title": r["title"] or "",
-            "summary": r["summary"] or "",
-            "tags": list(r["tags"] or []),
+            "title": r["title"],
+            "description": r["description"],
+            "source_count": len(r["source_node_ids"] or []),
+            "source_node_ids": list(r["source_node_ids"] or []),
+            "status": r["status"],
+            "created_at": r["created_at"].isoformat(),
         }
         for r in rows
     ]
-
-    # 2. Claude 生成选题
-    generated_topics = await _generate_topics(node_list, topics_setting)
-
-    # 3. 存库
-    result = []
-    for t in generated_topics:
-        topic_id = f"topic_{secrets.token_hex(6)}"
-        source_ids = [
-            node_list[i - 1]["id"]
-            for i in t.get("source_indices", [])
-            if 1 <= i <= len(node_list)
-        ]
-        await database.database.execute(
-            """
-            INSERT INTO topics (id, user_id, date, title, description, source_node_ids)
-            VALUES (:id, :user_id, :date, :title, :description, :source_node_ids)
-            """,
-            {
-                "id": topic_id,
-                "user_id": USER_ID,
-                "date": today,
-                "title": t["title"],
-                "description": t.get("description", ""),
-                "source_node_ids": source_ids,
-            },
-        )
-        result.append({
-            "id": topic_id,
-            "title": t["title"],
-            "description": t.get("description", ""),
-            "source_count": len(source_ids),
-            "source_node_ids": source_ids,
-            "status": "pending",
-        })
-
-    return {"date": str(today), "topics": result, "generated": True}
+    return {"date": str(today), "topics": topics, "generated": True}
 
 
-async def _generate_topics(nodes: list[dict], topics_setting: str) -> list[dict]:
-    """用 Claude 基于今日原文生成写作选题角度，返回 [{title, description, source_indices}]。"""
-    if not nodes:
-        return []
-
+async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list[dict]:
+    """单批次 Claude 调用（≤ BATCH_SIZE 个节点）。
+    返回 [{title, description, resolved_node_ids}]，source_indices 已转换为实际 node ID。
+    """
     summaries = "\n".join(
         f"[{i+1}] {n['title']}：{n['summary'][:150]}"
-        for i, n in enumerate(nodes)
+        for i, n in enumerate(batch)
     )
-
     prompt = prompt_loader.fill(
         "briefing_topics",
         topics_setting=topics_setting,
         summaries=summaries,
     )
-
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
+        max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = message.content[0].text.strip()
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+    if message.stop_reason == "max_tokens":
+        logging.getLogger(__name__).warning(
+            "[briefing] Claude hit max_tokens in batch (batch size: %d)", len(batch)
+        )
 
-    return json.loads(raw)
+    raw = message.content[0].text.strip()
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if m:
+        raw = m.group(0)
+    parsed = json.loads(raw)
+
+    # 将批次内 1-based 索引转换为实际 node ID
+    for t in parsed:
+        t["resolved_node_ids"] = [
+            batch[i - 1]["id"]
+            for i in t.get("source_indices", [])
+            if 1 <= i <= len(batch)
+        ]
+    return parsed
+
+
+async def _generate_topics(nodes: list[dict], topics_setting: str) -> list[dict]:
+    """将节点按 BATCH_SIZE 分批，逐批调用 Claude，合并所有选题。"""
+    all_topics: list[dict] = []
+    for start in range(0, len(nodes), BATCH_SIZE):
+        batch = nodes[start : start + BATCH_SIZE]
+        all_topics.extend(await _generate_topics_batch(batch, topics_setting))
+    return all_topics
 
 
 # ── 更新选题状态 ──────────────────────────────────────────────────────────────
