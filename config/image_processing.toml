@@ -1,0 +1,16 @@
+# Image processing configuration for the ingestion worker.
+# Edit this file to tune OCR behaviour; restart ingestion-worker to apply.
+
+# Maximum width in pixels before the image is proportionally scaled down.
+# Reduces token cost for wide/landscape images. Has no effect on slim images.
+max_dim = 7800
+
+# Height at which a tall image is split into tiles for separate OCR calls.
+# Tiles overlap by `overlap` pixels to avoid cutting text at boundaries.
+tile_h = 7000
+overlap = 200
+
+# Proportional scale applied to every image/tile just before sending to Claude.
+# 1.0 = no scaling; 0.5 = half width and height (1/4 the pixels, 75% token saving).
+# Decrease if token cost is high; increase if OCR misses small text.
+tile_scale = 0.5

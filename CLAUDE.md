@@ -83,7 +83,8 @@ repo-root/
 ├── deploy.sh                    # 一键部署脚本
 ├── Makefile                     # make dev / make deploy / make backup
 ├── config/
-│   └── prompts.md               # 所有 LLM 内部提示词（开发者编辑，重启容器生效）
+│   ├── prompts.md               # 所有 LLM 内部提示词（开发者编辑，重启容器生效）
+│   └── image_processing.toml   # 图片处理参数（max_dim/tile_h/overlap/tile_scale）
 ├── nginx/
 │   └── nginx.conf
 ├── scripts/
@@ -357,7 +358,7 @@ class RawItem:
 |------|-----------|---------|-------------|
 | `url` | `manual` | 用户添加 URL，可随时追加 | trafilatura 提取正文 |
 | `pdf` | `manual` | 用户上传文件，支持批量、可随时追加 | PyMuPDF 提取文本 |
-| `image` | `manual` | 用户上传文件，支持批量、可随时追加 | Claude Vision → 文本描述 |
+| `image` | `manual` | 用户上传文件，支持批量、可随时追加 | Claude Vision OCR（两步：转录 + 清洗）|
 | `plaintext` | `manual` | 用户上传文件，支持批量、可随时追加 | 直接读取 |
 | `word` | `manual` | 用户上传文件，支持批量、可随时追加 | python-docx 提取 |
 
@@ -901,10 +902,14 @@ KnowledgeBase-S/
 ├── .env.example                # 含 OPENAI_API_KEY
 ├── Makefile / deploy.sh
 ├── config/
-│   └── prompts.md              # 所有内部 LLM 提示词（开发者编辑，重启容器生效）
-│                               # 6个 section：image_ocr / image_cleanup / pdf_cleanup /
-│                               # summarize / feedback_analysis / briefing_topics
-│                               # 动态占位符用 <<<key>>> 语法，由 prompt_loader.fill() 替换
+│   ├── prompts.md              # 所有内部 LLM 提示词（开发者编辑，重启容器生效）
+│   │                           # 6个 section：image_ocr / image_cleanup / pdf_cleanup /
+│   │                           # summarize / feedback_analysis / briefing_topics
+│   │                           # 动态占位符用 <<<key>>> 语法，由 prompt_loader.fill() 替换
+│   └── image_processing.toml  # 图片处理参数（开发者编辑，重启容器生效）：
+│                               # max_dim=7800（宽度安全上限）
+│                               # tile_h=7000（切片高度）、overlap=200（切片重叠）
+│                               # tile_scale=0.5（发送前等比缩放，控制 token 消耗）
 ├── nginx/nginx.conf
 ├── scripts/backup.sh, restore.sh
 └── services/
@@ -956,9 +961,13 @@ KnowledgeBase-S/
     │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
     │       ├── pdf.py          # PDFSource（PyMuPDF + Claude Haiku 清洗）✅
     │       │                   # 两步：① PyMuPDF 提取 ② Claude 清洗噪音（pdf_cleanup 提示词）
-    │       ├── image.py        # ImageSource（Claude Vision + 高图切片 + AI 清洗）✅
-    │       │                   # 宽>7800px 等比缩小，高>7800px 按 7000px/200px重叠切片分段识别
+    │       ├── image.py        # ImageSource（Claude Vision OCR + AI 清洗）✅
+    │       │                   # 尺寸处理（参数从 config/image_processing.toml 读取）：
+    │       │                   #   宽>MAX_DIM(7800) → 等比缩小（安全兜底）
+    │       │                   #   高>MAX_DIM(7800) → 按 TILE_H(7000)/OVERLAP(200) 切片分段识别
+    │       │                   #   每片/整图发送前按 TILE_SCALE(0.5) 等比缩放降低 token 消耗
     │       │                   # 两步：① OCR 转录（image_ocr 提示词）② Claude 清洗（image_cleanup 提示词）
+    │       │                   # 异常用 logger.exception() 记录，不静默吞掉
     │       ├── word.py         # WordSource（python-docx）✅
     │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
     ├── summarizer-worker/
@@ -1021,4 +1030,4 @@ KnowledgeBase-S/
 
 - **VPS（Aliyun HK）已知限制**：Anthropic API 对 AS45102（Alibaba Cloud HK）IP 段返回 403 "Request not allowed"。Claude API 调用（摘要、OCR、维护）全部失败。解决方案：迁移到新加坡/东京节点，或通过非受限地区代理转发 Anthropic API 流量（设置 `HTTPS_PROXY` 环境变量）。
 
-- **同日重复上传去重**：`file_base.py` 用 `batch_date < last_fetched_at.date()`（严格小于）过滤旧批次，同日新批次不跳过；`kb.py/ingest` 在写入前按 `raw_ref->>'path'` 去重，避免同一文件重复入库。
+- **文件去重**：`file_base.py` 用文件 mtime 与 `last_fetched_at` 比较（`mtime <= last_fetched_at` 则跳过），精确到秒，避免同日重复处理；`kb.py/ingest` 在写入前按 `raw_ref->>'path'` 去重，避免同一文件重复入库。

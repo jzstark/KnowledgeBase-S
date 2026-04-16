@@ -1,13 +1,19 @@
 """
-Image Source — 使用 Claude Vision 生成图片内容的文字描述。
+Image Source — 使用 Claude Vision 进行 OCR，两步处理：
+  1. _call_claude()：用 image_ocr 提示词转录图片文字
+  2. _cleanup()：用 image_cleanup 提示词清洗界面噪音，保留正文
 
-对于高度超过 7800px 的长图，自动切片后分段识别，避免缩放导致文字模糊。
-OCR 完成后，调用第二次 Claude 对原始文字进行清洗（去除界面噪音、保留正文）。
+尺寸处理（参数见 config/image_processing.toml）：
+  - 宽度超过 MAX_DIM 时等比缩小（安全兜底，极少触发）
+  - 高度超过 MAX_DIM 时按 TILE_H 切片（含 OVERLAP 重叠），逐片识别后拼接
+  - 每片/整图在发送前用 TILE_SCALE 等比缩放，降低 token 消耗
 """
 
 import base64
 import io
+import logging
 import os
+import tomllib
 from pathlib import Path
 
 import anthropic
@@ -25,11 +31,27 @@ _MEDIA_TYPES = {
     ".webp": "image/webp",
 }
 
-MAX_DIM = 7800   # Claude 单边像素上限
-TILE_H  = 7000   # 每个切片的高度
-OVERLAP = 200    # 相邻切片的重叠像素，避免截断行内文字
+_CFG_PATH = Path("/app/shared_config/image_processing.toml")
+_cfg: dict = {}
+if _CFG_PATH.exists():
+    with open(_CFG_PATH, "rb") as _f:
+        _cfg = tomllib.load(_f)
+
+MAX_DIM    = int(_cfg.get("max_dim",    7800))
+TILE_H     = int(_cfg.get("tile_h",    7000))
+OVERLAP    = int(_cfg.get("overlap",    200))
+TILE_SCALE = float(_cfg.get("tile_scale", 0.5))
 
 _claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
+
+
+def _scale_for_api(img: Image.Image) -> Image.Image:
+    """发送前等比缩放，降低 token 消耗。TILE_SCALE=1.0 时跳过。"""
+    if TILE_SCALE >= 1.0:
+        return img
+    new_w = max(1, int(img.width * TILE_SCALE))
+    new_h = max(1, int(img.height * TILE_SCALE))
+    return img.resize((new_w, new_h), Image.LANCZOS)
 
 
 def _image_to_b64(img: Image.Image, media_type: str) -> str:
@@ -86,7 +108,7 @@ class ImageSource(FileSourceMixin):
             img = Image.open(p)
             w, h = img.size
 
-            # 若宽度超限则等比缩小宽度（保留全高，后续按高度切片）
+            # 宽度超过硬上限时等比缩小（安全兜底，极少触发）
             if w > MAX_DIM:
                 scale = MAX_DIM / w
                 img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
@@ -94,7 +116,7 @@ class ImageSource(FileSourceMixin):
 
             # 图片足够小，直接发送
             if h <= MAX_DIM:
-                b64 = _image_to_b64(img, media_type)
+                b64 = _image_to_b64(_scale_for_api(img), media_type)
                 raw_text = _call_claude(b64, media_type)
             else:
                 # 高图切片处理
@@ -104,7 +126,7 @@ class ImageSource(FileSourceMixin):
                 for i, y0 in enumerate(starts):
                     y1 = min(y0 + TILE_H, h)
                     tile = img.crop((0, y0, w, y1))
-                    b64 = _image_to_b64(tile, media_type)
+                    b64 = _image_to_b64(_scale_for_api(tile), media_type)
                     text = _call_claude(b64, media_type, f"第{i+1}段，共{total}段")
                     parts.append(text)
                 raw_text = "\n\n".join(parts)
@@ -112,4 +134,5 @@ class ImageSource(FileSourceMixin):
             return _cleanup(raw_text)
 
         except Exception:
+            logging.getLogger(__name__).exception(f"[image] extract_text failed: {path}")
             return ""
