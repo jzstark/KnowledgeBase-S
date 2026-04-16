@@ -84,6 +84,67 @@ function SortableCard({
   );
 }
 
+// ── 可展开的选题卡片 ──────────────────────────────────────────────────────────
+
+function TopicCard({
+  topic,
+  isSelected,
+  isSkipped,
+  onSelect,
+  onSkip,
+}: {
+  topic: Topic;
+  isSelected: boolean;
+  isSkipped: boolean;
+  onSelect: () => void;
+  onSkip: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      className={`rounded-lg border p-3 transition-opacity ${
+        isSkipped ? "opacity-30" : "opacity-100"
+      } ${isSelected ? "border-gray-900 bg-gray-50" : "border-gray-200 bg-white"}`}
+    >
+      <button
+        className="w-full text-left"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <p className="text-sm font-medium text-gray-900 leading-snug mb-1">
+          {topic.title}
+          <span className="ml-1 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
+        </p>
+        {topic.description && (
+          <p className={`text-xs text-gray-500 mb-2 ${expanded ? "" : "line-clamp-2"}`}>
+            {topic.description}
+          </p>
+        )}
+      </button>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-gray-300">{topic.source_count} 篇来源</span>
+        {!isSkipped && !isSelected && (
+          <div className="flex gap-1 shrink-0">
+            <button
+              onClick={onSelect}
+              className="text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-gray-700"
+            >
+              选入
+            </button>
+            <button
+              onClick={onSkip}
+              className="text-xs px-2 py-0.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
+            >
+              跳过
+            </button>
+          </div>
+        )}
+        {isSelected && <span className="text-xs text-gray-400">已选</span>}
+      </div>
+    </div>
+  );
+}
+
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function BriefingPage() {
@@ -211,49 +272,16 @@ export default function BriefingPage() {
             ) : briefing.topics.length === 0 ? (
               <p className="text-sm text-gray-400 text-center pt-8">今日暂无新内容</p>
             ) : (
-              briefing.topics.map((topic) => {
-                const isSelected = selected.some((t) => t.id === topic.id);
-                const isSkipped = skipped.has(topic.id);
-                return (
-                  <div
-                    key={topic.id}
-                    className={`rounded-lg border p-3 transition-opacity ${
-                      isSkipped ? "opacity-30" : "opacity-100"
-                    } ${isSelected ? "border-gray-900 bg-gray-50" : "border-gray-200 bg-white"}`}
-                  >
-                    <p className="text-sm font-medium text-gray-900 leading-snug mb-1">
-                      {topic.title}
-                    </p>
-                    {topic.description && (
-                      <p className="text-xs text-gray-500 line-clamp-2 mb-2">{topic.description}</p>
-                    )}
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-300">
-                        {topic.source_count} 篇来源
-                      </span>
-                      {!isSkipped && !isSelected && (
-                        <div className="flex gap-1 shrink-0">
-                          <button
-                            onClick={() => selectTopic(topic)}
-                            className="text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-gray-700"
-                          >
-                            选入
-                          </button>
-                          <button
-                            onClick={() => skipTopic(topic.id)}
-                            className="text-xs px-2 py-0.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
-                          >
-                            跳过
-                          </button>
-                        </div>
-                      )}
-                      {isSelected && (
-                        <span className="text-xs text-gray-400">已选</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+              briefing.topics.map((topic) => (
+                <TopicCard
+                  key={topic.id}
+                  topic={topic}
+                  isSelected={selected.some((t) => t.id === topic.id)}
+                  isSkipped={skipped.has(topic.id)}
+                  onSelect={() => selectTopic(topic)}
+                  onSkip={() => skipTopic(topic.id)}
+                />
+              ))
             )}
           </div>
         </div>
@@ -304,14 +332,24 @@ export default function BriefingPage() {
 
 // ── 右栏：草稿生成面板 ─────────────────────────────────────────────────────────
 
-const TEMPLATES = [
-  { value: "default", label: "默认模板" },
-  { value: "公众号推文", label: "公众号推文" },
-  { value: "周报", label: "周报" },
-];
-
 function DraftPanel({ selected }: { selected: Topic[] }) {
   const [template, setTemplate] = useState("default");
+  const [templates, setTemplates] = useState<{ value: string; label: string }[]>([
+    { value: "default", label: "默认模板" },
+  ]);
+
+  useEffect(() => {
+    fetch("/api/files/tree")
+      .then((r) => r.json())
+      .then((data) => {
+        const custom = (data.config as { name: string; rel_path: string }[]).map((f) => {
+          const name = f.name.replace(/\.(md|txt)$/, "");
+          return { value: name, label: name };
+        });
+        setTemplates([{ value: "default", label: "默认模板" }, ...custom]);
+      })
+      .catch(() => {});
+  }, []);
   const [drafting, setDrafting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [draft, setDraft] = useState<string | null>(null);
@@ -368,7 +406,7 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
           className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-700
                      focus:outline-none focus:ring-1 focus:ring-gray-400 disabled:opacity-40"
         >
-          {TEMPLATES.map((t) => (
+          {templates.map((t) => (
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
