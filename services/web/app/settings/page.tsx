@@ -291,15 +291,24 @@ export default function SettingsPage() {
         {/* ④ 数据导出 */}
         <Section title="数据导出">
           <p className="text-xs text-gray-400 mb-3">
-            打包下载 user_data/ 目录，包含 wiki 文件、原始内容、配置（选题方向、写作模板、Schema）。
+            打包下载 user_data/ 目录，包含 wiki 文件、配置（选题方向、写作模板、Schema）。
             解压后 wiki/ 目录可直接作为 Obsidian vault 打开。
+            原始文件（raw/）最多保留 512 MB，超出时自动从最旧文件开始清理。
           </p>
-          <a
-            href="/api/settings/export"
-            className="inline-block text-sm px-4 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors"
-          >
-            下载数据包
-          </a>
+          <div className="flex gap-3">
+            <a
+              href="/api/settings/export/no-raw"
+              className="inline-block text-sm px-4 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors"
+            >
+              下载数据包（不含原始文件）
+            </a>
+            <a
+              href="/api/settings/export"
+              className="inline-block text-sm px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              下载数据包（含原始文件）
+            </a>
+          </div>
         </Section>
 
       </div>

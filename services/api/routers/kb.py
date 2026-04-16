@@ -13,6 +13,7 @@ import database
 from auth import require_auth
 
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
+RAW_CAP_BYTES = 512 * 1024 * 1024  # 512 MB
 
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
@@ -72,6 +73,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         },
     )
     background_tasks.add_task(build_similar_edges_and_wiki, node_id, body.user_id)
+    background_tasks.add_task(trim_raw_files, body.user_id)
     return {"id": node_id}
 
 
@@ -110,6 +112,23 @@ async def build_similar_edges_and_wiki(node_id: str, user_id: str):
     """先建相似边，再写 wiki 文件。"""
     await build_similar_edges(node_id, user_id)
     await write_wiki_node(node_id, user_id)
+
+
+def trim_raw_files(user_id: str) -> None:
+    """若 raw/ 目录超过 RAW_CAP_BYTES，从最旧文件开始删除直到低于上限。"""
+    raw_dir = USER_DATA_DIR / user_id / "raw"
+    if not raw_dir.exists():
+        return
+    files = sorted(
+        [f for f in raw_dir.rglob("*") if f.is_file()],
+        key=lambda f: f.stat().st_mtime,
+    )
+    total = sum(f.stat().st_size for f in files)
+    for f in files:
+        if total <= RAW_CAP_BYTES:
+            break
+        total -= f.stat().st_size
+        f.unlink()
 
 
 # ── Obsidian Wiki 同步 ─────────────────────────────────────────────────────────
@@ -384,23 +403,13 @@ async def get_node(node_id: str):
 
 @router.delete("/nodes/{node_id}")
 async def delete_node(node_id: str, _: dict = Depends(require_auth)):
-    """删除节点：原始文件 + wiki 文件 + 边 + DB 记录。"""
+    """删除节点：wiki 文件 + 边 + DB 记录（raw 文件独立管理，不随节点删除）。"""
     row = await database.database.fetch_one(
-        "SELECT raw_ref, user_id FROM knowledge_nodes WHERE id = :id",
+        "SELECT user_id FROM knowledge_nodes WHERE id = :id",
         {"id": node_id},
     )
     if not row:
         raise HTTPException(404, "节点不存在")
-
-    raw_ref = row["raw_ref"]
-    if isinstance(raw_ref, str):
-        raw_ref = json.loads(raw_ref)
-
-    # 删除原始文件
-    if raw_ref and raw_ref.get("path"):
-        raw_file = pathlib.Path(raw_ref["path"])
-        if raw_file.exists():
-            raw_file.unlink()
 
     # 删除 wiki 节点文件
     wiki_file = USER_DATA_DIR / (row["user_id"] or USER_ID) / "wiki" / "nodes" / f"{node_id}.md"

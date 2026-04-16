@@ -619,8 +619,8 @@ Source 卡片操作：
 - 选中后图谱自动平移缩放（600ms 过渡）将所选节点居中，缩放比 2×
 
 **资源管理器**（左侧，可折叠树）：
-- 原始文件（按 source type 分组）：✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除节点+原始文件+wiki 文件+DB 记录
-- Wiki 节点文件：✕ 删除按钮（hover 显示），同上（三者联动删除）；点击打开文件同时同步选中对应节点
+- 原始文件（按 source type 分组）：只读展示，**无删除按钮**（raw 数据独立管理，由 512MB 上限自动淘汰）
+- Wiki 节点文件：✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除 wiki 文件 + DB 记录 + 边（**不删除**对应的 raw 原始文件）；点击打开文件同时同步选中对应节点
 - 配置模板：✕ 删除按钮（hover 显示），调用 `DELETE /api/files/content?rel_path=...` → 仅删除文件
 - 删除 wiki 节点后：图谱重新拉取（`loadGraph()`）、卡片列表原地刷新（保留当前搜索条件）、选中状态清空
 
@@ -644,6 +644,7 @@ Source 卡片操作：
 - 模板管理：名称 + 大文本框（纯自然语言）+ "立即测试"按钮
 - Schema.md：代码编辑器 + "用新 schema 重新处理最近一篇文章"按钮
 - 偏好规则：显示系统学到的规则和置信度，支持手动删除
+- 数据导出：两个按钮 —— "下载数据包（不含原始文件）"（主按钮，`/api/settings/export/no-raw`）和"下载数据包（含原始文件）"（次按钮，`/api/settings/export`）
 
 ### 前端设计原则
 
@@ -798,14 +799,25 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ## 数据可移植性
 
-用户数据完全属于用户。Web 界面提供"导出我的数据"功能，打包 `user_data/{user_id}/` 整个目录供下载。
+用户数据完全属于用户。Web 界面提供两种导出方式：
+
+| 按钮 | 端点 | 内容 |
+|------|------|------|
+| 下载数据包（不含原始文件）| `GET /api/settings/export/no-raw` | wiki/ + config/，不含 raw/ |
+| 下载数据包（含原始文件）| `GET /api/settings/export` | user_data/{user_id}/ 完整打包 |
 
 解压后：
 - `wiki/` 目录直接作为 Obsidian vault 打开
-- `raw/` 是所有原始文章和文件
+- `raw/` 是所有原始文章和文件（**最多保留 512 MB**，超限后系统从最旧文件开始自动清理）
 - `config/` 是所有配置，可在新服务器导入恢复
 
 数据库（embedding、关系图）从 `user_data/` 派生，损坏后可重建，不是唯一真相来源。
+
+### raw 数据管理原则
+
+- raw 文件与知识节点**逻辑解耦**：删除节点（wiki 文件 + DB 记录）**不会**删除对应的 raw 原始文件
+- raw 文件仅受 512 MB 容量上限约束，超出时按 mtime 从最旧开始删除（`trim_raw_files()`，每次 ingest 后后台执行）
+- 知识库的核心价值在 wiki + DB（可重建），raw 仅作归档，复用率低，可随时清理
 
 ---
 
@@ -844,7 +856,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ---
 
-## 当前项目状态（2026-04-15）
+## 当前项目状态（2026-04-16）
 
 ### 已完成：第一步 ~ 第十二步
 
@@ -907,7 +919,7 @@ rclone delete --min-age 30d r2:bucket/backups/
     - `GET /api/files/tree`：扫描 `user_data/{user_id}/`，返回 raw（按 source type 分组，关联 node_id）/ wiki / config 三区树结构
     - `GET /api/files/content?rel_path=...`：读取 wiki/ 或 config/ 下的 md 文件（路径遍历保护）
     - `PUT /api/files/content`：写入 wiki/ 或 config/ 下的 md 文件
-  - `DELETE /api/kb/nodes/{node_id}`（新端点，需认证）：删除原始文件 + wiki node md + knowledge_edges + knowledge_nodes 记录
+  - `DELETE /api/kb/nodes/{node_id}`（新端点，需认证）：删除 wiki node md + knowledge_edges + knowledge_nodes 记录（**不删 raw 原始文件**，raw 独立管理）
   - `ExplorerPanel` 组件：可折叠树，原始文件支持删除（✕ 按钮），md 文件点击后在右侧 `FilePanel` 查看/编辑
   - `FilePanel` 组件：查看（`<pre>` 展示）/ 编辑（textarea + 保存）两种模式，占据资源管理器右侧全部剩余空间
 
@@ -922,6 +934,14 @@ rclone delete --min-age 30d r2:bucket/backups/
   - **卡片列表**：`data-node-id` 属性 + `containerRef.current.querySelector()` + `scrollIntoView`，`refreshToken` prop 触发原地刷新（保留搜索条件）
   - **资源管理器**：Wiki 文件 ✕ 删除按钮 → `DELETE /api/kb/nodes/{id}`（联动删 DB+原始文件）；Config 文件 ✕ → `DELETE /api/files/content`（仅删文件）；删除后调用 `loadGraph()` + 列表刷新
   - `DELETE /api/files/content?rel_path=...`（新后端端点）：限定 `wiki/` 或 `config/` 前缀，路径遍历保护，供 config 模板文件删除使用
+
+- **raw 数据解耦 + 容量管理** ✅
+  - `DELETE /api/kb/nodes/{id}` 不再删除 raw 原始文件，raw 与节点生命周期彻底解耦
+  - `trim_raw_files(user_id)`：每次 ingest 后以后台任务运行，扫描 `raw/` 目录按 mtime 升序，总大小超过 512 MB 时从最旧文件开始删除
+  - `GET /api/settings/export/no-raw`：新增导出端点，使用 `zipfile` 逐文件打包，跳过 `rel.parts[0] == "raw"` 的条目
+  - `/settings` 页数据导出区块改为两个按钮：主按钮"不含原始文件"，次按钮"含原始文件"
+  - 首页简报卡片支持点击展开/收起完整描述（`TopicCard` 组件，`expanded` 本地状态，▼/▲ 指示）
+  - 草稿生成模板下拉从硬编码 `TEMPLATES` 改为动态读取 `GET /api/files/tree` 的 `config` 数组
 
 - **修正：Wiki 正文改为全量原文** ✅
   - `pipeline.py` `write_wiki_node()` 正文由 150 字 summary 改为 `extract_text()` 完整输出（`text`）
@@ -979,7 +999,8 @@ KnowledgeBase-S/
     │       ├── kb.py           # /api/kb/ingest, search, node（含 wiki_body 字段）, nodes, graph,
     │       │                   # graph/all, memory, wiki/rebuild, wiki/status
     │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
-    │       │                   # DELETE /api/kb/nodes/{id}（删节点+原始文件+wiki文件+边）
+    │       │                   # DELETE /api/kb/nodes/{id}（删 wiki文件+边+DB，不删 raw 原始文件）
+    │       │                   # trim_raw_files(user_id)：ingest 后台任务，raw/ 超 512MB 从旧删
     │       ├── files.py        # GET /api/files/tree（目录树）
     │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
     │       │                   # DELETE /api/files/content?rel_path=...（删除 wiki/config 文件）
@@ -990,7 +1011,8 @@ KnowledgeBase-S/
     │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
     │       │                   # GET/PUT /api/settings/schema（知识库宪法，文件存储）
     │       │                   # GET/PUT/DELETE /api/settings/templates/:name
-    │       │                   # GET /api/settings/export（打包下载 user_data zip）
+    │       │                   # GET /api/settings/export（完整打包 user_data zip，含 raw/）
+    │       │                   # GET /api/settings/export/no-raw（打包 zip，排除 raw/ 目录）
     │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
     │                           # POST /api/drafts/:id/feedback（定稿提交 → feedback-worker）
     ├── feedback-worker/        # FastAPI + uvicorn（端口 8002）

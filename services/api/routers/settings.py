@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -222,7 +223,7 @@ async def delete_template(name: str, _: dict = Depends(require_auth)):
 
 @router.get("/export")
 async def export_user_data(_: dict = Depends(require_auth)):
-    """打包 user_data/{user_id}/ 为 zip 文件供下载。"""
+    """打包 user_data/{user_id}/ 为 zip 文件供下载（含原始文件）。"""
     user_dir = USER_DATA_DIR / USER_ID
     if not user_dir.exists():
         raise HTTPException(404, "暂无用户数据")
@@ -232,4 +233,26 @@ async def export_user_data(_: dict = Depends(require_auth)):
         tmp,
         media_type="application/zip",
         filename="knowledgebase-export.zip",
+    )
+
+
+@router.get("/export/no-raw")
+async def export_user_data_no_raw(_: dict = Depends(require_auth)):
+    """打包 user_data/{user_id}/ 为 zip 文件，不含 raw/ 目录。"""
+    user_dir = USER_DATA_DIR / USER_ID
+    if not user_dir.exists():
+        raise HTTPException(404, "暂无用户数据")
+    tmp = tempfile.mktemp(suffix=".zip")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in user_dir.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(user_dir)
+            if rel.parts[0] == "raw":
+                continue
+            zf.write(f, Path(USER_ID) / rel)
+    return FileResponse(
+        tmp,
+        media_type="application/zip",
+        filename="knowledgebase-export-no-raw.zip",
     )
