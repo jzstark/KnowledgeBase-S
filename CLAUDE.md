@@ -591,12 +591,50 @@ Source 卡片操作：
 
 **`/knowledge`**
 
-三种视图切换：列表视图（默认）、图谱视图、资源管理器视图。
-- 列表视图：2 列卡片网格，支持搜索/标签过滤/分页
-- 图谱视图：D3 力导向图，节点大小=degree，边颜色=relation_type，支持拖拽+缩放
-- 资源管理器视图：左侧可折叠树（原始文件/Wiki/配置模板），右侧文件内容查看/编辑面板；可删除原始文件（联动删除知识节点）、编辑 wiki md 和 config md
+四面板 IDE 式布局（三个视图同时可见，始终保持同步），顶部仅保留"立即运行维护"按钮：
 
-顶部有"立即运行维护"按钮。
+```
+┌── header（知识库 + 立即运行维护）──────────────────────────────────┐
+├─────────────┬──────────────────────────┬──────────────────────────┤
+│  资源管理器  │   Wiki 查看器 / 文件编辑   │   搜索 + 卡片列表         │
+│  (默认 208px)│   (flex-1, 上半部分)      │   (默认 288px)            │
+│             ├──────────────────────────│                          │
+│             │   交互式图谱               │                          │
+│             │   (默认 256px, 下半部分)   │                          │
+└─────────────┴──────────────────────────┴──────────────────────────┘
+```
+
+**面板可拖拽调整大小**：三条分隔线（左竖/中横/右竖）均可鼠标拖拽，调整时光标变为 col-resize/row-resize，防止文字选中。
+
+**中央同步状态 `selectedNodeId`**：任意面板触发选择均通过同一状态驱动所有面板同步：
+- 点击图谱节点 → 列表卡片高亮+滚动到位，资源管理器 Wiki 树高亮对应文件，Wiki 查看器显示 wiki_body
+- 点击列表卡片 → 同上
+- 点击资源管理器 Wiki 文件 → 从文件名提取 node_id，同步图谱+列表+Wiki 查看器
+- 按 `Esc` → 清除选中（`selectedNodeId = null`，图谱/列表/查看器全部重置）
+
+**图谱交互**：
+- 选中节点：红色填充（`#ef4444`），半径 +6px，相关边高亮（opacity 0.9），非相关边淡出（opacity 0.08）
+- 邻居节点：琥珀色填充（`#f59e0b`），完全不透明
+- 非相关节点：蓝色但透明度降至 18%（避免干扰）
+- 选中后图谱自动平移缩放（600ms 过渡）将所选节点居中，缩放比 2×
+
+**资源管理器**（左侧，可折叠树）：
+- 原始文件（按 source type 分组）：✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除节点+原始文件+wiki 文件+DB 记录
+- Wiki 节点文件：✕ 删除按钮（hover 显示），同上（三者联动删除）；点击打开文件同时同步选中对应节点
+- 配置模板：✕ 删除按钮（hover 显示），调用 `DELETE /api/files/content?rel_path=...` → 仅删除文件
+- 删除 wiki 节点后：图谱重新拉取（`loadGraph()`）、卡片列表原地刷新（保留当前搜索条件）、选中状态清空
+
+**Wiki 查看器**（中央上半部分）：
+- 有 `openFile`（通过资源管理器点击或"在编辑器中打开"按钮触发）→ 显示 `FilePanel`（查看/编辑 md 文件）
+- 有 `selectedNodeId`（通过图谱/列表点击触发）→ 显示节点元数据头（标题/标签/来源/日期/摘要）+ wiki_body 全文 + 关联边列表 + "在编辑器中打开"按钮（打开 `wiki/nodes/{id}.md`）
+- 两者都没有 → 占位提示
+
+**卡片列表**（右侧）：
+- 单列卡片，搜索栏 + 标签过滤，分页（50条/页）
+- 选中卡片蓝色高亮，`selectedNodeId` 变化时自动 `scrollIntoView`（via `data-node-id` 属性）
+- 外部删除触发后原地 reload（保留当前 q / tagFilter / offset）
+
+顶部有"立即运行维护"按钮（无视图切换 Tab）。
 
 **`/settings`**
 
@@ -873,6 +911,18 @@ rclone delete --min-age 30d r2:bucket/backups/
   - `ExplorerPanel` 组件：可折叠树，原始文件支持删除（✕ 按钮），md 文件点击后在右侧 `FilePanel` 查看/编辑
   - `FilePanel` 组件：查看（`<pre>` 展示）/ 编辑（textarea + 保存）两种模式，占据资源管理器右侧全部剩余空间
 
+- **第十四步**：`/knowledge` 页重构为四面板 IDE 式布局 ✅
+  - 移除三视图 Tab 切换器，改为四面板同时常驻：资源管理器（左）/ Wiki 查看器（中上）/ 图谱（中下）/ 卡片列表（右）
+  - **面板尺寸可拖拽**：`ResizeHandle` 组件 + `startDrag()` 辅助函数，拖动时设置 `document.body.style.cursor/userSelect`，三条分隔线分别控制左宽/右宽/图谱高
+  - **中央同步**：`selectedNodeId: string | null` 为唯一同步状态；`selectNode(id)` 统一入口（异步加载 `NodeDetail`，同时清除 `openFile`）；`clearSelection()` 重置所有面板
+  - **图谱增强**：
+    - `zoomRef`（D3 zoom behavior）+ `simNodesRef`（SimNode 数组）跨 effect 共享
+    - 独立 `useEffect([selectedNodeId, graphData])`：更新节点颜色（选中红/邻居琥珀/其余蓝+暗化）、边透明度、自动平移居中（`zoomIdentity.translate().scale(2)` + 600ms 过渡）
+    - `Esc` 键全局监听 → `clearSelection()`
+  - **卡片列表**：`data-node-id` 属性 + `containerRef.current.querySelector()` + `scrollIntoView`，`refreshToken` prop 触发原地刷新（保留搜索条件）
+  - **资源管理器**：Wiki 文件 ✕ 删除按钮 → `DELETE /api/kb/nodes/{id}`（联动删 DB+原始文件）；Config 文件 ✕ → `DELETE /api/files/content`（仅删文件）；删除后调用 `loadGraph()` + 列表刷新
+  - `DELETE /api/files/content?rel_path=...`（新后端端点）：限定 `wiki/` 或 `config/` 前缀，路径遍历保护，供 config 模板文件删除使用
+
 - **修正：Wiki 正文改为全量原文** ✅
   - `pipeline.py` `write_wiki_node()` 正文由 150 字 summary 改为 `extract_text()` 完整输出（`text`）
   - `kb.py` `write_wiki_node()`（相似边建立后重写 wiki）改为读取已有文件保留正文，只更新 YAML 头和关联节点区块；若文件不存在则兜底用 summary
@@ -932,6 +982,8 @@ KnowledgeBase-S/
     │       │                   # DELETE /api/kb/nodes/{id}（删节点+原始文件+wiki文件+边）
     │       ├── files.py        # GET /api/files/tree（目录树）
     │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
+    │       │                   # DELETE /api/files/content?rel_path=...（删除 wiki/config 文件）
+    │       │                   # 注：wiki 节点优先通过 DELETE /api/kb/nodes/{id} 删除（联动 DB）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
     │       │                   # 提示词从 prompt_loader.fill("briefing_topics", ...) 读取
     │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
@@ -980,9 +1032,15 @@ KnowledgeBase-S/
             ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制 + 提交定稿反馈
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
-            ├── knowledge/page.tsx    # 列表视图（搜索/过滤/分页）+ D3 图谱视图 + 详情侧边栏
-            │                         # 详情侧边栏：摘要（DB summary）+ 全文（wiki_body 字段）
-            │                         # + 资源管理器视图（ExplorerPanel + FilePanel）
+            ├── knowledge/page.tsx    # 四面板 IDE 式布局（单文件，无子路由）：
+            │                         # ExplorerPanel（左，可折叠树+删除）
+            │                         # WikiPanel（中上，节点详情+wiki全文+文件编辑）
+            │                         # D3 图谱（中下，力导向图+节点高亮+自动居中）
+            │                         # ListPanel（右，搜索/过滤/分页/自动滚动）
+            │                         # 三条分隔线支持鼠标拖拽调整面板大小
+            │                         # selectedNodeId 为中央同步状态；Esc 取消选中
+            │                         # wiki/config 文件可从资源管理器删除；
+            │                         # 删除 wiki 节点后图谱+列表同步刷新
             ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
             └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
 ```

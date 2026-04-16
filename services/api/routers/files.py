@@ -122,3 +122,16 @@ async def put_content(body: WriteContentBody):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8")
     return {"ok": True}
+
+
+@router.delete("/content")
+async def delete_content(rel_path: str = Query(...)):
+    """删除 wiki/ 或 config/ 下的文件。
+    wiki 节点文件建议通过 /api/kb/nodes/{id} 删除（会同时清理 DB 记录），
+    此接口用于删除孤立 wiki 文件或 config 模板文件。
+    """
+    path = _safe_editable(rel_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    path.unlink()
+    return {"ok": True}
