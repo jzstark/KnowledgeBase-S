@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 import database
+import prompt_loader
 from auth import require_auth
 from routers.settings import get_settings_dict
 
@@ -156,23 +157,11 @@ async def _generate_topics(nodes: list[dict], topics_setting: str) -> list[dict]
         for i, n in enumerate(nodes)
     )
 
-    prompt = f"""你是内容创作助手。用户的写作方向是：{topics_setting}
-
-以下是今日新增的文章（序号对应）：
-{summaries}
-
-请基于这些文章，生成若干值得写作的选题角度。要求：
-- 选题是"可以写的文章角度"，不是文章摘要
-- 一个选题可来自1篇或多篇文章，同一篇文章也可衍生多个选题
-- 优先贴合用户的写作方向
-- 标题：10字以内，点明写作角度
-- 说明：一句话说明为何这个角度值得写
-
-严格按以下 JSON 格式输出，不要有任何其他文字：
-[
-  {{"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [1, 3]}},
-  {{"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [2]}}
-]"""
+    prompt = prompt_loader.fill(
+        "briefing_topics",
+        topics_setting=topics_setting,
+        summaries=summaries,
+    )
 
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",

@@ -15,6 +15,8 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+import prompt_loader
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -53,19 +55,7 @@ async def analyze_feedback(body: AnalyzeRequest):
     diff_text = "\n".join(diff_lines[:200])  # 截断防超 token
 
     # 2. Claude 分析 diff → JSON 规则
-    prompt = f"""你是一个写作风格分析助手。以下是用户对 AI 生成草稿的修改记录（unified diff 格式，- 是原文，+ 是用户修改后的版本）：
-
-{diff_text}
-
-请从这些修改中归纳出用户的写作偏好规则，以 JSON 数组形式返回：
-[
-  {{"rule": "偏好规则描述（一句话，具体可复用）", "rule_type": "style|structure|content|tone"}}
-]
-
-要求：
-- 每条规则是独立的、可复用的写作指导，描述要具体（如"避免使用感叹号"而非"语气要好"）
-- 如果修改很小或无法归纳出有意义的规则，返回空数组 []
-- 只返回 JSON 数组，不要输出其他任何文字"""
+    prompt = prompt_loader.fill("feedback_analysis", diff_text=diff_text)
 
     try:
         message = claude.messages.create(

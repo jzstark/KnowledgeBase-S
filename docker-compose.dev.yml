@@ -9,6 +9,7 @@ services:
     volumes:
       - ./services/api:/app
       - ./user_data:/app/user_data
+      - ./config:/app/shared_config:ro
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
@@ -45,6 +46,7 @@ services:
     volumes:
       - ./services/ingestion-worker:/app
       - ./user_data:/app/user_data
+      - ./config:/app/shared_config:ro
     environment:
       API_BASE_URL: http://api:8000
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
@@ -58,6 +60,7 @@ services:
       context: ./services/feedback-worker
     volumes:
       - ./services/feedback-worker:/app
+      - ./config:/app/shared_config:ro
     environment:
       API_BASE_URL: http://api:8000
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}

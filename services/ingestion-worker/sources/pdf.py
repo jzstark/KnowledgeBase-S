@@ -3,17 +3,13 @@ PDF Source — 使用 PyMuPDF 提取文本，再用 Claude 清洗排版噪音。
 """
 
 import os
-from pathlib import Path
 
 import anthropic
 import fitz  # PyMuPDF
 
+import prompt_loader
 from sources.base import RawItem
 from sources.file_base import FileSourceMixin
-
-_CLEANUP_PROMPT = (
-    Path(__file__).parent.parent / "config" / "pdf_cleanup.md"
-).read_text(encoding="utf-8").strip()
 
 _claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
 
@@ -25,7 +21,7 @@ def _cleanup(raw_text: str) -> str:
         max_tokens=4096,
         messages=[{
             "role": "user",
-            "content": f"{_CLEANUP_PROMPT}\n\n---\n\n{raw_text}",
+            "content": f"{prompt_loader.get('pdf_cleanup')}\n\n---\n\n{raw_text}",
         }],
     )
     return msg.content[0].text.strip()

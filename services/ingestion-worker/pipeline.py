@@ -14,6 +14,7 @@ import anthropic
 import httpx
 from openai import AsyncOpenAI
 
+import prompt_loader
 from sources.base import BaseSource, RawItem
 
 logger = logging.getLogger(__name__)
@@ -48,17 +49,11 @@ def summarize(text: str) -> tuple[str, list[str]]:
     truncated = text[:MAX_TEXT_CHARS]
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=512,
+        max_tokens=1024,
         messages=[
             {
                 "role": "user",
-                "content": f"""请对以下文章生成一段简洁的中文摘要（150字以内），并提取3-5个标签。
-
-严格按以下 JSON 格式输出，不要有任何其他文字：
-{{"summary": "摘要内容", "tags": ["标签1", "标签2"]}}
-
-文章内容：
-{truncated}""",
+                "content": prompt_loader.fill("summarize", text=truncated),
             }
         ],
     )

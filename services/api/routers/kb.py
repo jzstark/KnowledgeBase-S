@@ -357,8 +357,25 @@ async def get_node(node_id: str):
     if node.get("created_at"):
         node["created_at"] = node["created_at"].isoformat()
 
+    # 读取 wiki 全文（frontmatter + 标题行之后的正文）
+    wiki_body = ""
+    wiki_file = USER_DATA_DIR / (node.get("user_id") or USER_ID) / "wiki" / "nodes" / f"{node_id}.md"
+    if wiki_file.exists():
+        raw_wiki = wiki_file.read_text(encoding="utf-8")
+        parts = raw_wiki.split("---", 2)
+        if len(parts) >= 3:
+            body_section = parts[2].strip()
+            if "\n## 关联节点\n" in body_section:
+                body_section = body_section[: body_section.index("\n## 关联节点\n")].strip()
+            lines = body_section.split("\n", 2)
+            if len(lines) >= 3:
+                wiki_body = lines[2].strip()
+            elif len(lines) < 2:
+                wiki_body = body_section
+
     return {
         **node,
+        "wiki_body": wiki_body,
         "edges": [dict(e) for e in edges],
     }
 

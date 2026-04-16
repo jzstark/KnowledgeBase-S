@@ -26,6 +26,7 @@ interface KBEdge {
 
 interface NodeDetail extends KBNode {
   summary: string;
+  wiki_body?: string;
   edges: KBEdge[];
 }
 
@@ -904,7 +905,21 @@ export default function KnowledgePage() {
                 )}
 
                 {detail.summary && (
-                  <p className="text-sm text-gray-700 leading-relaxed">{detail.summary}</p>
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 mb-1">摘要</p>
+                    <p className="text-sm text-gray-700 leading-relaxed">{detail.summary}</p>
+                  </div>
+                )}
+
+                {detail.wiki_body && (
+                  <div>
+                    <div className="border-t border-gray-100 pt-3">
+                      <p className="text-xs font-medium text-gray-400 mb-2">全文</p>
+                      <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">
+                        {detail.wiki_body}
+                      </p>
+                    </div>
+                  </div>
                 )}
 
                 {(detail.edges || []).length > 0 && (

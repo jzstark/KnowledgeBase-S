@@ -13,6 +13,7 @@ from pathlib import Path
 import anthropic
 from PIL import Image
 
+import prompt_loader
 from sources.base import RawItem
 from sources.file_base import FileSourceMixin
 
@@ -28,11 +29,6 @@ MAX_DIM = 7800   # Claude 单边像素上限
 TILE_H  = 7000   # 每个切片的高度
 OVERLAP = 200    # 相邻切片的重叠像素，避免截断行内文字
 
-# 从同目录下的 config/ 读取清洗指令
-_CLEANUP_PROMPT = (
-    Path(__file__).parent.parent / "config" / "image_cleanup.md"
-).read_text(encoding="utf-8").strip()
-
 _claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
 
 
@@ -44,7 +40,7 @@ def _image_to_b64(img: Image.Image, media_type: str) -> str:
 
 
 def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
-    prompt = "请完整转录这张图片中的所有文字，保持原有格式。不要遗漏任何文字内容。"
+    prompt = prompt_loader.get("image_ocr")
     if tile_info:
         prompt += f"（{tile_info}）"
     msg = _claude.messages.create(
@@ -68,7 +64,7 @@ def _cleanup(raw_text: str) -> str:
         max_tokens=4096,
         messages=[{
             "role": "user",
-            "content": f"{_CLEANUP_PROMPT}\n\n---\n\n{raw_text}",
+            "content": f"{prompt_loader.get('image_cleanup')}\n\n---\n\n{raw_text}",
         }],
     )
     return msg.content[0].text.strip()

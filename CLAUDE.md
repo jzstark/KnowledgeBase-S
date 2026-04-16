@@ -82,6 +82,8 @@ repo-root/
 ├── .env.example
 ├── deploy.sh                    # 一键部署脚本
 ├── Makefile                     # make dev / make deploy / make backup
+├── config/
+│   └── prompts.md               # 所有 LLM 内部提示词（开发者编辑，重启容器生效）
 ├── nginx/
 │   └── nginx.conf
 ├── scripts/
@@ -93,18 +95,21 @@ repo-root/
 │   ├── api/                     # FastAPI 知识库 API
 │   │   ├── Dockerfile
 │   │   ├── main.py
+│   │   ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
 │   │   ├── routers/
 │   │   ├── scheduler.py         # 复用此镜像启动
 │   │   └── maintenance.py       # 复用此镜像启动
 │   ├── ingestion-worker/
 │   │   ├── Dockerfile
 │   │   ├── main.py
+│   │   ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
 │   │   └── sources/             # 各 Source 类型实现
 │   ├── summarizer-worker/
 │   │   ├── Dockerfile
 │   │   └── main.py
 │   └── feedback-worker/
 │       ├── Dockerfile
+│       ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
 │       └── main.py
 └── user_data/                   # 运行时生成，不提交 git
     └── {user_id}/
@@ -178,7 +183,7 @@ relations:
 - [[node-def789]] · background_of
 ```
 
-**重要**：wiki 正文 = `extract_text()` 的完整输出（plaintext 直接读取，image 经 OCR+image_cleanup.md 清洗，pdf 经 PyMuPDF 提取，等等）。`summary` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见。wiki 生成完全自动，不受用户 config（schema.md、模板）控制。
+**重要**：wiki 正文 = `extract_text()` 的完整输出（plaintext 直接读取，image 经 OCR + `image_cleanup` 提示词清洗，pdf 经 PyMuPDF 提取后经 `pdf_cleanup` 提示词清洗，等等）。`summary` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见。wiki 生成完全自动，不受用户 config（schema.md、模板）控制。所有提示词集中管理于 `config/prompts.md`（开发者可编辑，不对用户暴露）。
 
 ### config/settings.json 结构
 
@@ -771,7 +776,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 | 调用 | 触发时机 | 输入上限 | 输出格式 |
 |------|---------|---------|---------|
-| 摘要 + 打标 | 每篇文章入库时 | 原文（截断至 4000 tokens） | 摘要文本 + JSON 标签 |
+| 摘要 + 打标 | 每篇文章入库时 | 原文（截断至 4000 tokens） | 摘要段落（3-5句中文）+ JSON 标签 |
 | 分类 | 每日简报生成 | 摘要列表 + 选题方向描述 | JSON 分类结果 |
 | 建边分析 | 每周维护 | 两个节点摘要 | JSON relation_type |
 | 草稿生成 | 用户触发 | 模板 + 选题 + 知识库（≤2000 tokens） + 偏好规则 | 文章正文 |
@@ -891,9 +896,15 @@ rclone delete --min-age 30d r2:bucket/backups/
 ```
 KnowledgeBase-S/
 ├── docker-compose.yml          # API 含 INGESTION_WORKER_URL + FEEDBACK_WORKER_URL; workers expose 8001/8002
-├── docker-compose.dev.yml      # dev 覆盖
+│                               # api/ingestion-worker/feedback-worker 均挂载 ./config:/app/shared_config:ro
+├── docker-compose.dev.yml      # dev 覆盖（同上挂载）
 ├── .env.example                # 含 OPENAI_API_KEY
 ├── Makefile / deploy.sh
+├── config/
+│   └── prompts.md              # 所有内部 LLM 提示词（开发者编辑，重启容器生效）
+│                               # 6个 section：image_ocr / image_cleanup / pdf_cleanup /
+│                               # summarize / feedback_analysis / briefing_topics
+│                               # 动态占位符用 <<<key>>> 语法，由 prompt_loader.fill() 替换
 ├── nginx/nginx.conf
 ├── scripts/backup.sh, restore.sh
 └── services/
@@ -903,19 +914,21 @@ KnowledgeBase-S/
     │   ├── main.py             # auth 端点 + 注册所有 routers
     │   ├── auth.py             # JWT（python-jose），单用户密码比对
     │   ├── database.py         # 建表（7张）+ jsonb() 辅助
+    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md；get(name) / fill(name, **kw)
     │   ├── scheduler.py        # 空壳
     │   ├── maintenance.py      # 维护任务：fix_islands / supplement_edges / detect_contradictions
     │   │                       # run_maintenance(user_id)；standalone: python maintenance.py
     │   └── routers/
     │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
-    │       ├── kb.py           # /api/kb/ingest, search, node, nodes, graph, graph/all, memory
-    │       │                   # wiki/rebuild, wiki/status（Obsidian 同步）
+    │       ├── kb.py           # /api/kb/ingest, search, node（含 wiki_body 字段）, nodes, graph,
+    │       │                   # graph/all, memory, wiki/rebuild, wiki/status
     │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
     │       │                   # DELETE /api/kb/nodes/{id}（删节点+原始文件+wiki文件+边）
     │       ├── files.py        # GET /api/files/tree（目录树）
     │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
+    │       │                   # 提示词从 prompt_loader.fill("briefing_topics", ...) 读取
     │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
     │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
     │       │                   # GET/PUT /api/settings/schema（知识库宪法，文件存储）
@@ -926,25 +939,28 @@ KnowledgeBase-S/
     ├── feedback-worker/        # FastAPI + uvicorn（端口 8002）
     │   ├── Dockerfile
     │   ├── requirements.txt    # anthropic, httpx, fastapi, uvicorn
+    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
     │   └── main.py             # POST /analyze：difflib diff + Claude Haiku → 规则提炼 → writing_memory
+    │                           # 提示词从 prompt_loader.fill("feedback_analysis", ...) 读取
     ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
-    │   ├── requirements.txt    # 新增 fastapi, uvicorn[standard]
+    │   ├── requirements.txt    # fastapi, uvicorn[standard], anthropic, openai, Pillow, pymupdf 等
     │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
-    │   ├── pipeline.py         # extract→save_raw→summarize(内部)→embed→ingest→write_wiki(全量原文)
+    │   ├── pipeline.py         # extract→save_raw→summarize(内部,3-5句)→embed→ingest→write_wiki(全量原文)
+    │   │                       # summarize(): max_tokens=1024; JSON 解析失败时有 regex 降级兜底
+    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
     │   └── sources/
     │       ├── base.py         # BaseSource + RawItem
     │       ├── rss.py          # RSSSource（subscription）✅
     │       ├── url.py          # URLSource（manual，trafilatura）✅
     │       ├── file_base.py    # FileSourceMixin（文件型共用 fetch 逻辑）✅
     │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
-    │       ├── pdf.py          # PDFSource（PyMuPDF）✅
+    │       ├── pdf.py          # PDFSource（PyMuPDF + Claude Haiku 清洗）✅
+    │       │                   # 两步：① PyMuPDF 提取 ② Claude 清洗噪音（pdf_cleanup 提示词）
     │       ├── image.py        # ImageSource（Claude Vision + 高图切片 + AI 清洗）✅
     │       │                   # 宽>7800px 等比缩小，高>7800px 按 7000px/200px重叠切片分段识别
-    │       │                   # 两步：① OCR 转录 ② Claude 清洗噪音（读 config/image_cleanup.md）
+    │       │                   # 两步：① OCR 转录（image_ocr 提示词）② Claude 清洗（image_cleanup 提示词）
     │       ├── word.py         # WordSource（python-docx）✅
     │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
-    │   └── config/
-    │       └── image_cleanup.md  # 图片 OCR 后清洗 prompt（删 UI 噪音/保留正文/输出 Markdown）
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
     └── web/                    # Next.js 14 + Tailwind + dnd-kit + d3
@@ -956,6 +972,7 @@ KnowledgeBase-S/
             ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
             ├── knowledge/page.tsx    # 列表视图（搜索/过滤/分页）+ D3 图谱视图 + 详情侧边栏
+            │                         # 详情侧边栏：摘要（DB summary）+ 全文（wiki_body 字段）
             │                         # + 资源管理器视图（ExplorerPanel + FilePanel）
             ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
             └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
