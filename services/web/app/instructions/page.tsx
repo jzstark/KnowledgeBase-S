@@ -46,6 +46,8 @@ export default function InstructionsPage() {
   const [topicsDraft, setTopicsDraft] = useState("");
   const [topicsSaving, setTopicsSaving] = useState(false);
   const [topicsSaved, setTopicsSaved] = useState(false);
+  const [topicsRegenStatus, setTopicsRegenStatus] = useState<"idle" | "generating" | "done">("idle");
+  const [topicsRegenCount, setTopicsRegenCount] = useState(0);
 
   // ── 写作模板 ─────────────────────────────────────────────────────────────────
   const [templateList, setTemplateList] = useState<Template[]>([]);
@@ -97,10 +99,29 @@ export default function InstructionsPage() {
         setTopics(topicsDraft);
         setTopicsEditing(false);
         setTopicsSaved(true);
-        setTimeout(() => setTopicsSaved(false), 2000);
+        setTopicsRegenStatus("idle");
       }
     } finally {
       setTopicsSaving(false);
+    }
+  }
+
+  async function regenTopics() {
+    setTopicsRegenStatus("generating");
+    try {
+      const r = await fetch("/api/briefing/generate?force=true", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setTopicsRegenCount(data.topics?.length ?? 0);
+        setTopicsRegenStatus("done");
+      } else {
+        setTopicsRegenStatus("idle");
+      }
+    } catch {
+      setTopicsRegenStatus("idle");
     }
   }
 
@@ -253,7 +274,7 @@ export default function InstructionsPage() {
                 className="w-full text-sm border border-blue-300 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-none"
                 placeholder="例如：AI 行业动态、创业融资、产品设计"
               />
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={saveTopics}
                   disabled={topicsSaving}
@@ -267,8 +288,23 @@ export default function InstructionsPage() {
                 >
                   取消
                 </button>
-                {topicsSaved && <span className="text-xs text-green-600">已保存</span>}
               </div>
+              {topicsSaved && (
+                <div className="flex items-center gap-3 mt-1">
+                  <span className="text-xs text-green-600">已保存</span>
+                  <button
+                    onClick={regenTopics}
+                    disabled={topicsRegenStatus === "generating"}
+                    className="text-xs px-3 py-1 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 transition-colors"
+                  >
+                    {topicsRegenStatus === "generating"
+                      ? "重新生成中…"
+                      : topicsRegenStatus === "done"
+                      ? `✓ 已生成 ${topicsRegenCount} 条新选题`
+                      : "用新方向重新生成今日选题"}
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div>

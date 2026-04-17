@@ -71,32 +71,49 @@ async def get_briefing(target_date: str | None = Query(default=None)):
 # ── 生成选题 ─────────────────────────────────────────────────────────────────
 
 @router.post("/generate")
-async def generate_briefing(_: dict = Depends(require_auth)):
-    """立即生成今日选题（增量式）：
-    - 首次：取最近 N 小时的节点全量生成
-    - 再次按下：只处理上次生成后新入库的节点，追加到已有选题
-    - 无新节点：直接返回已有选题，不调用 Claude
+async def generate_briefing(
+    force: bool = Query(default=False),
+    _: dict = Depends(require_auth),
+):
+    """立即生成今日选题。
+
+    force=false（默认，增量模式）：
+      - 首次：取最近 N 小时的节点全量生成
+      - 再次：只处理上次生成后新入库的节点，追加到已有选题
+      - 无新节点：直接返回已有选题，不调用 Claude
+
+    force=true（重新生成模式，用于写作方向修改后）：
+      - 删除今日已有选题，从最近 N 小时节点重新生成
     """
     settings = await get_settings_dict()
     hours_back = int(settings.get("briefing_hours_back", 24))
     topics_setting = settings.get("topics", "")
     today = date.today()
 
-    # 查询今日是否已有选题，有则只处理更新的节点
-    last_topic = await database.database.fetch_one(
-        "SELECT created_at FROM topics WHERE user_id = :user_id AND date = :date"
-        " ORDER BY created_at DESC LIMIT 1",
-        {"user_id": USER_ID, "date": today},
-    )
-
-    if last_topic:
-        # 增量：只取上次生成之后新入库的节点
-        since_dt = last_topic["created_at"]
-        node_cutoff = f"created_at > '{since_dt.strftime('%Y-%m-%d %H:%M:%S')}'::timestamptz"
-    else:
-        # 今日首次生成：取最近 N 小时
+    if force:
+        # 清空今日选题，从完整时间窗口重新生成
+        await database.database.execute(
+            "DELETE FROM topics WHERE user_id = :user_id AND date = :date",
+            {"user_id": USER_ID, "date": today},
+        )
         since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
         node_cutoff = f"created_at >= '{since}'::timestamptz"
+    else:
+        # 查询今日是否已有选题，有则只处理更新的节点
+        last_topic = await database.database.fetch_one(
+            "SELECT created_at FROM topics WHERE user_id = :user_id AND date = :date"
+            " ORDER BY created_at DESC LIMIT 1",
+            {"user_id": USER_ID, "date": today},
+        )
+
+        if last_topic:
+            # 增量：只取上次生成之后新入库的节点
+            since_dt = last_topic["created_at"]
+            node_cutoff = f"created_at > '{since_dt.strftime('%Y-%m-%d %H:%M:%S')}'::timestamptz"
+        else:
+            # 今日首次生成：取最近 N 小时
+            since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
+            node_cutoff = f"created_at >= '{since}'::timestamptz"
 
     rows = await database.database.fetch_all(
         f"""

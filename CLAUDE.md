@@ -856,7 +856,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 ---
 
-## 当前项目状态（2026-04-16）
+## 当前项目状态（2026-04-17）
 
 ### 已完成：第一步 ~ 第十二步
 
@@ -949,6 +949,23 @@ rclone delete --min-age 30d r2:bucket/backups/
   - summary 继续存入 DB 用于 embedding，完全不写入 wiki，用户不可见
   - wiki 生成不受用户 config（schema.md、模板）控制，完全自动
 
+- **部署修复（AWS VPS）** ✅
+  - `docker-compose.yml` 新增 api 服务 healthcheck（Python urllib 探针 `GET /api/health`，interval 5s / retries 12 / start_period 10s）
+  - `ingestion-worker`、`summarizer-worker`、`feedback-worker` 的 `depends_on: api` 从 `service_started` 升级为 `condition: service_healthy`，解决 uvicorn 启动竞态导致的 `ConnectError`
+  - **VPS 首次部署须知**：必须先 `make build-dev` 再 `make dev`；跳过 build 直接 up 会拉取 GHCR 生产镜像（无 `next` 二进制），导致 web 容器 restart loop（`sh: next: not found`）
+
+- **标题提取优化** ✅
+  - `pipeline.py` 新增 `_infer_title_from_text(text)`：优先提取第一个 Markdown 标题（`# ...`），其次取首个短行（≤80字，不以句末标点结尾），兜底截断首行至80字
+  - 文件型 source（image/plaintext）：pipeline 在 `extract_text()` 后检测标题仍为文件名 stem 时，自动调用上述函数推断更好的标题
+  - `pdf.py`：`extract_text()` 内优先读 `doc.metadata["title"]`（PyMuPDF），有值则直接更新 `raw.title`，再进行 LLM 清洗
+  - `word.py`：`extract_text()` 内优先读 `doc.core_properties.title`，为空则找第一个 Heading 样式段落，更新 `raw.title`
+  - RSS / URL / WeChat 标题来源不变（已有完整 metadata）
+
+- **选题重新生成** ✅
+  - `POST /api/briefing/generate?force=true`：删除今日已有选题，从最近 `hours_back` 小时完整窗口重新生成（不走增量逻辑）
+  - 默认 `force=false` 行为不变（首次全量，再次增量）
+  - `/instructions` 页「选题方向」保存成功后出现橙色按钮「用新方向重新生成今日选题」，调用 `force=true`，完成后显示「✓ 已生成 N 条新选题」
+
 - **第十二步**：Maintenance Worker ✅
   - `services/api/maintenance.py` 实现三项维护任务：
     - **孤岛检测** `fix_islands()`：查找无任何边的节点（最多 20 个），找 top-3 相似节点（similarity > 0.55），调用 Claude Haiku 分析关系，confidence ≥ 0.70 则建边（created_by = 'auto_llm'）
@@ -968,6 +985,7 @@ rclone delete --min-age 30d r2:bucket/backups/
 KnowledgeBase-S/
 ├── docker-compose.yml          # API 含 INGESTION_WORKER_URL + FEEDBACK_WORKER_URL; workers expose 8001/8002
 │                               # api/ingestion-worker/feedback-worker 均挂载 ./config:/app/shared_config:ro
+│                               # api 服务含 healthcheck（Python urllib 探针）；三个 worker depends_on api: service_healthy
 ├── docker-compose.dev.yml      # dev 覆盖（同上挂载）
 ├── .env.example                # 含 OPENAI_API_KEY
 ├── Makefile / deploy.sh
@@ -1006,6 +1024,7 @@ KnowledgeBase-S/
     │       │                   # DELETE /api/files/content?rel_path=...（删除 wiki/config 文件）
     │       │                   # 注：wiki 节点优先通过 DELETE /api/kb/nodes/{id} 删除（联动 DB）
     │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
+    │       │                   # ?force=true：删今日选题后从完整 hours_back 窗口重新生成（写作方向变更时用）
     │       │                   # 提示词从 prompt_loader.fill("briefing_topics", ...) 读取
     │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
     │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
@@ -1026,6 +1045,7 @@ KnowledgeBase-S/
     │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
     │   ├── pipeline.py         # extract→save_raw→summarize(内部,3-5句)→embed→ingest→write_wiki(全量原文)
     │   │                       # summarize(): max_tokens=1024; JSON 解析失败时有 regex 降级兜底
+    │   │                       # _infer_title_from_text()：文件型 source 标题仍为 stem 时，从正文提取（# 标题 > 短首行 > 首行截断）
     │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
     │   └── sources/
     │       ├── base.py         # BaseSource + RawItem
@@ -1035,6 +1055,7 @@ KnowledgeBase-S/
     │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
     │       ├── pdf.py          # PDFSource（PyMuPDF + Claude Haiku 清洗）✅
     │       │                   # 两步：① PyMuPDF 提取 ② Claude 清洗噪音（pdf_cleanup 提示词）
+    │       │                   # extract_text() 内优先读 doc.metadata["title"] 更新 raw.title
     │       ├── image.py        # ImageSource（Claude Vision OCR + AI 清洗）✅
     │       │                   # 尺寸处理（参数从 config/image_processing.toml 读取）：
     │       │                   #   宽>MAX_DIM(7800) → 等比缩小（安全兜底）
@@ -1043,6 +1064,7 @@ KnowledgeBase-S/
     │       │                   # 两步：① OCR 转录（image_ocr 提示词）② Claude 清洗（image_cleanup 提示词）
     │       │                   # 异常用 logger.exception() 记录，不静默吞掉
     │       ├── word.py         # WordSource（python-docx）✅
+    │       │                   # extract_text() 内优先读 core_properties.title，其次找首个 Heading 样式段落
     │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
     ├── summarizer-worker/
     │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
@@ -1064,6 +1086,7 @@ KnowledgeBase-S/
             │                         # wiki/config 文件可从资源管理器删除；
             │                         # 删除 wiki 节点后图谱+列表同步刷新
             ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
+            │                         # 选题方向保存后出现「用新方向重新生成今日选题」按钮（调用 force=true）
             └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
 ```
 
@@ -1108,6 +1131,6 @@ KnowledgeBase-S/
   2. 重建时加 `--no-cache`：`make build-dev` 或 `docker compose ... build --no-cache web`
   3. 直接在运行中容器内安装也可：`docker compose ... exec web npm install`
 
-- **VPS（Aliyun HK）已知限制**：Anthropic API 对 AS45102（Alibaba Cloud HK）IP 段返回 403 "Request not allowed"。Claude API 调用（摘要、OCR、维护）全部失败。解决方案：迁移到新加坡/东京节点，或通过非受限地区代理转发 Anthropic API 流量（设置 `HTTPS_PROXY` 环境变量）。
+- **VPS 部署**：已迁移至 AWS VPS（原 Aliyun HK AS45102 对 Anthropic API 返回 403，已废弃）。AWS VPS 首次部署必须先 `make build-dev` 再 `make dev`，否则 web 容器因使用生产镜像（无 `next` 二进制）进入 restart loop。
 
 - **文件去重**：`file_base.py` 用文件 mtime 与 `last_fetched_at` 比较（`mtime <= last_fetched_at` 则跳过），精确到秒，避免同日重复处理；`kb.py/ingest` 在写入前按 `raw_ref->>'path'` 去重，避免同一文件重复入库。
