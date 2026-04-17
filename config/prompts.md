@@ -80,10 +80,10 @@
 - 一个选题可来自1篇或多篇文章，同一篇文章也可衍生多个选题
 - 优先贴合用户的写作方向
 - 标题：20字以内，点明写作角度
-- 说明：一句话说明为何这个角度值得写
+- 内容：按照用户指令基于文章生成内容
 
 严格按以下 JSON 格式输出，不要有任何其他文字：
 [
-  {"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [1, 3]},
-  {"title": "选题标题", "description": "这个角度值得写，因为...", "source_indices": [2]}
+  {"title": "选题标题", "description": "内容", "source_indices": [1, 3]},
+  {"title": "选题标题", "description": "内容", "source_indices": [2]}
 ]
