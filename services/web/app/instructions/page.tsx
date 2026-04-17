@@ -274,7 +274,7 @@ export default function InstructionsPage() {
                 className="w-full text-sm border border-blue-300 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-none"
                 placeholder="例如：AI 行业动态、创业融资、产品设计"
               />
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
                 <button
                   onClick={saveTopics}
                   disabled={topicsSaving}
@@ -289,34 +289,36 @@ export default function InstructionsPage() {
                   取消
                 </button>
               </div>
-              {topicsSaved && (
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="text-xs text-green-600">已保存</span>
-                  <button
-                    onClick={regenTopics}
-                    disabled={topicsRegenStatus === "generating"}
-                    className="text-xs px-3 py-1 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 transition-colors"
-                  >
-                    {topicsRegenStatus === "generating"
-                      ? "重新生成中…"
-                      : topicsRegenStatus === "done"
-                      ? `✓ 已生成 ${topicsRegenCount} 条新选题`
-                      : "用新方向重新生成今日选题"}
-                  </button>
-                </div>
-              )}
             </div>
           ) : (
             <div>
               <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed min-h-[3rem]">
                 {topics || <span className="text-gray-400 italic">（未设置）</span>}
               </div>
-              <button
-                onClick={() => { setTopicsDraft(topics); setTopicsEditing(true); }}
-                className="mt-2 text-xs text-blue-600 hover:text-blue-800"
-              >
-                编辑
-              </button>
+              <div className="mt-2 flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={() => { setTopicsDraft(topics); setTopicsEditing(true); }}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                >
+                  编辑
+                </button>
+                {topicsSaved && (
+                  <>
+                    <span className="text-xs text-green-600">已保存</span>
+                    <button
+                      onClick={regenTopics}
+                      disabled={topicsRegenStatus === "generating"}
+                      className="text-xs px-3 py-1 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 transition-colors"
+                    >
+                      {topicsRegenStatus === "generating"
+                        ? "重新生成中…"
+                        : topicsRegenStatus === "done"
+                        ? `✓ 已生成 ${topicsRegenCount} 条新选题`
+                        : "用新方向重新生成今日选题"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </Section>
