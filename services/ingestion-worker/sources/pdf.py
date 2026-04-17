@@ -37,6 +37,12 @@ class PDFSource(FileSourceMixin):
     def extract_text(self, raw: RawItem) -> str:
         try:
             doc = fitz.open(raw.raw_ref["path"])
+
+            # PDF 元数据标题优先
+            meta_title = (doc.metadata.get("title") or "").strip()
+            if meta_title:
+                raw.title = meta_title
+
             pages = [page.get_text() for page in doc]
             doc.close()
             raw_text = "\n\n".join(pages).strip()

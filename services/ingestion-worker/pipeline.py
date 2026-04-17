@@ -31,6 +31,33 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 MAX_TEXT_CHARS = 12000   # ~4000 tokens
 
 
+def _infer_title_from_text(text: str) -> str | None:
+    """
+    从正文中尽力提取标题。优先级：
+    1. 第一个 Markdown 标题（# ...）
+    2. 第一个不以句号/逗号结尾的短行（≤ 80 字符）
+    3. 第一个非空行（截断至 80 字符）
+    """
+    first_nonempty: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if first_nonempty is None:
+            first_nonempty = stripped
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            if title:
+                return title[:120]
+    if first_nonempty is None:
+        return None
+    # 短行且不像句子中间 → 直接用
+    if len(first_nonempty) <= 80 and not first_nonempty[-1] in ("。", ".", "，", ",", "；", ";"):
+        return first_nonempty
+    # 否则截断到最近词边界
+    return first_nonempty[:80].rsplit(" ", 1)[0] or first_nonempty[:80]
+
+
 def save_raw(item: RawItem, source_type: str) -> str:
     """把原始内容写到 user_data/raw/{source_type}/，返回绝对路径。"""
     raw_dir = USER_DATA_DIR / USER_ID / "raw" / source_type
@@ -132,6 +159,14 @@ async def run_pipeline(source: BaseSource, source_config: dict):
             if not text or len(text) < 50:
                 logger.warning(f"[{source_id}] 跳过，正文过短: {item.title}")
                 continue
+
+            # 文件型 source：若标题仍是文件名 stem，尝试从正文推断更好的标题
+            if item.raw_ref.get("type") == "file":
+                stem = Path(item.raw_ref["path"]).stem
+                if not item.title or item.title == stem:
+                    inferred = _infer_title_from_text(text)
+                    if inferred:
+                        item.title = inferred
 
             # 2. 保存原始文件
             file_path = save_raw(item, source_type)
