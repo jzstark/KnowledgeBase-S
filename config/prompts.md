@@ -46,14 +46,78 @@
 
 输出格式：纯 Markdown，不要添加任何解释、注释或分隔线。只输出清理后的正文。
 
-## summarize
+## abstract
 请对以下文章生成一段完整的中文摘要（3-5句完整的句子），并提取3-5个标签。
 
 严格按以下 JSON 格式输出，不要有任何其他文字：
-{"summary": "摘要内容", "tags": ["标签1", "标签2"]}
+{"abstract": "摘要内容", "tags": ["标签1", "标签2"]}
 
 文章内容：
 <<<text>>>
+
+## article_analysis
+你是一个知识库分析助手。请分析以下文章，完成三项任务：
+
+**1. 生成文章摘要（abstract）**：3-5句完整中文句子，概括文章核心观点。
+
+**2. 识别关键实体（entities）**：找出文章中值得建立独立知识页面的重要概念、人物、产品、机构、事件等。
+- 只挑选对理解文章核心内容至关重要的实体，不要列出所有名词
+- 每个实体给出显著度（salience，0~1）：文章主题越围绕它，值越高
+- 若实体与【已有实体列表】中某条吻合，填写 matches_existing_entity_id；否则为 null
+- summary_hint：一句话描述该实体，供后续生成实体页面时参考
+
+**3. 提取标签（tags）**：3-5个简洁中文标签。
+
+【已有实体列表（近邻）】：
+<<<existing_entities>>>
+
+【长期候选实体（多次出现但未建页）】：
+<<<candidate_entities>>>
+
+文章正文：
+<<<text>>>
+
+严格按以下 JSON 格式输出，不要有任何其他文字：
+{
+  "abstract": "摘要内容",
+  "tags": ["标签1", "标签2"],
+  "entities": [
+    {"name": "实体规范名", "aliases": ["别名1"], "salience": 0.8, "matches_existing_entity_id": null, "summary_hint": "一句话描述"}
+  ],
+  "contradictions": [
+    {"entity_id_or_candidate": "名称", "conflict": "与现有知识的冲突描述"}
+  ],
+  "structural_hints": ["可选的结构建议，如建议合并XXX"]
+}
+
+## entity_page
+你是一个知识库编辑助手。请根据以下信息，为实体「<<<entity_name>>>」生成一个维基百科风格的知识页面（Markdown 格式）。
+
+已知信息：
+- 规范名：<<<entity_name>>>
+- 别名：<<<aliases>>>
+- 来源文章摘要（按相关度排序）：
+<<<source_abstracts>>>
+
+要求：
+- 结构清晰，分段介绍（定义、背景、核心特点、相关联系等，按实际情况取舍）
+- 内容客观，基于来源信息，不要虚构
+- 篇幅适中（200-500字）
+- 纯 Markdown 正文，不含 frontmatter
+
+## entity_update
+你是一个知识库编辑助手。请根据新的来源信息，对「<<<entity_name>>>」的现有知识页面进行增量更新。
+
+现有页面内容：
+<<<existing_body>>>
+
+新来源文章摘要：
+<<<new_source_abstracts>>>
+
+要求：
+- 保留已有内容，只在必要处补充新信息、修正错误或标注分歧
+- 若新信息与现有内容有冲突，在相关段落末尾用 > ⚠️ **待核实**：xxx 标注
+- 输出完整更新后的 Markdown 正文（不含 frontmatter）
 
 ## feedback_analysis
 你是一个写作风格分析助手。以下是用户对 AI 生成草稿的修改记录（unified diff 格式，- 是原文，+ 是用户修改后的版本）：

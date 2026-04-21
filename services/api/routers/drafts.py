@@ -62,7 +62,7 @@ def read_template(template_name: str) -> str:
 
 async def fetch_node(node_id: str) -> dict | None:
     row = await database.database.fetch_one(
-        "SELECT id, title, summary, tags FROM knowledge_nodes WHERE id = :id",
+        "SELECT id, title, abstract AS summary, tags FROM knowledge_nodes WHERE id = :id",
         {"id": node_id},
     )
     return dict(row) if row else None
@@ -89,7 +89,7 @@ async def semantic_search_related(query: str, exclude_ids: list[str], limit: int
     async with database.database.connection() as conn:
         rows = await conn.raw_connection.fetch(
             f"""
-            SELECT id, title, summary, tags,
+            SELECT id, title, abstract AS summary, tags,
                    1 - (embedding <=> '{embedding_literal}'::vector) AS score
             FROM knowledge_nodes
             WHERE embedding IS NOT NULL
@@ -121,7 +121,7 @@ async def expand_one_hop(node_ids: list[str], relation_types: list[str]) -> list
 
     ids_str2 = ", ".join(f"'{i}'" for i in neighbor_ids)
     rows = await database.database.fetch_all(
-        f"SELECT id, title, summary, tags FROM knowledge_nodes WHERE id IN ({ids_str2})"
+        f"SELECT id, title, abstract AS summary, tags FROM knowledge_nodes WHERE id IN ({ids_str2})"
     )
     return [dict(r) for r in rows]
 

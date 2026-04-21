@@ -75,18 +75,19 @@ async def get_tree():
                     "node_id": path_to_node.get(abs_str),
                 })
 
-    # ── wiki 区：nodes/*.md + index.md ──
-    wiki: list[dict] = []
+    # ── wiki 区：articles/ entities/ summaries/ + index.md ──
+    # Format: {"articles": [...], "entities": [...], "summaries": [...], "index": bool}
+    wiki: dict = {"articles": [], "entities": [], "summaries": [], "index": False}
     wiki_dir = base / "wiki"
     if wiki_dir.exists():
-        index = wiki_dir / "index.md"
-        if index.exists():
-            wiki.append({"name": "index.md", "rel_path": "wiki/index.md"})
-        nodes_dir = wiki_dir / "nodes"
-        if nodes_dir.exists():
-            for f in sorted(nodes_dir.iterdir()):
-                if f.is_file() and f.suffix == ".md":
-                    wiki.append({"name": f.name, "rel_path": f"wiki/nodes/{f.name}"})
+        if (wiki_dir / "index.md").exists():
+            wiki["index"] = True
+        for subdir in ("articles", "entities", "summaries"):
+            sd = wiki_dir / subdir
+            if sd.exists():
+                for f in sorted(sd.iterdir()):
+                    if f.is_file() and f.suffix == ".md":
+                        wiki[subdir].append({"name": f.name, "rel_path": f"wiki/{subdir}/{f.name}"})
 
     # ── config 区：templates/*.md ──
     config: list[dict] = []

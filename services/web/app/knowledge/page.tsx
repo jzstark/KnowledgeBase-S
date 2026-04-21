@@ -11,7 +11,8 @@ interface KBNode {
   source_type: string;
   tags: string[];
   degree?: number;
-  summary?: string;
+  abstract?: string;
+  object_type?: string;
   created_at?: string;
 }
 
@@ -24,7 +25,7 @@ interface KBEdge {
 }
 
 interface NodeDetail extends KBNode {
-  summary: string;
+  abstract: string;
   wiki_body?: string;
   edges: KBEdge[];
 }
@@ -55,9 +56,16 @@ interface MdFile {
   rel_path: string;
 }
 
+interface WikiSection {
+  articles: MdFile[];
+  entities: MdFile[];
+  summaries: MdFile[];
+  index: boolean;
+}
+
 interface FileTree {
   raw: Record<string, RawFile[]>;
-  wiki: MdFile[];
+  wiki: WikiSection;
   config: MdFile[];
 }
 
@@ -73,6 +81,14 @@ const EDGE_COLORS: Record<string, string> = {
   similar_to: "#60a5fa",
   background_of: "#f59e0b",
   extends: "#34d399",
+  wikilink: "#a78bfa",
+  contradicts: "#f87171",
+};
+
+const OBJECT_TYPE_COLORS: Record<string, string> = {
+  article: "#3b82f6",
+  entity: "#10b981",
+  summary: "#f59e0b",
 };
 
 const SOURCE_TYPE_COLORS: Record<string, string> = {
@@ -166,8 +182,8 @@ function NodeCard({
       <p className="text-sm font-medium text-gray-900 line-clamp-2 mb-1">
         {node.title || node.id}
       </p>
-      {node.summary && (
-        <p className="text-xs text-gray-500 line-clamp-2">{node.summary}</p>
+      {node.abstract && (
+        <p className="text-xs text-gray-500 line-clamp-2">{node.abstract}</p>
       )}
       {(node.tags || []).length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1.5">
@@ -265,7 +281,7 @@ function ListPanel({
           type="text"
           value={q}
           onChange={(e) => handleQChange(e.target.value)}
-          placeholder="搜索标题或摘要…"
+          placeholder="搜索标题或 abstract…"
           className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-400"
         />
         <div className="flex items-center gap-2">
@@ -338,6 +354,12 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const WIKI_SECTION_LABELS: Record<string, string> = {
+  articles: "文章",
+  entities: "实体",
+  summaries: "摘要",
+};
+
 function ExplorerPanel({
   onOpenFile,
   onSelectNode,
@@ -351,7 +373,9 @@ function ExplorerPanel({
 }) {
   const [tree, setTree] = useState<FileTree | null>(null);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["raw", "wiki", "config"]));
+  const [expanded, setExpanded] = useState<Set<string>>(
+    new Set(["raw", "wiki", "wiki-articles", "wiki-entities", "config"])
+  );
   const [deleting, setDeleting] = useState<string | null>(null);
 
   async function loadTree() {
@@ -489,35 +513,58 @@ function ExplorerPanel({
           className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
         >
           {chevron("wiki")} Wiki
-          <span className="ml-1 text-xs text-gray-300">({tree.wiki.length})</span>
+          <span className="ml-1 text-xs text-gray-300">
+            ({(tree.wiki.articles?.length ?? 0) + (tree.wiki.entities?.length ?? 0) + (tree.wiki.summaries?.length ?? 0)})
+          </span>
         </button>
         {expanded.has("wiki") && (
-          <div className="ml-3 space-y-0.5">
-            {tree.wiki.map((f) => {
-              const nodeId = f.name.replace(/\.md$/, "");
-              const isSelected = nodeId === selectedNodeId;
+          <div className="ml-3">
+            {(["articles", "entities", "summaries"] as const).map((subdir) => {
+              const files = tree.wiki[subdir] ?? [];
+              if (files.length === 0) return null;
+              const key = `wiki-${subdir}`;
               return (
-                <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
+                <div key={subdir}>
                   <button
-                    onClick={() => {
-                      onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true });
-                      onSelectNode(nodeId);
-                    }}
-                    className={`flex-1 min-w-0 text-left text-xs truncate rounded px-1 transition-colors ${
-                      isSelected ? "bg-blue-50 text-blue-700" : "text-blue-600 hover:text-blue-800"
-                    }`}
-                    title={f.name}
+                    onClick={() => toggle(key)}
+                    className="flex items-center w-full text-left text-gray-500 py-0.5 hover:text-gray-700"
                   >
-                    📄 {f.name}
+                    {chevron(key)}
+                    <span className="text-xs">{WIKI_SECTION_LABELS[subdir]}</span>
+                    <span className="ml-1 text-xs text-gray-300">({files.length})</span>
                   </button>
-                  <button
-                    onClick={() => handleDeleteWiki(nodeId, f.name)}
-                    disabled={deleting === nodeId}
-                    className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
-                    title="删除节点及原始文件"
-                  >
-                    {deleting === nodeId ? "…" : "✕"}
-                  </button>
+                  {expanded.has(key) && (
+                    <div className="ml-3 space-y-0.5">
+                      {files.map((f: MdFile) => {
+                        const nodeId = f.name.replace(/\.md$/, "");
+                        const isSelected = nodeId === selectedNodeId;
+                        return (
+                          <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
+                            <button
+                              onClick={() => {
+                                onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true });
+                                onSelectNode(nodeId);
+                              }}
+                              className={`flex-1 min-w-0 text-left text-xs truncate rounded px-1 transition-colors ${
+                                isSelected ? "bg-blue-50 text-blue-700" : "text-blue-600 hover:text-blue-800"
+                              }`}
+                              title={f.name}
+                            >
+                              📄 {f.name}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteWiki(nodeId, f.name)}
+                              disabled={deleting === nodeId}
+                              className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
+                              title="删除节点"
+                            >
+                              {deleting === nodeId ? "…" : "✕"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -694,6 +741,8 @@ function WikiPanel({
   }
 
   const colorClass = SOURCE_TYPE_COLORS[detail.source_type] || "bg-gray-50 text-gray-600";
+  const objectType = detail.object_type || "article";
+  const wikiSubdir = objectType === "entity" ? "entities" : objectType === "summary" ? "summaries" : "articles";
 
   return (
     <div className="flex flex-col h-full">
@@ -705,6 +754,12 @@ function WikiPanel({
               {detail.title || detail.id}
             </h2>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span
+                className="text-xs px-1.5 py-0.5 rounded font-medium text-white"
+                style={{ background: OBJECT_TYPE_COLORS[objectType] || "#6b7280" }}
+              >
+                {objectType}
+              </span>
               <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${colorClass}`}>
                 {detail.source_type || "unknown"}
               </span>
@@ -723,7 +778,7 @@ function WikiPanel({
           <button
             onClick={() =>
               onOpenFile({
-                rel_path: `wiki/nodes/${detail.id}.md`,
+                rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
                 name: `${detail.title || detail.id}.md`,
                 writable: true,
               })
@@ -733,8 +788,8 @@ function WikiPanel({
             在编辑器中打开
           </button>
         </div>
-        {detail.summary && (
-          <p className="text-xs text-gray-500 mt-2 leading-relaxed">{detail.summary}</p>
+        {detail.abstract && (
+          <p className="text-xs text-gray-500 mt-2 leading-relaxed">{detail.abstract}</p>
         )}
       </div>
 
@@ -868,10 +923,9 @@ export default function KnowledgePage() {
     svgSel
       .selectAll<SVGCircleElement, SimNode>("circle")
       .attr("fill", (d) => {
-        if (!selectedNodeId) return "#3b82f6";
-        if (d.id === selectedNodeId) return "#ef4444";   // 红色：选中
-        if (neighborIds.has(d.id)) return "#f59e0b";     // 琥珀色：邻居
-        return "#3b82f6";
+        if (d.id === selectedNodeId) return "#ef4444";   // 红: selected
+        if (neighborIds.has(d.id)) return "#f97316";     // orange: neighbor
+        return OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6";
       })
       .attr("fill-opacity", (d) => {
         if (!selectedNodeId) return 0.8;
@@ -969,8 +1023,8 @@ export default function KnowledgePage() {
       .selectAll<SVGCircleElement, SimNode>("circle")
       .data(nodes).enter().append("circle")
       .attr("r", (d) => Math.min(8 + (d.degree || 0) * 1.5, 22))
-      .attr("fill", "#3b82f6")
-      .attr("fill-opacity", 0.8)
+      .attr("fill", (d) => OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6")
+      .attr("fill-opacity", 0.85)
       .attr("stroke", "#fff")
       .attr("stroke-width", 1.5)
       .attr("cursor", "pointer")
@@ -1094,11 +1148,17 @@ export default function KnowledgePage() {
 
           {/* 下：图谱 */}
           <div style={{ height: graphHeight }} className="shrink-0 relative bg-white border-t border-gray-200">
-            <div className="absolute top-2 left-3 z-10 flex items-center gap-2">
+            <div className="absolute top-2 left-3 z-10 flex items-center gap-3">
               <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">图谱</span>
+              {(["article", "entity", "summary"] as const).map((t) => (
+                <span key={t} className="flex items-center gap-1 text-xs text-gray-400">
+                  <span className="w-2 h-2 rounded-full inline-block" style={{ background: OBJECT_TYPE_COLORS[t] }} />
+                  {t}
+                </span>
+              ))}
               {selectedNodeId && (
                 <span className="text-xs text-gray-400">
-                  · 按 <kbd className="font-mono bg-gray-100 px-1 rounded">Esc</kbd> 取消选中
+                  · <kbd className="font-mono bg-gray-100 px-1 rounded">Esc</kbd> 取消
                 </span>
               )}
             </div>

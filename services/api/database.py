@@ -19,14 +19,33 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
     title TEXT,
-    summary TEXT,
+    abstract TEXT,
     embedding vector(1536),
     source_type VARCHAR,
     source_id VARCHAR,
     raw_ref JSONB,
     tags TEXT[],
     is_primary BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    object_type VARCHAR(16) NOT NULL DEFAULT 'article',
+    source_node_ids TEXT[] DEFAULT '{}',
+    summary_of VARCHAR,
+    canonical_name TEXT,
+    aliases TEXT[] DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS entity_candidates (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    canonical_name TEXT NOT NULL,
+    aliases TEXT[] DEFAULT '{}',
+    embedding vector(1536),
+    mentions JSONB DEFAULT '[]',
+    promoted_entity_id VARCHAR REFERENCES knowledge_nodes(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, canonical_name)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_edges (
@@ -98,15 +117,25 @@ CREATE TABLE IF NOT EXISTS user_settings (
     settings JSONB NOT NULL DEFAULT '{}'
 );
 
+ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS object_type VARCHAR(16) NOT NULL DEFAULT 'article';
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_node_ids TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS summary_of VARCHAR;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS canonical_name TEXT;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
+CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);
-
-ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
 """
 
 
@@ -117,3 +146,30 @@ async def init():
         stmt = stmt.strip()
         if stmt:
             await database.execute(stmt)
+
+    # Migration: rename summary → abstract (idempotent)
+    has_summary = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='summary'"
+    )
+    if has_summary:
+        has_abstract = await database.fetch_one(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='knowledge_nodes' AND column_name='abstract'"
+        )
+        if has_abstract:
+            # Both columns exist: drop the old one (abstract was already added by ADD COLUMN)
+            await database.execute("ALTER TABLE knowledge_nodes DROP COLUMN summary")
+        else:
+            await database.execute("ALTER TABLE knowledge_nodes RENAME COLUMN summary TO abstract")
+
+    # Add FK constraint for summary_of self-reference (idempotent)
+    row = await database.fetch_one(
+        "SELECT 1 FROM information_schema.table_constraints "
+        "WHERE constraint_name='fk_summary_of' AND table_name='knowledge_nodes'"
+    )
+    if not row:
+        await database.execute(
+            "ALTER TABLE knowledge_nodes ADD CONSTRAINT fk_summary_of "
+            "FOREIGN KEY (summary_of) REFERENCES knowledge_nodes(id) ON DELETE CASCADE"
+        )

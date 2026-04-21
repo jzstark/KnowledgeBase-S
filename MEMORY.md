@@ -1,4 +1,4 @@
-# CLAUDE.md — 内容创作辅助系统
+# Memory.md — 内容创作辅助系统
 
 本文档记录了该项目的完整设计决策，供 Claude Code 在开发时参考。所有架构决策均经过深思熟虑，开发时请严格遵循。
 
@@ -9,12 +9,14 @@
 一个面向内容创作者的个人知识管理与 AI 辅助写作系统。核心流程：
 
 1. 自动聚合多种来源的内容（公众号、RSS、用户上传文件等）
-2. 入库清洁文本、生成 summary（仅用于内部索引/向量检索，不对用户展示）、构建持续生长的个人知识图谱
+2. 入库清洁文本、生成 **abstract**（3-5 句内嵌摘要，仅供 embedding 索引与列表速览，不对用户展示）、识别关键 entity、构建持续生长的个人知识图谱
 3. 每日基于新增原文 + 用户写作方向，由 AI 生成若干**写作选题**（角度），用户在主界面选入选题后 AI 基于知识库生成草稿
 4. 用户提交定稿反馈，系统学习写作偏好，持续改善草稿质量
 
 **关键概念区分**：
-- **知识节点**（`knowledge_nodes`）= 清洁化的原始内容，`summary` 字段仅供内部 embedding 索引，不直接展示给用户
+- **知识节点**（`knowledge_nodes`）= 三类对象的统一存储表，`abstract` 字段（3-5句短摘要）仅供内部 embedding 索引，不直接展示给用户
+- **三类 wiki 对象**：`article`（清洁原文）/ `entity`（概念/人物/事件的维基百科式页面）/ `summary`（任意对象的压缩描述，可嵌套）
+- **abstract vs summary**：`abstract` = DB 内嵌短摘要字段（承担 embedding 基底）；`summary` = wiki 一等对象，是完整的摘要页面，可被 wikilink 引用
 - **选题**（`topics`）= AI 基于当日内容和用户写作方向生成的可写角度，是用户的每日决策入口；一个选题可来自多篇原文，一篇原文也可衍生多个选题（M:N 关系）
 
 **目标用户**：普通内容创作者，技术门槛尽量低。  
@@ -134,19 +136,25 @@ user_data/{user_id}/
 │   │   └── 2026-04-11-{title}.html
 │   ├── rss/
 │   │   └── 2026-04-11-{guid}.html
-│   ├── uploads/
-│   │   ├── paper.pdf
-│   │   ├── notes.md
+│   ├── plaintext/
+│   │   └── notes.txt
+│   ├── pdf/
+│   │   └── paper.pdf
+│   ├── image/
 │   │   └── screenshot.png
+│   ├── word/
+│   │   └── doc.docx
 │   └── url/
 │       └── 2026-04-11-{domain}.html
 │
 ├── wiki/                         # 知识库，可直接作为 Obsidian vault
-│   ├── index.md                  # 自动生成的知识库入口
-│   ├── nodes/
-│   │   └── {node-id}.md          # 每个知识节点一个文件
-│   └── drafts/
-│       └── 2026-04-11-{title}.md # 生成的草稿
+│   ├── index.md                  # 自动生成的知识库入口（按 type 分段）
+│   ├── articles/
+│   │   └── art_{id}.md           # 清洁原文页（object_type=article）
+│   ├── entities/
+│   │   └── ent_{id}.md           # 概念/人物/事件页（object_type=entity）
+│   └── summaries/
+│       └── sum_{id}.md           # 摘要页（object_type=summary）
 │
 └── config/
     ├── topics.md                 # 选题方向，用户可编辑（/instructions 页面）
@@ -156,35 +164,74 @@ user_data/{user_id}/
         └── 周报.md
 ```
 
-### wiki/nodes/{node-id}.md 格式
+### wiki 文件格式（三类统一 frontmatter）
 
-完全兼容 Obsidian，支持双链和图谱视图：
+完全兼容 Obsidian，支持双链和图谱视图。**旧 `wiki/nodes/` 目录已废弃，迁移时清空重建。**
 
+**article**（`wiki/articles/art_{id}.md`）：
 ```markdown
 ---
-id: node-abc123
-source_type: rss
-source_name: 晚点LatePost
-raw_ref: ../../raw/rss/2026-04-11-item.html
+id: art_abc123
+type: article
+title: "文章标题"
 tags: [AI, 推理模型]
+wikilinks: [ent_xyz456]
+source_type: rss
+raw_ref: /app/user_data/default/raw/rss/2026-04-11-item.html
 created_at: 2026-04-11T08:03:00Z
-relations:
-  - id: node-xyz456
-    type: extends
-  - id: node-def789
-    type: background_of
+updated_at: 2026-04-11T08:03:00Z
 ---
 
 # 文章标题
 
-[全量清洁后原文内容 —— extract_text() 的输出，非 AI 摘要]
-
-## 关联节点
-- [[node-xyz456]] · extends
-- [[node-def789]] · background_of
+[全量清洁后原文内容 —— extract_text() 的输出，含系统注入的 [[ent_xyz456|entity名]] wikilink]
 ```
 
-**重要**：wiki 正文 = `extract_text()` 的完整输出（plaintext 直接读取，image 经 OCR + `image_cleanup` 提示词清洗，pdf 经 PyMuPDF 提取后经 `pdf_cleanup` 提示词清洗，等等）。`summary` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见。wiki 生成完全自动，不受用户 config（schema.md、模板）控制。所有提示词集中管理于 `config/prompts.md`（开发者可编辑，不对用户暴露）。
+**entity**（`wiki/entities/ent_{id}.md`）：
+```markdown
+---
+id: ent_xyz456
+type: entity
+title: "Transformer"
+tags: [AI, 深度学习]
+wikilinks: []
+canonical_name: Transformer
+aliases: ["transformer", "注意力机制"]
+sources: [art_abc123, art_def789]
+created_at: 2026-04-11T08:03:00Z
+updated_at: 2026-04-11T08:03:00Z
+---
+
+# Transformer
+
+[Claude 生成的维基百科式正文，基于 source articles 的 abstract]
+```
+
+**summary**（`wiki/summaries/sum_{id}.md`）：
+```markdown
+---
+id: sum_uvw012
+type: summary
+title: "摘要：文章标题"
+tags: [AI, 推理模型]
+wikilinks: []
+summary_of: art_abc123
+sources: [art_abc123]
+created_at: 2026-04-11T08:03:00Z
+updated_at: 2026-04-11T08:03:00Z
+---
+
+# 摘要：文章标题
+
+[初版 = abstract 字段内容；v2 TODO：独立 Claude 调用生成更充分的段落级摘要]
+```
+
+**重要原则**：
+- `abstract` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见
+- wiki article 正文 = `extract_text()` 完整输出 + 系统注入的 `[[entity_id|原文]]` wikilink 标注
+- wikilink 注入路径：① 摄入时对当前 article 扫描注入；② entity 晋升后 `backfill_wikilinks_for_entity()` 回扫所有旧 article
+- wiki 生成完全自动，不受用户 config（schema.md、模板）控制
+- 时间戳真相来源是 DB；frontmatter 中的时间戳是便携副本，由系统重写 wiki 文件时同步
 
 ### config/settings.json 结构
 
@@ -211,32 +258,57 @@ relations:
 
 ### PostgreSQL 数据库 Schema
 
-数据库存储可重新生成的结构化数据（embedding、关系、偏好规则）。如数据库损坏，可基于 `user_data/` 目录重建。
+数据库存储可重新生成的结构化数据（embedding、关系、偏好规则）。如数据库损坏，可基于 `user_data/` 目录重建。共 **8 张表**（较上一版新增 `entity_candidates`，`knowledge_nodes` 扩列）。
 
 ```sql
--- 知识节点
+-- 知识节点（article / entity / summary 三类共用同一张表）
 CREATE TABLE knowledge_nodes (
-    id VARCHAR PRIMARY KEY,
+    id VARCHAR PRIMARY KEY,          -- 前缀约定：art_ / ent_ / sum_
     user_id VARCHAR NOT NULL,
     title TEXT,
-    summary TEXT,
+    abstract TEXT,                   -- ⚠️ 原 summary 字段改名；3-5句短摘要，用于 embedding
     embedding vector(1536),
-    source_type VARCHAR,         -- 'wechat'|'rss'|'pdf'|'image'|'plaintext'|'word'|'url'
+    source_type VARCHAR,             -- 'wechat'|'rss'|'pdf'|'image'|'plaintext'|'word'|'url'|'entity'
     source_id VARCHAR,
-    raw_ref JSONB,               -- {type: 'file', path: '...'} | {type: 'url', url: '...'}
+    raw_ref JSONB,                   -- {type: 'file', path: '...'} | {type: 'url', url: '...'}
     tags TEXT[],
-    is_primary BOOLEAN,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    is_primary BOOLEAN DEFAULT true,
+    object_type VARCHAR(16) NOT NULL DEFAULT 'article', -- 'article'|'entity'|'summary'
+    source_node_ids TEXT[] DEFAULT '{}',  -- entity/summary：来源 article id 列表
+    summary_of VARCHAR,              -- summary 专用：指向被摘要对象的 id
+    canonical_name TEXT,             -- entity 专用：规范名
+    aliases TEXT[] DEFAULT '{}',     -- entity 专用：同义词列表
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
+CREATE INDEX idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
+CREATE INDEX idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
+CREATE INDEX ON knowledge_nodes USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);
+
+-- entity 候选池（三层发现机制的核心）
+CREATE TABLE entity_candidates (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    canonical_name TEXT NOT NULL,
+    aliases TEXT[] DEFAULT '{}',
+    embedding vector(1536),          -- 懒计算，初始为 NULL
+    mentions JSONB DEFAULT '[]',     -- [{article_id, salience:float, seen_at:ts}]
+    promoted_entity_id VARCHAR REFERENCES knowledge_nodes(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, canonical_name)
+);
+CREATE INDEX idx_entity_candidates_user ON entity_candidates(user_id);
 
 -- 知识节点关系
 CREATE TABLE knowledge_edges (
     id SERIAL PRIMARY KEY,
-    from_node_id VARCHAR REFERENCES knowledge_nodes(id),
-    to_node_id VARCHAR REFERENCES knowledge_nodes(id),
-    relation_type VARCHAR,       -- 'similar_to'|'supports'|'contradicts'|'extends'|'example_of'|'background_of'
-    weight FLOAT,                -- 0~1
-    created_by VARCHAR           -- 'auto_semantic'|'auto_llm'|'user'
+    from_node_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    to_node_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    relation_type VARCHAR,  -- 'similar_to'|'supports'|'contradicts'|'extends'|'background_of'|'wikilink'
+    weight FLOAT,           -- 0~1
+    created_by VARCHAR      -- 'auto_semantic'|'auto_llm'|'backfill'|'user'
 );
 
 -- 写作偏好记忆
@@ -245,7 +317,7 @@ CREATE TABLE writing_memory (
     user_id VARCHAR NOT NULL,
     template_name VARCHAR,
     rule TEXT,
-    rule_type VARCHAR,           -- 'style'|'structure'|'content'|'tone'
+    rule_type VARCHAR,      -- 'style'|'structure'|'content'|'tone'
     confidence FLOAT DEFAULT 0.5,
     count INTEGER DEFAULT 1,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -257,11 +329,11 @@ CREATE TABLE sources (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
     name VARCHAR NOT NULL,
-    type VARCHAR NOT NULL,       -- 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'
-    fetch_mode VARCHAR,          -- 'subscription'|'one_shot'|'push'
+    type VARCHAR NOT NULL,  -- 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'
+    fetch_mode VARCHAR,     -- 'subscription'|'manual'|'push'
     is_primary BOOLEAN DEFAULT true,
-    config JSONB,                -- 各类型自己的配置字段
-    api_token VARCHAR,           -- wechat push 类型专用
+    config JSONB,
+    api_token VARCHAR,
     last_fetched_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -271,10 +343,10 @@ CREATE TABLE topics (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
     date DATE NOT NULL DEFAULT CURRENT_DATE,
-    title TEXT NOT NULL,             -- 选题标题，10字以内
-    description TEXT,                -- 一句话说明此角度为何值得写
-    source_node_ids TEXT[],          -- 来源知识节点 ID 列表（M:N）
-    status VARCHAR DEFAULT 'pending', -- 'pending'|'selected'|'skipped'
+    title TEXT NOT NULL,
+    description TEXT,
+    source_node_ids TEXT[],
+    status VARCHAR DEFAULT 'pending',  -- 'pending'|'selected'|'skipped'
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -283,17 +355,23 @@ CREATE TABLE drafts (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
     template_name VARCHAR,
-    selected_topic_ids TEXT[],       -- 用户选入的选题 ID（新字段）
-    selected_node_ids TEXT[],        -- 展开后的来源节点 ID（冗余存储，便于 feedback）
+    selected_topic_ids TEXT[],
+    selected_node_ids TEXT[],
     draft_content TEXT,
-    final_content TEXT,              -- 用户提交的定稿，用于 diff 学习
+    final_content TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 启用 pgvector
+-- 用户设置
+CREATE TABLE user_settings (
+    user_id VARCHAR PRIMARY KEY,
+    settings JSONB NOT NULL DEFAULT '{}'
+);
+
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE INDEX ON knowledge_nodes USING ivfflat (embedding vector_cosine_ops);
 ```
+
+**迁移注意**：`database.py` 的 `init()` 在启动时幂等执行 schema；旧库若存在 `summary` 列，自动检测并重命名为 `abstract`；若 `abstract` 已存在则直接 DROP 旧 `summary` 列。`CREATE INDEX` 必须放在 `ALTER TABLE ADD COLUMN` **之后**，否则旧表（缺新列）会报 `UndefinedColumnError`。
 
 ---
 
@@ -380,26 +458,49 @@ Headers: X-API-Token: {source.api_token}
 
 用户在 Web 界面创建微信 source 后，系统生成专属 `api_token`，用户将其填入 iPhone 快捷指令模板即可使用。
 
-### Ingestion 流水线（所有类型共用）
+### Ingestion 流水线（所有类型共用，重构后）
 
 ```
 Source.fetch_new_items()
         ↓ RawItem 列表
-Source.extract_text()        ← 各类型自己实现
+Source.extract_text()                  ← 各类型自己实现
         ↓ 纯文本（全量清洁后原文）
-保存原始文件到 raw/                    ← 永久存档
+save_raw()                             ← 永久存档到 raw/{source_type}/
         ↓
-Claude API → summary + 标签            ← 仅内部使用；summary 存 DB 供 embedding，不写 wiki
+embed(text[:8000])                     ← 初始 embedding，用于后续实体上下文查询
         ↓
-Embedding API（基于 summary）          ← 统一逻辑
+GET /api/kb/entity_candidates/analyze_context(embedding)
+        ↓ {nearby_entities: [...20条], top_candidates: [...20条]}
+analyze_article(text, nearby_entities, top_candidates)  ← Claude article_analysis 提示词
+        ↓ {abstract, tags, entities:[{name,aliases,salience,matches_existing,summary_hint}],
+           contradictions, structural_hints}
+embed(abstract)                        ← 正式 embedding（基于 abstract）
         ↓
-POST /api/kb/ingest                    ← 写入数据库（summary 存 DB）
+POST /api/kb/ingest(object_type=article)  ← 写入 DB，id 前缀 art_
+        ↓ article_id
+POST /api/kb/ingest(object_type=summary)  ← summary body = abstract（初版简化）；id 前缀 sum_
         ↓
-write_wiki_node()                      ← wiki 正文 = 全量原文（非 summary）
-        ↓ 异步
-计算与现有节点的语义相似度 → 建 similar_to 边（阈值 > 0.75）
-→ 重写 wiki 文件（保留原文正文，仅更新 frontmatter + 关联节点区块）
+POST /api/kb/entity_candidates/process(article_id, entities)
+        ↓ {matched_existing:[...], promoted:[{candidate_id, canonical_name, ...}]}
+for each promoted:
+    generate_entity_page(canonical_name, aliases, source_abstracts)  ← Claude entity_page 提示词
+    embed(canonical_name)
+    POST /api/kb/ingest(object_type=entity)  ← id 前缀 ent_
+    write_wiki_entity()
+    POST /api/kb/entities/{entity_id}/backfill_wikilinks  ← 回扫所有旧 article 注入 [[ent_id|term]]
+        ↓
+write_wiki_article()                   ← wiki/articles/art_{id}.md，正文 = 全量原文
+write_wiki_summary()                   ← wiki/summaries/sum_{id}.md
+        ↓ 异步（ingest 后台任务）
+build_similar_edges()                  ← 建 similar_to 边（余弦 > 0.75）
+update_last_fetched()
 ```
+
+**entity 候选处理逻辑**（`POST /api/kb/entity_candidates/process`）：
+- `matches_existing_entity_id` 非空 → 追加 article 到 entity 的 `source_node_ids`（DB 侧操作，不重建 entity 页）
+- 否则 → upsert `entity_candidates`（累加 mentions JSONB）
+- 晋升条件：`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`
+- 已晋升（`promoted_entity_id IS NOT NULL`）→ 跳过，不重复晋升
 
 ---
 
@@ -411,16 +512,23 @@ write_wiki_node()                      ← wiki 正文 = 全量原文（非 summ
 
 ```
 # 内容入库（唯一写入入口）
-POST   /api/kb/ingest
+POST   /api/kb/ingest                      # object_type=article|entity|summary；返回 node_id
 
 # 语义搜索（RAG 核心调用）
-GET    /api/kb/search?q=...&limit=10&tags=AI,产品
+GET    /api/kb/search?q=...&limit=10&tags=AI,产品&type=article|entity|summary
 
-# 获取单个节点（含所有边）
+# 获取单个节点（含所有边 + wiki_body）
 GET    /api/kb/node/:id
+
+# 节点列表（知识库浏览）
+GET    /api/kb/nodes?q=...&tags=...&type=article|entity|summary&limit=50&offset=0
 
 # 图谱查询（Obsidian 同步 + Wiki 可视化用）
 GET    /api/kb/graph?root=:id&depth=2
+GET    /api/kb/graph/all                   # 全量节点+边，用于 D3 可视化
+
+# 删除节点（wiki 文件 + edges + DB 记录，不删 raw）
+DELETE /api/kb/nodes/:id
 
 # 偏好规则读写
 POST   /api/kb/memory/feedback
@@ -428,6 +536,16 @@ GET    /api/kb/memory?template_name=...
 
 # 维护任务触发
 POST   /api/kb/maintenance/run
+
+# entity 候选池 API（ingestion-worker 调用）
+GET    /api/kb/entity_candidates/analyze_context?embedding=...&limit=20
+        # 返回 {nearby_entities:[{id,title,canonical_name}], top_candidates:[{canonical_name,mention_count}]}
+POST   /api/kb/entity_candidates/process   # 处理 article 分析结果：upsert 候选 + 晋升判定
+        # Body: {article_id, entities:[{name,aliases,salience,matches_existing_entity_id,summary_hint}]}
+        # 返回 {matched_existing:[...], newly_promoted:[{candidate_id,canonical_name,...}]}
+
+# entity wikilink 回灌（entity 晋升后触发，回扫所有旧 article）
+POST   /api/kb/entities/:entity_id/backfill_wikilinks
 
 # Source 管理
 GET    /api/sources                        # 列表（含每个 source 的文章数）
@@ -437,7 +555,7 @@ DELETE /api/sources/:id
 POST   /api/sources/:id/fetch              # 触发 ingestion-worker 抓取（自动型）
 POST   /api/sources/:id/upload             # 上传文件到已有 source，支持多文件（手动型）
 POST   /api/sources/:id/add-url            # 添加 URL 到已有 source（手动型）
-POST   /api/sources/wechat/ingest          # 微信 push 专用（Step 7）
+POST   /api/sources/wechat/ingest          # 微信 push 专用
 
 # 今日选题（简报）
 GET    /api/briefing                       # 获取今日（或指定日期）选题列表
@@ -613,20 +731,21 @@ Source 卡片操作：
 - 按 `Esc` → 清除选中（`selectedNodeId = null`，图谱/列表/查看器全部重置）
 
 **图谱交互**：
+- **节点默认颜色按 `object_type` 区分**：article=`#3b82f6`（蓝），entity=`#10b981`（绿），summary=`#f59e0b`（琥珀）
 - 选中节点：红色填充（`#ef4444`），半径 +6px，相关边高亮（opacity 0.9），非相关边淡出（opacity 0.08）
-- 邻居节点：琥珀色填充（`#f59e0b`），完全不透明
-- 非相关节点：蓝色但透明度降至 18%（避免干扰）
+- 邻居节点：保持原 type 颜色但加亮，完全不透明
+- 非相关节点：原 type 颜色但透明度降至 18%（避免干扰）
 - 选中后图谱自动平移缩放（600ms 过渡）将所选节点居中，缩放比 2×
 
 **资源管理器**（左侧，可折叠树）：
 - 原始文件（按 source type 分组）：只读展示，**无删除按钮**（raw 数据独立管理，由 512MB 上限自动淘汰）
-- Wiki 节点文件：✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除 wiki 文件 + DB 记录 + 边（**不删除**对应的 raw 原始文件）；点击打开文件同时同步选中对应节点
+- Wiki 节点文件：三段树（`wiki/articles/` / `wiki/entities/` / `wiki/summaries/`）+ 配置模板（`config/templates/`）；✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除 wiki 文件 + DB 记录 + 边（**不删除**对应的 raw 原始文件）；点击打开文件同时同步选中对应节点
 - 配置模板：✕ 删除按钮（hover 显示），调用 `DELETE /api/files/content?rel_path=...` → 仅删除文件
 - 删除 wiki 节点后：图谱重新拉取（`loadGraph()`）、卡片列表原地刷新（保留当前搜索条件）、选中状态清空
 
 **Wiki 查看器**（中央上半部分）：
 - 有 `openFile`（通过资源管理器点击或"在编辑器中打开"按钮触发）→ 显示 `FilePanel`（查看/编辑 md 文件）
-- 有 `selectedNodeId`（通过图谱/列表点击触发）→ 显示节点元数据头（标题/标签/来源/日期/摘要）+ wiki_body 全文 + 关联边列表 + "在编辑器中打开"按钮（打开 `wiki/nodes/{id}.md`）
+- 有 `selectedNodeId`（通过图谱/列表点击触发）→ 显示节点元数据头（标题/`object_type` 徽章/标签/来源/日期）+ wiki_body 全文 + 关联边列表 + "在编辑器中打开"按钮；注意元数据中显示的是 `abstract`（DB 字段），不是 wiki body 正文
 - 两者都没有 → 占位提示
 
 **卡片列表**（右侧）：
@@ -677,7 +796,12 @@ AUTH_SECRET=random_secret_for_jwt_signing
 
 知识库层到 Obsidian 的同步是**单向的**，系统只写不读，用户在 Obsidian 里的任何修改不会回流。
 
-每当有新节点入库或节点更新时，异步生成/更新对应的 `wiki/nodes/{id}.md` 文件。`wiki/` 目录通过 iCloud 或 Dropbox 同步到用户本地，用户将此目录作为 Obsidian vault 打开即可使用双链和图谱视图。
+每当有新节点入库或节点更新时，异步生成/更新对应的 wiki 文件：
+- article → `wiki/articles/art_{id}.md`
+- entity → `wiki/entities/ent_{id}.md`
+- summary → `wiki/summaries/sum_{id}.md`
+
+`wiki/` 目录通过 iCloud 或 Dropbox 同步到用户本地，用户将此目录作为 Obsidian vault 打开即可使用双链（`[[ent_id|显示名]]` 格式）和图谱视图。**注意**：`wiki/nodes/` 旧目录已废弃，迁移时清空重建（不提供兼容层）。
 
 ---
 
@@ -827,13 +951,16 @@ rclone delete --min-age 30d r2:bucket/backups/
 
 | 调用 | 触发时机 | 输入上限 | 输出格式 |
 |------|---------|---------|---------|
-| 摘要 + 打标 | 每篇文章入库时 | 原文（截断至 4000 tokens） | 摘要段落（3-5句中文）+ JSON 标签 |
-| 分类 | 每日简报生成 | 摘要列表 + 选题方向描述 | JSON 分类结果 |
-| 建边分析 | 每周维护 | 两个节点摘要 | JSON relation_type |
-| 草稿生成 | 用户触发 | 模板 + 选题 + 知识库（≤2000 tokens） + 偏好规则 | 文章正文 |
+| `article_analysis` | 每篇文章入库时 | 原文（截断）+ 40条 entity 标题（近邻+候选池） | JSON `{abstract, tags, entities:[{name,aliases,salience,matches_existing_entity_id,summary_hint}], contradictions, structural_hints}` |
+| `entity_page` | entity 候选首次晋升时 | source articles 的 abstract 列表 + summary_hint | markdown entity 正文（维基百科式） |
+| `entity_update` | entity 增量更新（maintenance） | 现有 entity 正文 + 新增 source 的 abstract | markdown entity 正文（增量保留，不从头重写） |
+| `briefing_topics` | 每日简报生成 | abstract 列表 + 选题方向描述 | JSON 选题列表 |
+| 建边分析 | 每周维护 | 两个节点 abstract | JSON `{relation, direction, confidence}` |
+| 草稿生成 | 用户触发 | 模板 + 选题 + 知识库（≤6000字）+ 偏好规则 | 文章正文 |
 | diff 分析 | 用户提交定稿 | 草稿 v1 + 定稿 | JSON 偏好规则列表 |
-| 健康检查 | 每周维护，分批 | 每批 ≤20 个节点摘要 | JSON 问题报告 |
-| 图片描述 | 图片类型 source 入库 | 图片 base64 | 文本描述 |
+| 健康检查 | 每周维护，分批 | 每批 ≤20 个节点 abstract | JSON 问题报告 |
+| 图片 OCR + 清洗 | 图片类型 source 入库 | 图片 base64（含分片） | OCR 文本 → 清洗后正文（两步调用） |
+| PDF 清洗 | PDF source 入库 | PyMuPDF 提取的原始文本 | 清洗后正文 |
 
 ---
 
@@ -853,12 +980,15 @@ rclone delete --min-age 30d r2:bucket/backups/
 10. ✅ **Obsidian 同步**：单向 md 文件生成
 11. ✅ **指令设置页 + 数据导出**：/instructions 页面（选题方向/模板/Schema）+ 导出 zip
 12. ✅ **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
+13. ✅ **Explorer 资源管理器**：左侧文件树（raw/wiki/config）+ FilePanel 查看/编辑
+14. ✅ **四面板 IDE 式布局**：资源管理器（左）+ Wiki 查看器（中上）+ D3 图谱（中下）+ 卡片列表（右），三条可拖拽分隔线
+15. ✅ **Article/Entity/Summary 三类对象架构**：知识库层重构为三等公民；entity 三层发现机制；wikilink 回灌
 
 ---
 
-## 当前项目状态（2026-04-17）
+## 当前项目状态（2026-04-21）
 
-### 已完成：第一步 ~ 第十二步
+### 已完成：第一步 ~ 第十五步
 
 - **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
 - **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
@@ -892,12 +1022,11 @@ rclone delete --min-age 30d r2:bucket/backups/
   - d3 + @types/d3 已加入 `services/web/package.json`
   - "立即运行维护"按钮调用 `POST /api/kb/maintenance/run`，后台触发三项维护任务
 - **第十步**：Obsidian 同步 ✅
-  - `write_wiki_node(node_id, user_id)`：每次节点入库后，在 `build_similar_edges` 完成后异步写入 `user_data/{user_id}/wiki/nodes/{node_id}.md`（Obsidian 兼容 frontmatter + 双链格式）
-  - `write_wiki_index(user_id)`：重建 `wiki/index.md`，按日期分组列出所有节点
+  - `write_wiki_node(node_id, user_id)`：每次节点入库后异步写入 wiki 文件（Obsidian 兼容 frontmatter + 双链格式）。**⚠️ 第十五步后已拆分为 `write_wiki_article/entity/summary()`，路径改为 `wiki/articles/`、`wiki/entities/`、`wiki/summaries/`（旧 `wiki/nodes/` 废弃）**
+  - `write_wiki_index(user_id)`：重建 `wiki/index.md`，按 type 分段列出所有节点
   - `POST /api/kb/wiki/rebuild`（需认证）：后台重建全量 wiki 文件
   - `GET /api/kb/wiki/status`（无需认证）：返回 `{synced_count, index_exists}`
   - `/settings` 页新增 "Obsidian 同步" Section：显示同步状态 + "全量重建"按钮
-  - wiki 文件路径：`/app/user_data/{user_id}/wiki/nodes/{node_id}.md`（容器内，宿主机同路径通过 volume 共享）
   - 用户可将 `user_data/default/wiki/` 目录设为 Obsidian vault 直接使用
 - **第十一步**：指令设置页 + 数据导出 ✅
   - 新建 `/instructions` 页面，集中管理三类内容文档：选题方向 / 写作模板 / 知识库宪法（Schema）
@@ -929,11 +1058,24 @@ rclone delete --min-age 30d r2:bucket/backups/
   - **中央同步**：`selectedNodeId: string | null` 为唯一同步状态；`selectNode(id)` 统一入口（异步加载 `NodeDetail`，同时清除 `openFile`）；`clearSelection()` 重置所有面板
   - **图谱增强**：
     - `zoomRef`（D3 zoom behavior）+ `simNodesRef`（SimNode 数组）跨 effect 共享
-    - 独立 `useEffect([selectedNodeId, graphData])`：更新节点颜色（选中红/邻居琥珀/其余蓝+暗化）、边透明度、自动平移居中（`zoomIdentity.translate().scale(2)` + 600ms 过渡）
+    - 独立 `useEffect([selectedNodeId, graphData])`：更新节点颜色（选中红/邻居保持原 type 色加亮/其余按 object_type 着色+暗化）、边透明度、自动平移居中（`zoomIdentity.translate().scale(2)` + 600ms 过渡）
     - `Esc` 键全局监听 → `clearSelection()`
   - **卡片列表**：`data-node-id` 属性 + `containerRef.current.querySelector()` + `scrollIntoView`，`refreshToken` prop 触发原地刷新（保留搜索条件）
-  - **资源管理器**：Wiki 文件 ✕ 删除按钮 → `DELETE /api/kb/nodes/{id}`（联动删 DB+原始文件）；Config 文件 ✕ → `DELETE /api/files/content`（仅删文件）；删除后调用 `loadGraph()` + 列表刷新
+  - **资源管理器**：Wiki 文件 ✕ 删除按钮 → `DELETE /api/kb/nodes/{id}`（联动删 wiki 文件+DB+边，**不删 raw**）；Config 文件 ✕ → `DELETE /api/files/content`（仅删文件）；删除后调用 `loadGraph()` + 列表刷新
   - `DELETE /api/files/content?rel_path=...`（新后端端点）：限定 `wiki/` 或 `config/` 前缀，路径遍历保护，供 config 模板文件删除使用
+
+- **第十五步**：Article/Entity/Summary 三类对象架构重构 ✅
+  - `knowledge_nodes` 表扩列：`abstract`（原 `summary` 改名）、`object_type`（'article'|'entity'|'summary'）、`source_node_ids`、`summary_of`、`canonical_name`、`aliases`、`updated_at`
+  - 新增 `entity_candidates` 表（JSONB `mentions` 字段，记录每个候选在哪些 article 里出现过及显著度）
+  - wiki 目录结构：`wiki/nodes/` → `wiki/articles/` + `wiki/entities/` + `wiki/summaries/`（id 前缀 `art_`/`ent_`/`sum_`）
+  - ingestion pipeline 全面重写为两步流程：① `analyze_article`（Claude 输出 abstract + tags + entity 候选列表）→ ② `process_entity_candidates`（upsert 候选池 + 晋升判定 + 生成 entity 页 + wikilink 回灌）
+  - entity 三层发现机制：LLM 识别 → 候选池积累 → 阈值晋升（`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`）
+  - `backfill_wikilinks_for_entity(entity_id)`：晋升时回扫所有旧 article wiki 文件，在正文第一次出现处注入 `[[ent_id|原文字面]]`，同步写入 `knowledge_edges(relation_type='wikilink')`
+  - 新 API 端点：`GET /api/kb/entity_candidates/analyze_context`、`POST /api/kb/entity_candidates/process`、`POST /api/kb/entities/{id}/backfill_wikilinks`
+  - `maintenance.py` 新增：`promote_entity_candidates`、`backfill_wikilinks_for_entity`、`cleanup_orphan_entities`；`run_maintenance` 新增 wikilink 全量回灌循环
+  - 前端 /knowledge ExplorerPanel 改为三段树（articles/entities/summaries）；D3 图谱节点按 `object_type` 着色（article=#3b82f6, entity=#10b981, summary=#f59e0b）；WikiPanel 显示 `object_type` 徽章
+  - **已知坑**：`databases` 库不支持 `:param::type` 语法，JSONB/数组参数必须用 `CAST(:param AS type)`；`ALTER TABLE ADD COLUMN` 必须在 `CREATE INDEX` 之前；重命名迁移需检测两列均存在时改为 DROP 旧列
+  - dev 环境维护任务：`docker compose exec api python maintenance.py`（api 容器挂载了源码 volume）
 
 - **raw 数据解耦 + 容量管理** ✅
   - `DELETE /api/kb/nodes/{id}` 不再删除 raw 原始文件，raw 与节点生命周期彻底解耦
@@ -991,9 +1133,11 @@ KnowledgeBase-S/
 ├── Makefile / deploy.sh
 ├── config/
 │   ├── prompts.md              # 所有内部 LLM 提示词（开发者编辑，重启容器生效）
-│   │                           # 6个 section：image_ocr / image_cleanup / pdf_cleanup /
-│   │                           # summarize / feedback_analysis / briefing_topics
+│   │                           # 8个 section：image_ocr / image_cleanup / pdf_cleanup /
+│   │                           # abstract（原 summarize，改名）/ article_analysis / entity_page /
+│   │                           # feedback_analysis / briefing_topics
 │   │                           # 动态占位符用 <<<key>>> 语法，由 prompt_loader.fill() 替换
+│   │                           # abstract section 规定摘要风格（"3-5句完整中文句子"）；代码侧 max_tokens=1024
 │   └── image_processing.toml  # 图片处理参数（开发者编辑，重启容器生效）：
 │                               # max_dim=7800（宽度安全上限）
 │                               # tile_h=7000（切片高度）、overlap=200（切片重叠）
@@ -1006,20 +1150,36 @@ KnowledgeBase-S/
     │   │                       # httpx, openai, anthropic, python-multipart
     │   ├── main.py             # auth 端点 + 注册所有 routers
     │   ├── auth.py             # JWT（python-jose），单用户密码比对
-    │   ├── database.py         # 建表（7张）+ jsonb() 辅助
+    │   ├── database.py         # 建表（8张）+ entity_candidates 表 + jsonb() 辅助
+    │   │                       # init() 幂等执行 schema；自动检测 summary/abstract 列状态：
+    │   │                       #   只有 summary → RENAME TO abstract
+    │   │                       #   两列都有 → DROP summary（重命名中途失败的恢复路径）
+    │   │                       #   只有 abstract → no-op
+    │   │                       # ⚠️ ALTER TABLE ADD COLUMN 必须先于 CREATE INDEX，否则旧表报 UndefinedColumnError
     │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md；get(name) / fill(name, **kw)
     │   ├── scheduler.py        # 空壳
-    │   ├── maintenance.py      # 维护任务：fix_islands / supplement_edges / detect_contradictions
-    │   │                       # run_maintenance(user_id)；standalone: python maintenance.py
+    │   ├── maintenance.py      # 维护任务：
+    │   │                       # fix_islands / supplement_edges / detect_contradictions（原有）
+    │   │                       # promote_entity_candidates()：扫 entity_candidates，晋升达标候选
+    │   │                       # backfill_wikilinks_for_entity(entity_id, user_id)：
+    │   │                       #   回扫所有 wiki/articles/ 正文，注入 [[ent_id|原文]] 并写 edges
+    │   │                       # cleanup_orphan_entities()：source_node_ids=[] 的 entity 标记清理
+    │   │                       # run_maintenance(user_id)：顺序执行所有任务，含 wikilink 全量回灌循环
+    │   │                       # standalone: docker compose exec api python maintenance.py
     │   └── routers/
     │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
     │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
-    │       ├── kb.py           # /api/kb/ingest, search, node（含 wiki_body 字段）, nodes, graph,
-    │       │                   # graph/all, memory, wiki/rebuild, wiki/status
+    │       ├── kb.py           # /api/kb/ingest（支持 object_type=article|entity|summary）
+    │       │                   # search（支持 ?type= 过滤）, node（含 wiki_body 字段）
+    │       │                   # nodes（支持 ?type= 过滤）, graph, graph/all
+    │       │                   # memory, wiki/rebuild, wiki/status
     │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
     │       │                   # DELETE /api/kb/nodes/{id}（删 wiki文件+边+DB，不删 raw 原始文件）
+    │       │                   # GET /api/kb/entity_candidates/analyze_context（查近邻 entity + top 候选）
+    │       │                   # POST /api/kb/entity_candidates/process（upsert 候选 + 晋升判定）
+    │       │                   # POST /api/kb/entities/{id}/backfill_wikilinks（回灌 wikilink）
     │       │                   # trim_raw_files(user_id)：ingest 后台任务，raw/ 超 512MB 从旧删
-    │       ├── files.py        # GET /api/files/tree（目录树）
+    │       ├── files.py        # GET /api/files/tree（三段树：raw/wiki/config；wiki 段返回 articles/entities/summaries）
     │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
     │       │                   # DELETE /api/files/content?rel_path=...（删除 wiki/config 文件）
     │       │                   # 注：wiki 节点优先通过 DELETE /api/kb/nodes/{id} 删除（联动 DB）
@@ -1043,8 +1203,11 @@ KnowledgeBase-S/
     ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
     │   ├── requirements.txt    # fastapi, uvicorn[standard], anthropic, openai, Pillow, pymupdf 等
     │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
-    │   ├── pipeline.py         # extract→save_raw→summarize(内部,3-5句)→embed→ingest→write_wiki(全量原文)
-    │   │                       # summarize(): max_tokens=1024; JSON 解析失败时有 regex 降级兜底
+    │   ├── pipeline.py         # 两步流程：① analyze_article（Claude）→ ② process_entity_candidates
+    │   │                       # analyze_article(): 调用 article_analysis 提示词；输出 abstract+tags+entities 候选列表
+    │   │                       # generate_entity_page(): 晋升候选 → Claude entity_page 提示词 → ent_{id}.md
+    │   │                       # newly_promoted_entity_ids: 摄入中晋升的 entity id 列表，摄入末尾触发 backfill_wikilinks
+    │   │                       # wikilink 回灌必须在 write_wiki_article() 之后（文件需先存在）
     │   │                       # _infer_title_from_text()：文件型 source 标题仍为 stem 时，从正文提取（# 标题 > 短首行 > 首行截断）
     │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
     │   └── sources/
@@ -1078,9 +1241,11 @@ KnowledgeBase-S/
             ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
             ├── knowledge/page.tsx    # 四面板 IDE 式布局（单文件，无子路由）：
             │                         # ExplorerPanel（左，可折叠树+删除）
-            │                         # WikiPanel（中上，节点详情+wiki全文+文件编辑）
-            │                         # D3 图谱（中下，力导向图+节点高亮+自动居中）
-            │                         # ListPanel（右，搜索/过滤/分页/自动滚动）
+            │                         #   wiki 段三节：articles/ entities/ summaries/；config/templates/
+            │                         # WikiPanel（中上，节点详情+object_type徽章+abstract+wiki全文+文件编辑）
+            │                         # D3 图谱（中下，力导向图+节点按 object_type 着色+高亮+自动居中）
+            │                         #   article=#3b82f6, entity=#10b981, summary=#f59e0b
+            │                         # ListPanel（右，搜索/过滤/分页/自动滚动，支持 type 过滤）
             │                         # 三条分隔线支持鼠标拖拽调整面板大小
             │                         # selectedNodeId 为中央同步状态；Esc 取消选中
             │                         # wiki/config 文件可从资源管理器删除；
@@ -1090,12 +1255,13 @@ KnowledgeBase-S/
             └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
 ```
 
-### 数据库表（7张）
+### 数据库表（8张）
 
 | 表 | 用途 |
 |----|------|
-| `knowledge_nodes` | 知识节点 + 1536维向量 |
-| `knowledge_edges` | 节点关系图 |
+| `knowledge_nodes` | article/entity/summary 三类对象共用；含 `object_type`、`abstract`、`canonical_name`、`aliases`、`source_node_ids`、`summary_of` 字段 |
+| `entity_candidates` | entity 候选池；`mentions` JSONB 记录每篇 article 的显著度；晋升后 `promoted_entity_id` 置位 |
+| `knowledge_edges` | 节点关系图；`relation_type` 包含 'wikilink' 边 |
 | `writing_memory` | 写作偏好规则 |
 | `sources` | 订阅源配置 |
 | `drafts` | 草稿记录 |
@@ -1104,11 +1270,18 @@ KnowledgeBase-S/
 
 ### 关键约定
 
-- **databases 库的类型转换问题**：所有含 `::type`（`::vector`、`::date`、`::timestamptz`）的参数都用 f-string 内联，不走 `:param` 绑定；`<=>` 向量运算符用 asyncpg 原生接口（`conn.raw_connection.fetch`）。
+- **databases 库的类型转换问题（两种场景）**：
+  - 向量/日期等标量：`::vector`、`::date`、`::timestamptz` 仍用 f-string 内联，不走 `:param` 绑定；`<=>` 向量运算符用 asyncpg 原生接口（`conn.raw_connection.fetch`）。
+  - **JSONB / 数组参数（新增坑）**：`:param::jsonb` 或 `:param::text[]` 在 `databases` 库中会报 `ArgumentError`（SQLAlchemy text() 无法解析 `::` 语法）。**必须改用 `CAST(:param AS jsonb)` / `CAST(:param AS text[])`**。影响所有含 `mentions`、`entry`、`aliases` 等 JSONB/数组列的 UPDATE/INSERT 语句。
+- **schema 迁移顺序**：`ALTER TABLE ADD COLUMN` 必须出现在 `CREATE INDEX ON ... (new_col)` **之前**；否则对已存在旧表（缺新列）执行时报 `UndefinedColumnError`。
+- **列重命名幂等**：检测 `summary`/`abstract` 两列是否存在，三条路径：① 只有 `summary` → `RENAME`；② 两列都存在 → `DROP summary`；③ 只有 `abstract` → no-op。
+- **entity 晋升阈值**：`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`。`promoted_entity_id IS NOT NULL` 则跳过，不重复晋升。
+- **wikilink 回灌时机**：`backfill_wikilinks_for_entity()` 必须在 `write_wiki_article()` 完成后调用（文件须先存在），否则找不到 article 文件注入链接。
+- **maintenance 任务 dev 运行方式**：`docker compose exec api python maintenance.py`（api 容器在 dev 模式下挂载了 `./services/api:/app`，直接用源码）。生产镜像无 volume mount，不能直接 exec。
 - **数据库密码**：`.env` 中 `DB_PASSWORD` 与 `DATABASE_URL` 里密码必须一致；重置时删除 `./data/postgres/`。
 - **nginx**：挂载到 `/etc/nginx/conf.d/default.conf`。
 - **Auth**：HttpOnly cookie `token`，JWT 7天，`AUTH_SECRET` 签名。
-- **Embedding**：OpenAI text-embedding-3-small，1536 维，对摘要做 embedding。
+- **Embedding**：OpenAI text-embedding-3-small，1536 维，对 `abstract` 字段做 embedding（非原文，非 wiki body）。
 - **USER_ID**：固定 `"default"`，单用户。
 - **手动触发方式**：
   ```bash

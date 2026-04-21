@@ -1,6 +1,13 @@
 """
 Ingestion 流水线（所有 source 类型共用）：
-  fetch → extract_text → save_raw → summarize → embed → POST /api/kb/ingest → update_last_fetched
+  fetch → extract_text → save_raw
+    → get_analysis_context (API: nearby entities + top candidates)
+    → analyze_article (Claude: abstract + tags + entity candidates)
+    → embed → post_ingest(article) → post_ingest(summary)
+    → process_entity_candidates (API)
+    → for each promoted candidate: generate_entity_page (Claude) → post_ingest(entity)
+    → write wiki files
+    → update_last_fetched
 """
 
 import json
@@ -29,15 +36,10 @@ claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TEXT_CHARS = 12000   # ~4000 tokens
+MAX_ENTITY_PAGE_SOURCES = 5
 
 
 def _infer_title_from_text(text: str) -> str | None:
-    """
-    从正文中尽力提取标题。优先级：
-    1. 第一个 Markdown 标题（# ...）
-    2. 第一个不以句号/逗号结尾的短行（≤ 80 字符）
-    3. 第一个非空行（截断至 80 字符）
-    """
     first_nonempty: str | None = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -51,15 +53,12 @@ def _infer_title_from_text(text: str) -> str | None:
                 return title[:120]
     if first_nonempty is None:
         return None
-    # 短行且不像句子中间 → 直接用
     if len(first_nonempty) <= 80 and not first_nonempty[-1] in ("。", ".", "，", ",", "；", ";"):
         return first_nonempty
-    # 否则截断到最近词边界
     return first_nonempty[:80].rsplit(" ", 1)[0] or first_nonempty[:80]
 
 
 def save_raw(item: RawItem, source_type: str) -> str:
-    """把原始内容写到 user_data/raw/{source_type}/，返回绝对路径。"""
     raw_dir = USER_DATA_DIR / USER_ID / "raw" / source_type
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,48 +70,89 @@ def save_raw(item: RawItem, source_type: str) -> str:
     return str(file_path)
 
 
-def summarize(text: str) -> tuple[str, list[str]]:
-    """调用 Claude 生成摘要和标签，返回 (summary, tags)。"""
+def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list[dict]) -> dict:
+    """
+    Call Claude to analyze an article.
+    Returns: {abstract, tags, entities, contradictions, structural_hints}
+    """
     truncated = text[:MAX_TEXT_CHARS]
+
+    existing_entities_str = "\n".join(
+        f"- {e['title']} (id: {e['id']})" for e in nearby_entities
+    ) or "（暂无）"
+
+    candidate_entities_str = "\n".join(
+        f"- {c['canonical_name']} (已出现 {c['mention_count']} 次)" for c in top_candidates
+    ) or "（暂无）"
+
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
+        max_tokens=2048,
         messages=[
             {
                 "role": "user",
-                "content": prompt_loader.fill("summarize", text=truncated),
+                "content": prompt_loader.fill(
+                    "article_analysis",
+                    text=truncated,
+                    existing_entities=existing_entities_str,
+                    candidate_entities=candidate_entities_str,
+                ),
             }
         ],
     )
     raw = message.content[0].text.strip()
-    # 提取 JSON（Claude 有时会在 ```json ``` 里）
+
+    # Strip markdown code fences if present
     if "```" in raw:
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
 
-    # 先尝试严格解析
     try:
         data = json.loads(raw)
-        return data["summary"], data.get("tags", [])
     except json.JSONDecodeError:
-        pass
+        # Fallback: extract abstract and tags via regex
+        abstract = ""
+        tags: list[str] = []
+        m = re.search(r'"abstract"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+        if m:
+            abstract = m.group(1)
+        m = re.search(r'"tags"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
+        if m:
+            tags = re.findall(r'"([^"]*)"', m.group(1))
+        data = {"abstract": abstract, "tags": tags, "entities": [], "contradictions": [], "structural_hints": []}
 
-    # 降级：用正则分别提取 summary 和 tags，容忍摘要中含有未转义引号的情况
-    summary = ""
-    tags: list[str] = []
-    m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
-    if m:
-        summary = m.group(1)
-    m = re.search(r'"tags"\s*:\s*\[(.*?)\]', raw, re.DOTALL)
-    if m:
-        tags = re.findall(r'"([^"]*)"', m.group(1))
-    return summary, tags
+    return {
+        "abstract": data.get("abstract", ""),
+        "tags": data.get("tags", []),
+        "entities": data.get("entities", []),
+        "contradictions": data.get("contradictions", []),
+        "structural_hints": data.get("structural_hints", []),
+    }
+
+
+def generate_entity_page(canonical_name: str, aliases: list[str], source_abstracts: list[str]) -> str:
+    """Call Claude to generate a Wikipedia-style entity page body (markdown)."""
+    message = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2048,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt_loader.fill(
+                    "entity_page",
+                    entity_name=canonical_name,
+                    aliases="、".join(aliases) if aliases else "无",
+                    source_abstracts="\n\n".join(source_abstracts) or "（暂无来源信息）",
+                ),
+            }
+        ],
+    )
+    return message.content[0].text.strip()
 
 
 async def embed(text: str) -> list[float]:
-    """调用 OpenAI text-embedding-3-small 生成 1536 维向量。"""
     resp = await openai_client.embeddings.create(
         model="text-embedding-3-small",
         input=text[:8000],
@@ -122,11 +162,45 @@ async def embed(text: str) -> list[float]:
 
 
 async def post_ingest(payload: dict) -> str:
-    """POST /api/kb/ingest，返回 node_id。"""
     async with httpx.AsyncClient() as client:
         resp = await client.post(f"{API_BASE_URL}/api/kb/ingest", json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()["id"]
+
+
+async def get_analysis_context(embedding: list[float]) -> dict:
+    """Fetch nearby entity titles and top candidates from API."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{API_BASE_URL}/api/kb/entity_candidates/analyze_context",
+            json={"embedding": embedding},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    return {"nearby_entities": [], "top_candidates": []}
+
+
+async def process_entity_candidates(article_id: str, entities: list[dict]) -> dict:
+    """Send entity candidate list to API for DB processing. Returns promoted candidates."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{API_BASE_URL}/api/kb/entity_candidates/process",
+            json={"article_id": article_id, "entities": entities},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    return {"matched_existing": [], "promoted": []}
+
+
+async def mark_candidate_promoted(candidate_id: int, entity_node_id: str):
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"{API_BASE_URL}/api/kb/entity_candidates/{candidate_id}/mark_promoted",
+            json={"entity_node_id": entity_node_id},
+            timeout=10,
+        )
 
 
 async def update_last_fetched(source_id: str):
@@ -137,6 +211,92 @@ async def update_last_fetched(source_id: str):
             json={"last_fetched_at": now},
             timeout=10,
         )
+
+
+def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict):
+    """Write wiki/articles/{node_id}.md with full cleaned article text."""
+    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "articles"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_ref_path = raw_ref.get("path") or raw_ref.get("url", "")
+    tags_yaml = "[" + ", ".join(tags) + "]"
+    created = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    content = f"""---
+id: {node_id}
+type: article
+title: "{item.title or '（无标题）'}"
+tags: {tags_yaml}
+wikilinks: []
+source_type: {item.raw_ref.get('type', 'unknown')}
+raw_ref: {raw_ref_path}
+created_at: {created}
+updated_at: {created}
+---
+
+# {item.title or "（无标题）"}
+
+{text}
+"""
+    (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")
+
+
+def write_wiki_summary(summary_id: str, article_id: str, article_title: str,
+                        abstract: str, tags: list[str], created: str):
+    """Write wiki/summaries/{summary_id}.md."""
+    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "summaries"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    tags_yaml = "[" + ", ".join(tags) + "]"
+
+    content = f"""---
+id: {summary_id}
+type: summary
+title: "摘要：{article_title}"
+tags: {tags_yaml}
+wikilinks: []
+summary_of: {article_id}
+sources: [{article_id}]
+created_at: {created}
+updated_at: {created}
+---
+
+# 摘要：{article_title}
+
+{abstract}
+"""
+    (wiki_dir / f"{summary_id}.md").write_text(content, encoding="utf-8")
+
+
+def write_wiki_entity(entity_id: str, canonical_name: str, aliases: list[str],
+                       source_ids: list[str], body: str, tags: list[str]):
+    """Write wiki/entities/{entity_id}.md."""
+    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "entities"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    tags_yaml = "[" + ", ".join(tags) + "]"
+    aliases_yaml = "[" + ", ".join(f'"{a}"' for a in aliases) + "]"
+    sources_yaml = "[" + ", ".join(source_ids) + "]"
+    created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    content = f"""---
+id: {entity_id}
+type: entity
+title: "{canonical_name}"
+tags: {tags_yaml}
+wikilinks: []
+canonical_name: {canonical_name}
+aliases: {aliases_yaml}
+sources: {sources_yaml}
+created_at: {created}
+updated_at: {created}
+---
+
+# {canonical_name}
+
+{body}
+"""
+    (wiki_dir / f"{entity_id}.md").write_text(content, encoding="utf-8")
 
 
 async def run_pipeline(source: BaseSource, source_config: dict):
@@ -154,13 +314,12 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
     for item in items:
         try:
-            # 1. 提取正文
+            # 1. Extract text
             text = source.extract_text(item)
             if not text or len(text) < 50:
                 logger.warning(f"[{source_id}] 跳过，正文过短: {item.title}")
                 continue
 
-            # 文件型 source：若标题仍是文件名 stem，尝试从正文推断更好的标题
             if item.raw_ref.get("type") == "file":
                 stem = Path(item.raw_ref["path"]).stem
                 if not item.title or item.title == stem:
@@ -168,63 +327,140 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     if inferred:
                         item.title = inferred
 
-            # 2. 保存原始文件
+            # 2. Save raw file
             file_path = save_raw(item, source_type)
             if item.raw_ref.get("type") == "url":
                 raw_ref = {"type": "url", "url": item.raw_ref["url"], "cached": file_path}
             else:
                 raw_ref = {"type": "file", "path": file_path}
 
-            # 3. 摘要 + 标签（同步调用）
-            summary, tags = summarize(text)
-            logger.info(f"[{source_id}] 摘要完成: {item.title}")
+            # 3. Initial embedding of raw text (used for entity context lookup)
+            initial_embedding = await embed(text[:8000])
 
-            # 4. Embedding
-            embedding = await embed(summary)
+            # 4. Get entity analysis context from API
+            context = await get_analysis_context(initial_embedding)
+            nearby_entities = context.get("nearby_entities", [])
+            top_candidates = context.get("top_candidates", [])
 
-            # 5. 入库
-            node_id = await post_ingest({
+            # 5. Analyze article: abstract + tags + entity candidates
+            analysis = analyze_article(text, nearby_entities, top_candidates)
+            abstract = analysis["abstract"]
+            tags = analysis["tags"]
+            entities = analysis["entities"]
+            logger.info(f"[{source_id}] 分析完成: {item.title} | entities={len(entities)}")
+
+            # 6. Embed abstract for storage
+            embedding = await embed(abstract) if abstract else initial_embedding
+
+            # 7. Ingest article node
+            article_id = await post_ingest({
                 "user_id": USER_ID,
                 "title": item.title,
-                "summary": summary,
+                "abstract": abstract,
                 "embedding": embedding,
                 "source_type": source_type,
                 "source_id": source_id,
                 "raw_ref": raw_ref,
                 "tags": tags,
                 "is_primary": source_config.get("is_primary", True),
+                "object_type": "article",
             })
-            logger.info(f"[{source_id}] 入库成功: {node_id} — {item.title}")
+            logger.info(f"[{source_id}] article 入库: {article_id} — {item.title}")
 
-            # 6. 生成 wiki/nodes/ md 文件（正文为全量清洗后原文，非摘要）
-            write_wiki_node(node_id, item, text, tags, raw_ref)
+            # 8. Ingest summary node (body = abstract, init version)
+            summary_embedding = await embed(abstract) if abstract else embedding
+            summary_id = await post_ingest({
+                "user_id": USER_ID,
+                "title": f"摘要：{item.title}",
+                "abstract": abstract,
+                "embedding": summary_embedding,
+                "source_type": source_type,
+                "source_id": source_id,
+                "raw_ref": {},
+                "tags": tags,
+                "object_type": "summary",
+                "summary_of": article_id,
+                "source_node_ids": [article_id],
+            })
+            logger.info(f"[{source_id}] summary 入库: {summary_id}")
+
+            # 9. Process entity candidates via API
+            newly_promoted_entity_ids: list[str] = []
+            if entities:
+                candidate_result = await process_entity_candidates(article_id, entities)
+                promoted_list = candidate_result.get("promoted", [])
+
+                # 10. Generate entity pages for newly promoted candidates
+                for promoted in promoted_list:
+                    try:
+                        # Fetch source article abstracts
+                        source_abstracts = []
+                        for art_id in promoted.get("source_article_ids", [])[:MAX_ENTITY_PAGE_SOURCES]:
+                            async with httpx.AsyncClient() as hc:
+                                art_resp = await hc.get(
+                                    f"{API_BASE_URL}/api/kb/node/{art_id}", timeout=10
+                                )
+                                if art_resp.status_code == 200:
+                                    art_data = art_resp.json()
+                                    if art_data.get("abstract"):
+                                        t = art_data.get("title") or art_id
+                                        source_abstracts.append(f"《{t}》: {art_data['abstract']}")
+
+                        entity_body = generate_entity_page(
+                            promoted["canonical_name"],
+                            promoted.get("aliases", []),
+                            source_abstracts,
+                        )
+
+                        entity_embedding = await embed(promoted["canonical_name"])
+                        entity_id = await post_ingest({
+                            "user_id": USER_ID,
+                            "title": promoted["canonical_name"],
+                            "abstract": entity_body[:500],
+                            "embedding": entity_embedding,
+                            "source_type": "entity",
+                            "source_id": source_id,
+                            "raw_ref": {},
+                            "tags": [],
+                            "object_type": "entity",
+                            "source_node_ids": promoted.get("source_article_ids", []),
+                            "canonical_name": promoted["canonical_name"],
+                            "aliases": promoted.get("aliases", []),
+                        })
+
+                        write_wiki_entity(
+                            entity_id,
+                            promoted["canonical_name"],
+                            promoted.get("aliases", []),
+                            promoted.get("source_article_ids", []),
+                            entity_body,
+                            [],
+                        )
+
+                        await mark_candidate_promoted(promoted["candidate_id"], entity_id)
+                        newly_promoted_entity_ids.append(entity_id)
+                        logger.info(f"[{source_id}] entity 晋升入库: {entity_id} — {promoted['canonical_name']}")
+                    except Exception as e:
+                        logger.error(f"[{source_id}] entity 生成失败: {promoted.get('canonical_name')} — {e}", exc_info=True)
+
+            # 11. Write wiki article and summary files
+            created_str = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            write_wiki_article(article_id, item, text, tags, raw_ref)
+            write_wiki_summary(summary_id, article_id, item.title or article_id, abstract, tags, created_str)
+
+            # 12. Backfill wikilinks for each newly promoted entity into all articles
+            for eid in newly_promoted_entity_ids:
+                try:
+                    async with httpx.AsyncClient() as hc:
+                        await hc.post(
+                            f"{API_BASE_URL}/api/kb/entities/{eid}/backfill_wikilinks",
+                            timeout=30,
+                        )
+                except Exception as e:
+                    logger.warning(f"[{source_id}] wikilink backfill failed for {eid}: {e}")
 
         except Exception as e:
             logger.error(f"[{source_id}] 处理失败: {item.title} — {e}", exc_info=True)
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
-
-
-def write_wiki_node(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict):
-    """生成 wiki/nodes/{node_id}.md，兼容 Obsidian。正文为全量清洗后原文，非摘要。"""
-    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "nodes"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_ref_path = raw_ref.get("path") or raw_ref.get("url", "")
-    tags_yaml = "[" + ", ".join(tags) + "]"
-    created = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    content = f"""---
-id: {node_id}
-source_type: {item.raw_ref.get("type", "unknown")}
-raw_ref: {raw_ref_path}
-tags: {tags_yaml}
-created_at: {created}
----
-
-# {item.title or "（无标题）"}
-
-{text}
-"""
-    (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")

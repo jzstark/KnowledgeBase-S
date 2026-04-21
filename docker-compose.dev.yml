@@ -68,6 +68,13 @@ services:
       - "8002"
     profiles: []
 
+  maintenance-worker:
+    volumes:
+      - ./services/api:/app
+      - ./user_data:/app/user_data
+      - ./config:/app/shared_config:ro
+    profiles: []   # dev 模式不限制 profile
+
   scheduler:
     profiles: ["disabled"]
 

@@ -117,10 +117,11 @@ async def generate_briefing(
 
     rows = await database.database.fetch_all(
         f"""
-        SELECT id, title, summary, tags, created_at
+        SELECT id, title, abstract, tags, created_at
         FROM knowledge_nodes
         WHERE user_id = :user_id
           AND is_primary = true
+          AND object_type = 'article'
           AND {node_cutoff}
         ORDER BY created_at DESC
         """,
@@ -132,7 +133,7 @@ async def generate_briefing(
             {
                 "id": r["id"],
                 "title": r["title"] or "",
-                "summary": r["summary"] or "",
+                "summary": r["abstract"] or "",
                 "tags": list(r["tags"] or []),
             }
             for r in rows
@@ -185,7 +186,7 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
     返回 [{title, description, resolved_node_ids}]，source_indices 已转换为实际 node ID。
     """
     summaries = "\n".join(
-        f"[{i+1}] {n['title']}：{n['summary'][:150]}"
+        f"[{i+1}] {n['title']}：{n.get('summary', '')[:150]}"
         for i, n in enumerate(batch)
     )
     prompt = prompt_loader.fill(
