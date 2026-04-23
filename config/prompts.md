@@ -151,3 +151,4 @@
   {"title": "选题标题", "description": "内容", "source_indices": [1, 3]},
   {"title": "选题标题", "description": "内容", "source_indices": [2]}
 ]
+**重要**：description 字段若包含多段内容，段落之间用 \n\n 表示，禁止在 JSON 字符串中出现未转义的换行符或双引号。

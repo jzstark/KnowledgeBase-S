@@ -181,6 +181,32 @@ async def _fetch_today(today: date) -> dict:
     return {"date": str(today), "topics": topics, "generated": True}
 
 
+def _repair_json_strings(s: str) -> str:
+    """Escape unescaped newlines/tabs inside JSON string values."""
+    result: list[str] = []
+    in_string = False
+    skip_next = False
+    for ch in s:
+        if skip_next:
+            result.append(ch)
+            skip_next = False
+        elif ch == "\\" and in_string:
+            result.append(ch)
+            skip_next = True
+        elif ch == '"':
+            in_string = not in_string
+            result.append(ch)
+        elif in_string and ch == "\n":
+            result.append("\\n")
+        elif in_string and ch == "\r":
+            result.append("\\r")
+        elif in_string and ch == "\t":
+            result.append("\\t")
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list[dict]:
     """单批次 Claude 调用（≤ BATCH_SIZE 个节点）。
     返回 [{title, description, resolved_node_ids}]，source_indices 已转换为实际 node ID。
@@ -208,7 +234,11 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if m:
         raw = m.group(0)
-    parsed = json.loads(raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raw = _repair_json_strings(raw)
+        parsed = json.loads(raw)
 
     # 将批次内 1-based 索引转换为实际 node ID
     for t in parsed:
