@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
-BATCH_SIZE = 15  # 每批最多发送给 Claude 的节点数，控制每次调用的 token 消耗
+BATCH_SIZE = 12  # 初始批次大小；命中 max_tokens 时会自动对半拆分递归重试
 
 
 # ── 获取今日选题 ─────────────────────────────────────────────────────────────
@@ -208,9 +208,12 @@ def _repair_json_strings(s: str) -> str:
 
 
 async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list[dict]:
-    """单批次 Claude 调用（≤ BATCH_SIZE 个节点）。
+    """单批次 Claude 调用。命中 max_tokens 时自动对半拆分递归重试，直到单篇为止。
     返回 [{title, description, resolved_node_ids}]，source_indices 已转换为实际 node ID。
     """
+    if not batch:
+        return []
+
     summaries = "\n".join(
         f"[{i+1}] {n['title']}：{n.get('summary', '')[:150]}"
         for i, n in enumerate(batch)
@@ -222,13 +225,25 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
     )
     message = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4096,
+        max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
+
     if message.stop_reason == "max_tokens":
+        if len(batch) == 1:
+            logging.getLogger(__name__).error(
+                "[briefing] max_tokens hit on single article '%s', skipping",
+                batch[0].get("title", "?"),
+            )
+            return []
+        mid = len(batch) // 2
         logging.getLogger(__name__).warning(
-            "[briefing] Claude hit max_tokens in batch (batch size: %d)", len(batch)
+            "[briefing] max_tokens hit (batch=%d), splitting into %d + %d and retrying",
+            len(batch), mid, len(batch) - mid,
         )
+        left = await _generate_topics_batch(batch[:mid], topics_setting)
+        right = await _generate_topics_batch(batch[mid:], topics_setting)
+        return left + right
 
     raw = message.content[0].text.strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)
