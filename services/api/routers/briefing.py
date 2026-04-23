@@ -6,12 +6,13 @@ POST  /api/briefing/generate         — 立即生成选题
 PATCH /api/briefing/topics/{id}      — 更新选题状态（selected / skipped / pending）
 """
 
-import json
 import logging
 import os
 import re
 import secrets
 from datetime import date, datetime, timedelta
+
+from json_repair import repair_json
 
 import anthropic
 from fastapi import APIRouter, Depends, Query
@@ -181,31 +182,6 @@ async def _fetch_today(today: date) -> dict:
     return {"date": str(today), "topics": topics, "generated": True}
 
 
-def _repair_json_strings(s: str) -> str:
-    """Escape unescaped newlines/tabs inside JSON string values."""
-    result: list[str] = []
-    in_string = False
-    skip_next = False
-    for ch in s:
-        if skip_next:
-            result.append(ch)
-            skip_next = False
-        elif ch == "\\" and in_string:
-            result.append(ch)
-            skip_next = True
-        elif ch == '"':
-            in_string = not in_string
-            result.append(ch)
-        elif in_string and ch == "\n":
-            result.append("\\n")
-        elif in_string and ch == "\r":
-            result.append("\\r")
-        elif in_string and ch == "\t":
-            result.append("\\t")
-        else:
-            result.append(ch)
-    return "".join(result)
-
 
 async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list[dict]:
     """单批次 Claude 调用。命中 max_tokens 时自动对半拆分递归重试，直到单篇为止。
@@ -249,11 +225,7 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if m:
         raw = m.group(0)
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        raw = _repair_json_strings(raw)
-        parsed = json.loads(raw)
+    parsed = repair_json(raw, return_objects=True)
 
     # 将批次内 1-based 索引转换为实际 node ID
     for t in parsed:
