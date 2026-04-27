@@ -856,7 +856,7 @@ function WikiPanel({
               value={perspInput}
               onChange={(e) => setPerspInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleCreateSummary(); }}
-              placeholder="视角（可选，如"人物关系"、"技术架构"）"
+              placeholder='视角（可选，如"人物关系"、"技术架构"）'
               className="text-xs border border-gray-200 rounded px-3 py-1.5 outline-none focus:border-blue-400 bg-white"
               disabled={sumLoading}
             />
