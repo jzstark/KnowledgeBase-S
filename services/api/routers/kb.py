@@ -5,12 +5,14 @@ import secrets
 from collections import deque
 from typing import Any
 
+import anthropic
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 import config_loader
 import database
+import prompt_loader
 from auth import require_auth
 
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
@@ -19,6 +21,7 @@ RAW_CAP_BYTES = 512 * 1024 * 1024  # 512 MB
 router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+claude_client = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
 USER_ID = "default"
 
@@ -463,6 +466,129 @@ async def get_node(node_id: str):
         **node,
         "wiki_body": wiki_body,
         "edges": [dict(e) for e in edges],
+    }
+
+
+# ── 多视角摘要生成 ────────────────────────────────────────────────────────────
+
+class CreateSummaryRequest(BaseModel):
+    perspective: str | None = None
+
+
+@router.post("/nodes/{node_id}/create_summary")
+async def create_summary(
+    node_id: str,
+    body: CreateSummaryRequest,
+    background_tasks: BackgroundTasks,
+):
+    """为 article 或 index 节点生成新的摘要（可指定视角），创建 summarizes 边。"""
+    source = await database.database.fetch_one(
+        "SELECT id, user_id, title, abstract, object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+    if not source:
+        raise HTTPException(404, "节点不存在")
+    if source["object_type"] not in ("article", "index"):
+        raise HTTPException(400, "只能为 article 或 index 节点生成摘要")
+
+    user_id = source["user_id"] or USER_ID
+
+    # Read existing wiki body for richer context (cap at 3000 chars to avoid token overflow)
+    wiki_file = _wiki_file_path(user_id, node_id, source["object_type"])
+    wiki_body = ""
+    if wiki_file.exists():
+        raw = wiki_file.read_text(encoding="utf-8")
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            section = parts[2].strip()
+            lines = section.split("\n", 2)
+            wiki_body = (lines[2].strip() if len(lines) >= 3 else section)[:3000]
+
+    # Build prompt
+    perspective_instruction = (
+        f"\n\n请从以下视角撰写摘要：{body.perspective}" if body.perspective else ""
+    )
+    prompt = prompt_loader.fill(
+        "summary_gen",
+        title=source["title"] or node_id,
+        abstract=source["abstract"] or "",
+        body=wiki_body,
+        perspective_instruction=perspective_instruction,
+    )
+
+    # Call Claude
+    try:
+        message = await claude_client.messages.create(
+            model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+            max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary_content = message.content[0].text.strip()
+    except Exception as e:
+        raise HTTPException(500, f"摘要生成失败：{e}")
+
+    # Generate embedding for the new summary
+    embed_resp = await openai_client.embeddings.create(
+        model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        input=summary_content[:config_loader.get("embedding.max_chars", 8000)],
+        dimensions=config_loader.get("embedding.dimensions", 1536),
+    )
+    embedding = embed_resp.data[0].embedding
+    embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+
+    # Build summary node title
+    source_title = source["title"] or node_id
+    summary_title = (
+        f"{source_title} — {body.perspective}" if body.perspective else f"{source_title} 摘要"
+    )
+
+    # Insert summary node
+    summary_id = f"sum_{secrets.token_hex(6)}"
+    await database.database.execute(
+        f"""
+        INSERT INTO knowledge_nodes
+          (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
+           tags, is_primary, object_type, source_node_ids, summary_of, perspective)
+        VALUES
+          (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
+           :source_type, :source_id, :raw_ref, :tags, :is_primary,
+           :object_type, :source_node_ids, :summary_of, :perspective)
+        """,
+        {
+            "id": summary_id,
+            "user_id": user_id,
+            "title": summary_title,
+            "abstract": summary_content[:500],
+            "source_type": "summary",
+            "source_id": node_id,
+            "raw_ref": database.jsonb({}),
+            "tags": [],
+            "is_primary": False,
+            "object_type": "summary",
+            "source_node_ids": [node_id],
+            "summary_of": node_id,
+            "perspective": body.perspective,
+        },
+    )
+
+    # Create summarizes edge (summary → source)
+    await database.database.execute(
+        """
+        INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
+        VALUES (:from_id, :to_id, 'summarizes', 1.0, 'user')
+        """,
+        {"from_id": summary_id, "to_id": node_id},
+    )
+
+    background_tasks.add_task(write_wiki_node, summary_id, user_id)
+    background_tasks.add_task(build_similar_edges, summary_id, user_id)
+
+    return {
+        "id": summary_id,
+        "title": summary_title,
+        "content": summary_content,
+        "perspective": body.perspective,
+        "source_id": node_id,
     }
 
 

@@ -555,6 +555,44 @@ async def cleanup_orphan_entities(user_id: str) -> dict:
     return {"orphans_found": len(rows), "tagged": marked}
 
 
+# ── 8. Summarizes 边回填 ─────────────────────────────────────────────────────
+
+async def backfill_summarizes_edges(user_id: str) -> dict:
+    """为现有 summary 节点补建 summarizes 边（幂等，跳过已有的）。"""
+    summaries = await database.database.fetch_all(
+        """
+        SELECT id, source_node_ids FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND object_type = 'summary'
+          AND source_node_ids IS NOT NULL
+          AND source_node_ids != '{}'
+        """,
+        {"uid": user_id},
+    )
+    added = 0
+    for row in summaries:
+        row = dict(row)
+        for target_id in (row["source_node_ids"] or []):
+            exists = await database.database.fetch_one(
+                """
+                SELECT 1 FROM knowledge_edges
+                WHERE from_node_id = :fid AND to_node_id = :tid AND relation_type = 'summarizes'
+                """,
+                {"fid": row["id"], "tid": target_id},
+            )
+            if not exists:
+                await database.database.execute(
+                    """
+                    INSERT INTO knowledge_edges
+                      (from_node_id, to_node_id, relation_type, weight, created_by)
+                    VALUES (:from_id, :to_id, 'summarizes', 1.0, 'backfill')
+                    """,
+                    {"from_id": row["id"], "to_id": target_id},
+                )
+                added += 1
+    return {"summaries_checked": len(summaries), "edges_added": added}
+
+
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 async def run_maintenance(user_id: str = USER_ID) -> dict:
@@ -602,6 +640,9 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     orphan_result = await cleanup_orphan_entities(user_id)
     print(f"[maintenance] Orphan entities: {orphan_result}", flush=True)
 
+    summarizes_result = await backfill_summarizes_edges(user_id)
+    print(f"[maintenance] Summarizes backfill: {summarizes_result}", flush=True)
+
     summary = {
         "wikilink_migration": migrate_result,
         "islands": island_result,
@@ -610,6 +651,7 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "entity_promotion": promote_result,
         "wikilink_backfill": wikilink_result,
         "orphan_entities": orphan_result,
+        "summarizes_backfill": summarizes_result,
     }
     print(f"[maintenance] Done: {json.dumps(summary, ensure_ascii=False)}", flush=True)
     return summary

@@ -724,13 +724,48 @@ function WikiPanel({
   openFile,
   onCloseFile,
   onOpenFile,
+  onSummaryCreated,
 }: {
   detail: NodeDetail | null;
   detailLoading: boolean;
   openFile: OpenFile | null;
   onCloseFile: () => void;
   onOpenFile: (f: OpenFile) => void;
+  onSummaryCreated?: () => void;
 }) {
+  const [sumFormOpen, setSumFormOpen] = useState(false);
+  const [perspInput, setPerspInput] = useState("");
+  const [sumLoading, setSumLoading] = useState(false);
+  const [sumMsg, setSumMsg] = useState("");
+
+  async function handleCreateSummary() {
+    if (!detail) return;
+    setSumLoading(true);
+    setSumMsg("");
+    try {
+      const r = await fetch(`/api/kb/nodes/${detail.id}/create_summary`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ perspective: perspInput.trim() || null }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setSumMsg(`已生成：${data.title}`);
+        setPerspInput("");
+        setSumFormOpen(false);
+        onSummaryCreated?.();
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setSumMsg(`生成失败：${err.detail || r.status}`);
+      }
+    } catch {
+      setSumMsg("网络错误");
+    } finally {
+      setSumLoading(false);
+    }
+  }
+
   if (openFile) return <FilePanel file={openFile} onClose={onCloseFile} />;
 
   if (detailLoading) {
@@ -753,6 +788,7 @@ function WikiPanel({
     : objectType === "summary" ? "summaries"
     : objectType === "index" ? "indices"
     : "articles";
+  const canCreateSummary = objectType === "article" || objectType === "index";
 
   return (
     <div className="flex flex-col h-full">
@@ -785,21 +821,66 @@ function WikiPanel({
               ))}
             </div>
           </div>
-          <button
-            onClick={() =>
-              onOpenFile({
-                rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
-                name: `${detail.title || detail.id}.md`,
-                writable: true,
-              })
-            }
-            className="shrink-0 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 bg-white"
-          >
-            在编辑器中打开
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {canCreateSummary && (
+              <button
+                onClick={() => { setSumFormOpen((v) => !v); setSumMsg(""); }}
+                className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 bg-white"
+              >
+                ＋ 摘要
+              </button>
+            )}
+            <button
+              onClick={() =>
+                onOpenFile({
+                  rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
+                  name: `${detail.title || detail.id}.md`,
+                  writable: true,
+                })
+              }
+              className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 bg-white"
+            >
+              在编辑器中打开
+            </button>
+          </div>
         </div>
         {detail.abstract && (
           <p className="text-xs text-gray-500 mt-2 leading-relaxed">{detail.abstract}</p>
+        )}
+
+        {/* 摘要生成内联表单 */}
+        {sumFormOpen && (
+          <div className="mt-3 pt-3 border-t border-gray-200 flex flex-col gap-2">
+            <input
+              type="text"
+              value={perspInput}
+              onChange={(e) => setPerspInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCreateSummary(); }}
+              placeholder="视角（可选，如"人物关系"、"技术架构"）"
+              className="text-xs border border-gray-200 rounded px-3 py-1.5 outline-none focus:border-blue-400 bg-white"
+              disabled={sumLoading}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCreateSummary}
+                disabled={sumLoading}
+                className="text-xs text-white bg-gray-900 rounded px-3 py-1 disabled:opacity-40"
+              >
+                {sumLoading ? "生成中…" : "生成"}
+              </button>
+              <button
+                onClick={() => { setSumFormOpen(false); setSumMsg(""); }}
+                className="text-xs text-gray-500 hover:text-gray-700"
+              >
+                取消
+              </button>
+              {sumMsg && (
+                <span className={`text-xs ${sumMsg.startsWith("生成失败") || sumMsg.startsWith("网络") ? "text-red-500" : "text-green-600"}`}>
+                  {sumMsg}
+                </span>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -1147,6 +1228,11 @@ export default function KnowledgePage() {
               openFile={openFile}
               onCloseFile={() => setOpenFile(null)}
               onOpenFile={(f) => setOpenFile(f)}
+              onSummaryCreated={() => {
+                setExplorerKey((k) => k + 1);
+                setListRefreshToken((t) => t + 1);
+                loadGraph();
+              }}
             />
           </div>
 
