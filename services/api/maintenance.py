@@ -593,6 +593,182 @@ async def backfill_summarizes_edges(user_id: str) -> dict:
     return {"summaries_checked": len(summaries), "edges_added": added}
 
 
+# ── 9. Rebuild From Raw ──────────────────────────────────────────────────────────
+
+async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
+    """
+    从 raw 文件重建知识库（幂等）。
+    执行流程：
+      1. 清空所有 file-sourced article/entity/summary 节点及 entity_candidates
+      2. 删除对应 wiki 文件
+      3. 重置 file-type source 的 last_fetched_at，触发 ingestion-worker 重新处理
+      4. 轮询等待所有 source 完成（最长 60 分钟）
+      5. 运行 run_maintenance()
+
+    须在 api 容器中执行：
+      docker compose exec api python maintenance.py rebuild_from_raw --confirm
+    """
+    import pathlib as _pathlib
+    import httpx
+
+    user_data_dir = _pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
+    wiki_dir = user_data_dir / user_id / "wiki"
+    ingestion_url = os.environ.get("INGESTION_WORKER_URL", "http://ingestion-worker:8001")
+
+    # ── Step 1: 清空可重建内容 ────────────────────────────────────────────────
+    print("[rebuild] Step 1: 清空可重建内容...", flush=True)
+
+    # 先删 entity_candidates（有 FK 约束指向 entity 节点，须先删）
+    ec_row = await database.database.fetch_one(
+        "SELECT COUNT(*) AS n FROM entity_candidates WHERE user_id = :uid", {"uid": user_id}
+    )
+    ec_count = int(ec_row["n"]) if ec_row else 0
+    await database.database.execute(
+        "DELETE FROM entity_candidates WHERE user_id = :uid", {"uid": user_id}
+    )
+
+    # 再删 entity 节点（knowledge_edges ON DELETE CASCADE 自动清理边）
+    ent_rows = await database.database.fetch_all(
+        "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity'",
+        {"uid": user_id},
+    )
+    entity_ids = {r["id"] for r in ent_rows}
+    await database.database.execute(
+        "DELETE FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity'",
+        {"uid": user_id},
+    )
+
+    # 删 file-sourced 节点（summary_of FK ON DELETE CASCADE 自动级联删子 summary）
+    art_rows = await database.database.fetch_all(
+        """SELECT id FROM knowledge_nodes WHERE user_id = :uid
+           AND source_type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
+        {"uid": user_id},
+    )
+    article_ids = {r["id"] for r in art_rows}
+    await database.database.execute(
+        """DELETE FROM knowledge_nodes WHERE user_id = :uid
+           AND source_type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
+        {"uid": user_id},
+    )
+
+    print(
+        f"[rebuild] 已清空: entity_candidates={ec_count}, "
+        f"entities={len(entity_ids)}, file-sourced nodes={len(article_ids)} (含 cascade summary)",
+        flush=True,
+    )
+
+    # ── Step 2: 清理 wiki 文件 ────────────────────────────────────────────────
+    wiki_deleted = 0
+    deleted_ids = entity_ids | article_ids
+
+    # 按 ID 删除 article/entity/index 的 wiki 文件
+    for subdir in ("articles", "entities", "indices"):
+        d = wiki_dir / subdir
+        if not d.exists():
+            continue
+        for f in d.iterdir():
+            if f.is_file() and f.suffix == ".md" and f.stem in deleted_ids:
+                f.unlink()
+                wiki_deleted += 1
+
+    # 重建删除的 summary wiki 文件：删除 wiki/summaries/ 下所有文件（全部重建）
+    # 包括 auto-generated summaries（cascade 已删 DB 记录）和孤立文件
+    sum_dir = wiki_dir / "summaries"
+    if sum_dir.exists():
+        for f in sum_dir.iterdir():
+            if f.is_file() and f.suffix == ".md":
+                f.unlink()
+                wiki_deleted += 1
+
+    print(f"[rebuild] 已删除 wiki 文件: {wiki_deleted} 个", flush=True)
+
+    # ── Step 3: 重置 last_fetched_at，触发 ingestion-worker ──────────────────
+    print("[rebuild] Step 3: 触发 ingestion-worker...", flush=True)
+
+    sources = await database.database.fetch_all(
+        """SELECT id, name FROM sources WHERE user_id = :uid
+           AND type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
+        {"uid": user_id},
+    )
+    for src in sources:
+        await database.database.execute(
+            "UPDATE sources SET last_fetched_at = NULL WHERE id = :id", {"id": src["id"]}
+        )
+
+    triggered: list[str] = []
+    failed: list[str] = []
+    async with httpx.AsyncClient() as http:
+        for src in sources:
+            try:
+                resp = await http.post(f"{ingestion_url}/trigger/{src['id']}", timeout=10)
+                data = resp.json()
+                if resp.status_code == 200 and data.get("ok"):
+                    triggered.append(src["id"])
+                    print(f"[rebuild]   触发成功: {src['name']} ({src['id']})", flush=True)
+                else:
+                    failed.append(src["id"])
+                    print(f"[rebuild]   触发失败: {src['name']} — {data.get('detail', resp.text)}", flush=True)
+            except Exception as e:
+                failed.append(src["id"])
+                print(f"[rebuild]   触发异常: {src['name']} — {e}", flush=True)
+
+    if not triggered:
+        print(
+            "[rebuild] 警告：未能触发任何 source（ingestion-worker 是否在运行？），跳过等待步骤。\n"
+            "[rebuild] 可待 ingestion-worker 启动后手动触发，或重新执行 rebuild_from_raw。",
+            flush=True,
+        )
+    else:
+        # ── Step 4: 轮询等待所有 source 完成 ──────────────────────────────────
+        print(
+            f"[rebuild] Step 4: 等待 {len(triggered)} 个 source 完成（最长 60 分钟）...",
+            flush=True,
+        )
+        max_wait = 3600
+        interval = 20
+        elapsed = 0
+        pending = list(triggered)
+
+        while elapsed < max_wait and pending:
+            await asyncio.sleep(interval)
+            elapsed += interval
+            still = []
+            for sid in pending:
+                row = await database.database.fetch_one(
+                    "SELECT last_fetched_at FROM sources WHERE id = :id", {"id": sid}
+                )
+                if row and row["last_fetched_at"] is None:
+                    still.append(sid)
+            if len(still) < len(pending):
+                done = len(triggered) - len(still)
+                print(
+                    f"[rebuild]   进度: {done}/{len(triggered)} 完成 ({elapsed}s 已过)",
+                    flush=True,
+                )
+            pending = still
+
+        if pending:
+            print(f"[rebuild] 警告：超时，以下 source 未完成: {pending}", flush=True)
+        else:
+            print("[rebuild] 所有 source 已完成 ingestion", flush=True)
+
+    # ── Step 5: 运行维护任务 ──────────────────────────────────────────────────
+    print("[rebuild] Step 5: 运行维护任务（entity 晋升、wikilink 回灌等）...", flush=True)
+    maintenance_result = await run_maintenance(user_id)
+
+    result = {
+        "entity_candidates_deleted": ec_count,
+        "entities_deleted": len(entity_ids),
+        "file_nodes_deleted": len(article_ids),
+        "wiki_files_deleted": wiki_deleted,
+        "sources_triggered": len(triggered),
+        "sources_failed": len(failed),
+        "maintenance": maintenance_result,
+    }
+    print(f"[rebuild] 完成: {json.dumps(result, ensure_ascii=False)}", flush=True)
+    return result
+
+
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 async def run_maintenance(user_id: str = USER_ID) -> dict:
@@ -660,7 +836,21 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
 if __name__ == "__main__":
     async def main():
         await database.init()
-        result = await run_maintenance()
+        cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+        if cmd == "rebuild_from_raw":
+            if "--confirm" not in sys.argv:
+                print(
+                    "此操作将清空数据库中所有 file-sourced 节点（articles/entities/summaries）"
+                    " 并通过 ingestion-worker 重新入库。\n"
+                    "确认执行请加 --confirm 参数：\n"
+                    "  python maintenance.py rebuild_from_raw --confirm\n"
+                    "或通过 docker compose exec：\n"
+                    "  docker compose exec api python maintenance.py rebuild_from_raw --confirm"
+                )
+                return
+            result = await rebuild_from_raw()
+        else:
+            result = await run_maintenance()
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     asyncio.run(main())

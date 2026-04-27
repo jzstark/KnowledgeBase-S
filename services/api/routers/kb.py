@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import pathlib
@@ -24,6 +25,19 @@ openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 claude_client = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
 USER_ID = "default"
+
+
+def _make_node_id(object_type: str, raw_ref: dict, user_id: str, canonical_name: str | None) -> str:
+    """Return a deterministic ID for file-backed nodes and entities; random otherwise."""
+    prefix = object_type[:3] if object_type else "nod"
+    raw_path = (raw_ref or {}).get("path")
+    if raw_path:
+        h = hashlib.sha256(raw_path.encode()).hexdigest()[:16]
+        return f"{prefix}_{h}"
+    if object_type == "entity" and canonical_name:
+        h = hashlib.sha256(f"{user_id}:{canonical_name}".encode()).hexdigest()[:16]
+        return f"ent_{h}"
+    return f"{prefix}_{secrets.token_hex(6)}"
 
 
 # ── 入库 ──────────────────────────────────────────────────────────────────────
@@ -59,8 +73,16 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         if existing:
             return {"id": existing["id"], "duplicate": True}
 
-    prefix = body.object_type[:3] if body.object_type else "nod"
-    node_id = f"{prefix}_{secrets.token_hex(6)}"
+    # Dedup for entities: skip if canonical_name already exists
+    if body.object_type == "entity" and body.canonical_name:
+        existing_ent = await database.database.fetch_one(
+            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity' AND canonical_name = :name",
+            {"uid": body.user_id, "name": body.canonical_name},
+        )
+        if existing_ent:
+            return {"id": existing_ent["id"], "duplicate": True}
+
+    node_id = _make_node_id(body.object_type, body.raw_ref or {}, body.user_id, body.canonical_name)
     embedding_literal = "[" + ",".join(repr(x) for x in body.embedding) + "]"
 
     await database.database.execute(
@@ -1124,4 +1146,12 @@ async def trigger_maintenance(background_tasks: BackgroundTasks, _: dict = Depen
     """触发知识库维护（孤岛检测 + 补边 + 矛盾发现），后台运行。"""
     from maintenance import run_maintenance
     background_tasks.add_task(run_maintenance, USER_ID)
+    return {"status": "triggered"}
+
+
+@router.post("/maintenance/rebuild_from_raw")
+async def trigger_rebuild_from_raw(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+    """从 raw 文件重建知识库（幂等）。清空所有 file-sourced 节点后触发 ingestion-worker 重新入库。后台运行。"""
+    from maintenance import rebuild_from_raw
+    background_tasks.add_task(rebuild_from_raw, USER_ID)
     return {"status": "triggered"}
