@@ -202,7 +202,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     for e in edges:
         ed = dict(e)
         other = ed["to_node_id"] if ed["from_node_id"] == node_id else ed["from_node_id"]
-        if ed["relation_type"] == "wikilink":
+        if ed["relation_type"] in ("wikilink", "mentions"):
             wikilinks.append(other)
         else:
             relations.append({"id": other, "type": ed["relation_type"]})

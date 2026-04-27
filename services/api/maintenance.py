@@ -393,6 +393,7 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
     """
     新 entity 晋升后，回扫所有 article 正文，在第一次出现 canonical_name / aliases 处
     注入 [[entity_id|原文]] wikilink，并更新 frontmatter + knowledge_edges。
+    边使用 relation_type='mentions'，weight 取自 entity_candidates 中的真实 salience。
     """
     import pathlib as _pathlib
 
@@ -408,6 +409,20 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
     search_terms = [t for t in ([canonical] + aliases) if t]
     if not search_terms:
         return {"articles_scanned": 0, "wikilinks_added": 0}
+
+    # Pre-fetch salience map from entity_candidates: {article_id: salience}
+    salience_map: dict[str, float] = {}
+    cand_row = await database.database.fetch_one(
+        "SELECT mentions FROM entity_candidates WHERE promoted_entity_id = :eid",
+        {"eid": entity_id},
+    )
+    if cand_row and cand_row["mentions"]:
+        mentions_data = cand_row["mentions"]
+        if isinstance(mentions_data, str):
+            mentions_data = json.loads(mentions_data)
+        for m in mentions_data:
+            if m.get("article_id"):
+                salience_map[m["article_id"]] = float(m.get("salience", 0.5))
 
     articles = await database.database.fetch_all(
         "SELECT id, user_id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'article'",
@@ -447,14 +462,15 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
 
         wiki_file.write_text(modified, encoding="utf-8")
 
-        # Insert wikilink edge (ignore if exists)
+        # Use real salience if available; default 0.5 for text-scan finds not in entity_candidates
+        salience = salience_map.get(art["id"], 0.5)
+
         await database.database.execute(
             """
             INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
-            VALUES (:from_id, :to_id, 'wikilink', 1.0, 'backfill')
-            ON CONFLICT DO NOTHING
+            VALUES (:from_id, :to_id, 'mentions', :weight, 'backfill')
             """,
-            {"from_id": art["id"], "to_id": entity_id},
+            {"from_id": art["id"], "to_id": entity_id, "weight": salience},
         )
 
         # Append article to entity's source_node_ids
@@ -473,7 +489,46 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
     return {"articles_scanned": len(articles), "wikilinks_added": wikilinks_added}
 
 
-# ── 6. 孤儿 Entity 清理 ────────────────────────────────────────────────────────
+# ── 6. 历史 wikilink 边迁移 ──────────────────────────────────────────────────────
+
+async def migrate_wikilink_edges() -> dict:
+    """
+    一次性迁移：将历史 wikilink 边改名为 mentions，并补填真实 salience 权重。
+    幂等：若无 wikilink 边则跳过。
+    """
+    count_row = await database.database.fetch_one(
+        "SELECT COUNT(*) AS n FROM knowledge_edges WHERE relation_type = 'wikilink'"
+    )
+    n = count_row["n"] if count_row else 0
+    if n == 0:
+        return {"migrated": 0}
+
+    # Step A: 用 entity_candidates 中的真实 salience 更新权重
+    await database.database.execute(
+        """
+        UPDATE knowledge_edges ke
+        SET weight = COALESCE(
+            (SELECT (elem->>'salience')::float
+             FROM entity_candidates ec,
+                  jsonb_array_elements(ec.mentions) AS elem
+             WHERE ec.promoted_entity_id = ke.to_node_id
+               AND elem->>'article_id' = ke.from_node_id
+             LIMIT 1),
+            0.5
+        )
+        WHERE ke.relation_type = 'wikilink'
+        """
+    )
+
+    # Step B: 重命名
+    await database.database.execute(
+        "UPDATE knowledge_edges SET relation_type = 'mentions' WHERE relation_type = 'wikilink'"
+    )
+
+    return {"migrated": n}
+
+
+# ── 7. 孤儿 Entity 清理 ────────────────────────────────────────────────────────
 
 async def cleanup_orphan_entities(user_id: str) -> dict:
     """找出 source_node_ids 为空的 entity 节点，标记为待审核（打 tag: orphan）。"""
@@ -517,6 +572,9 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
 
     print(f"[maintenance] Starting for user_id={user_id}", flush=True)
 
+    migrate_result = await migrate_wikilink_edges()
+    print(f"[maintenance] Wikilink migration: {migrate_result}", flush=True)
+
     island_result = await fix_islands(user_id, client)
     print(f"[maintenance] Islands: {island_result}", flush=True)
 
@@ -545,6 +603,7 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     print(f"[maintenance] Orphan entities: {orphan_result}", flush=True)
 
     summary = {
+        "wikilink_migration": migrate_result,
         "islands": island_result,
         "supplement": supplement_result,
         "contradictions": contradiction_result,
