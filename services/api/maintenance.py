@@ -14,10 +14,11 @@ import sys
 import anthropic
 
 sys.path.insert(0, os.path.dirname(__file__))
+import config_loader
 import database
 
 USER_ID = "default"
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL = config_loader.get("models.entity_page", "claude-haiku-4-5-20251001")
 
 
 # ── LLM 关系分析 ──────────────────────────────────────────────────────────────
@@ -305,8 +306,9 @@ async def promote_entity_candidates(user_id: str) -> dict:
         max_salience = max((m.get("salience", 0) for m in mentions), default=0)
 
         should_promote = (
-            (max_salience >= 0.7 and mention_count >= 2)
-            or mention_count >= 3
+            (max_salience >= config_loader.get("entity.promotion_salience", 0.7)
+             and mention_count >= config_loader.get("entity.promotion_salience_mentions", 2))
+            or mention_count >= config_loader.get("entity.promotion_min_mentions", 3)
         )
         if not should_promote:
             continue
@@ -314,7 +316,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
         source_ids = [m["article_id"] for m in mentions]
         # Fetch abstracts for source articles
         source_abstracts = []
-        for art_id in source_ids[:5]:
+        for art_id in source_ids[:config_loader.get("ingestion.max_entity_page_sources", 5)]:
             art = await database.database.fetch_one(
                 "SELECT title, abstract FROM knowledge_nodes WHERE id = :id",
                 {"id": art_id},
@@ -336,8 +338,8 @@ async def promote_entity_candidates(user_id: str) -> dict:
             claude_api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
             claude_client = anthropic.AsyncAnthropic(api_key=claude_api_key)
             resp = await claude_client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=2048,
+                model=config_loader.get("models.entity_page", CLAUDE_MODEL),
+                max_tokens=config_loader.get("llm_output_tokens.entity_page", 2048),
                 messages=[{"role": "user", "content": prompt}],
             )
             entity_body = resp.content[0].text.strip()

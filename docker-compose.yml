@@ -106,6 +106,8 @@ services:
       context: ./services/api
     command: python scheduler.py
     restart: unless-stopped
+    volumes:
+      - ./config:/app/shared_config:ro
     environment:
       DATABASE_URL: ${DATABASE_URL}
       API_BASE_URL: http://api:8000
@@ -117,6 +119,9 @@ services:
     build:
       context: ./services/api
     command: python maintenance.py
+    volumes:
+      - ./user_data:/app/user_data
+      - ./config:/app/shared_config:ro
     environment:
       DATABASE_URL: ${DATABASE_URL}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}

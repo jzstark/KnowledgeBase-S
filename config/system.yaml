@@ -1,0 +1,68 @@
+# ================================================================
+# KnowledgeBase-S 系统参数配置
+# 修改后重启相关容器生效。
+# 若要让参数修改影响历史入库内容，需执行 rebuild_from_raw。
+# ================================================================
+
+ingestion:
+  max_text_chars: 12000        # 送给 article_analysis 的最大字符数（约 4000 token）
+  chunk_trigger_words: 5000    # 超过此词数 + 有章节结构时，触发 index+article 切分
+  chunk_target_words: 1500     # 目标每章节词数（无明确结构时按此切分）
+  max_entity_page_sources: 5   # 生成 entity 页时最多引用几篇来源文章的 abstract
+
+models:
+  article_analysis:  "claude-haiku-4-5-20251001"
+  entity_page:       "claude-haiku-4-5-20251001"
+  entity_update:     "claude-haiku-4-5-20251001"
+  summary_gen:       "claude-haiku-4-5-20251001"
+  index_summary:     "claude-haiku-4-5-20251001"  # 聚合子节点 abstract 生成 index abstract
+  hyde_abstract:     "claude-haiku-4-5-20251001"  # HyDE 查询扩展
+  briefing_topics:   "claude-sonnet-4-6"
+  draft_generation:  "claude-sonnet-4-6"
+
+embedding:
+  model:      "text-embedding-3-small"
+  dimensions: 1536
+  max_chars:  8000             # embed() 截断长度
+
+entity:
+  promotion_max_salience:       0.9   # 单篇 max_salience >= 此值则晋升
+  promotion_salience:           0.7   # salience >= 此值 AND mentions >= below 则晋升
+  promotion_salience_mentions:  2
+  promotion_min_mentions:       3     # mentions >= 此值则晋升（不论 salience）
+
+retrieval:
+  use_hyde: true
+  similar_to_threshold:         0.75  # cosine 阈值（article 和 entity 共用）
+  similar_to_limit:             20    # build_similar_edges 每节点最多建多少条边
+  co_occurs_min_articles:       3     # 共现 >= 此数才建 co_occurs_with 边
+  summary_top_k:                5     # Phase 1a 检索数
+  entity_top_k:                 10    # Phase 1b 检索数
+  article_direct_top_k:         8     # Phase 1c 检索数（兜底）
+  article_top_k:                8     # 最终进入 context 的文章数
+  entity_in_context:            5     # 最终进入 context 的 entity 数
+  article_inline_threshold:     2000  # token 数低于此值时插入全文，否则只插 abstract
+  context_max_tokens:           100000
+  draft_knowledge_chars:        6000  # 草稿生成时知识上下文的最大字符数
+  damping_entity_to_summary:    0.7   # Phase 2a entity→summary 路径衰减
+  damping_hop:                  0.3   # Phase 3 article→entity→article 二跳衰减
+  expansion_anchor_k:           5     # Phase 3 最多以几篇 article 作为扩展锚点
+  expansion_min_score:          0.3   # 低于此得分的 article 不做扩展
+  index_expand_threshold:       0.4   # index 得分高于此才展开子节点
+  index_expand_limit:           3     # 最多展开几个 index
+  fallback_score_discount:      0.5   # Phase 5 兜底路径的分数折扣
+
+maintenance:
+  entity_update_batch:          10    # entity_update 每批处理数量
+
+briefing:
+  topics_count:                 5
+
+llm_output_tokens:
+  article_analysis:             2048
+  entity_page:                  2048
+  entity_update:                2048
+  summary_gen:                  1024
+  index_summary:                512
+  hyde_abstract:                200
+  draft_generation:             4096

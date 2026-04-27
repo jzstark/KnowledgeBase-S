@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+import config_loader
 import database
 from auth import require_auth
 
@@ -92,10 +93,12 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
 
 
 async def build_similar_edges(node_id: str, user_id: str):
-    """找 cosine 相似度 > 0.75 的节点，建 similar_to 边。"""
+    """找 cosine 相似度超过阈值的节点，建 similar_to 边。"""
+    limit = config_loader.get("retrieval.similar_to_limit", 20)
+    threshold = config_loader.get("retrieval.similar_to_threshold", 0.75)
     async with database.database.connection() as conn:
         raw = await conn.raw_connection.fetch(
-            """
+            f"""
             SELECT id,
                    1 - (embedding <=> (SELECT embedding FROM knowledge_nodes WHERE id = $1)) AS similarity
             FROM knowledge_nodes
@@ -103,14 +106,14 @@ async def build_similar_edges(node_id: str, user_id: str):
               AND user_id = $2
               AND embedding IS NOT NULL
             ORDER BY embedding <=> (SELECT embedding FROM knowledge_nodes WHERE id = $1)
-            LIMIT 20
+            LIMIT {limit}
             """,
             node_id, user_id,
         )
 
     for r in raw:
         sim = float(r["similarity"])
-        if sim < 0.75:
+        if sim < threshold:
             break
         await database.database.execute(
             """
@@ -342,9 +345,9 @@ async def wiki_status():
 
 async def _embed_query(text: str) -> list[float]:
     resp = await openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text[:8000],
-        dimensions=1536,
+        model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        input=text[:config_loader.get("embedding.max_chars", 8000)],
+        dimensions=config_loader.get("embedding.dimensions", 1536),
     )
     return resp.data[0].embedding
 
@@ -910,9 +913,10 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
         source_article_ids = [m["article_id"] for m in mentions_raw]
 
         should_promote = (
-            max_salience >= 0.9                          # single-article, very prominent
-            or (max_salience >= 0.7 and mention_count >= 2)
-            or mention_count >= 3
+            max_salience >= config_loader.get("entity.promotion_max_salience", 0.9)
+            or (max_salience >= config_loader.get("entity.promotion_salience", 0.7)
+                and mention_count >= config_loader.get("entity.promotion_salience_mentions", 2))
+            or mention_count >= config_loader.get("entity.promotion_min_mentions", 3)
         )
         if should_promote:
             cand_aliases = list(cand_row["aliases"]) if cand_row["aliases"] else []

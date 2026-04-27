@@ -21,6 +21,7 @@ import anthropic
 import httpx
 from openai import AsyncOpenAI
 
+import config_loader
 import prompt_loader
 from sources.base import BaseSource, RawItem
 
@@ -35,8 +36,8 @@ USER_ID = "default"
 claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-MAX_TEXT_CHARS = 12000   # ~4000 tokens
-MAX_ENTITY_PAGE_SOURCES = 5
+MAX_TEXT_CHARS = config_loader.get("ingestion.max_text_chars", 12000)
+MAX_ENTITY_PAGE_SOURCES = config_loader.get("ingestion.max_entity_page_sources", 5)
 
 
 def _infer_title_from_text(text: str) -> str | None:
@@ -86,8 +87,8 @@ def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list
     ) or "（暂无）"
 
     message = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2048,
+        model=config_loader.get("models.article_analysis", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.article_analysis", 2048),
         messages=[
             {
                 "role": "user",
@@ -135,8 +136,8 @@ def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list
 def generate_entity_page(canonical_name: str, aliases: list[str], source_abstracts: list[str]) -> str:
     """Call Claude to generate a Wikipedia-style entity page body (markdown)."""
     message = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2048,
+        model=config_loader.get("models.entity_page", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.entity_page", 2048),
         messages=[
             {
                 "role": "user",
@@ -154,9 +155,9 @@ def generate_entity_page(canonical_name: str, aliases: list[str], source_abstrac
 
 async def embed(text: str) -> list[float]:
     resp = await openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text[:8000],
-        dimensions=1536,
+        model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        input=text[:config_loader.get("embedding.max_chars", 8000)],
+        dimensions=config_loader.get("embedding.dimensions", 1536),
     )
     return resp.data[0].embedding
 

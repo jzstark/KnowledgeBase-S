@@ -158,3 +158,5 @@ venv/
 
 # System
 .DS_Store
+
+foo/
