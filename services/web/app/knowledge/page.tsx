@@ -60,6 +60,7 @@ interface WikiSection {
   articles: MdFile[];
   entities: MdFile[];
   summaries: MdFile[];
+  indices: MdFile[];
   index: boolean;
 }
 
@@ -82,13 +83,18 @@ const EDGE_COLORS: Record<string, string> = {
   background_of: "#f59e0b",
   extends: "#34d399",
   wikilink: "#a78bfa",
+  mentions: "#a78bfa",
   contradicts: "#f87171",
+  part_of: "#8b5cf6",
+  summarizes: "#fbbf24",
+  co_occurs_with: "#4ade80",
 };
 
 const OBJECT_TYPE_COLORS: Record<string, string> = {
   article: "#3b82f6",
   entity: "#10b981",
   summary: "#f59e0b",
+  index: "#8b5cf6",
 };
 
 const SOURCE_TYPE_COLORS: Record<string, string> = {
@@ -358,6 +364,7 @@ const WIKI_SECTION_LABELS: Record<string, string> = {
   articles: "文章",
   entities: "实体",
   summaries: "摘要",
+  indices: "目录",
 };
 
 function ExplorerPanel({
@@ -374,7 +381,7 @@ function ExplorerPanel({
   const [tree, setTree] = useState<FileTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(
-    new Set(["raw", "wiki", "wiki-articles", "wiki-entities", "config"])
+    new Set(["raw", "wiki", "wiki-articles", "wiki-entities", "wiki-indices", "config"])
   );
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -514,12 +521,12 @@ function ExplorerPanel({
         >
           {chevron("wiki")} Wiki
           <span className="ml-1 text-xs text-gray-300">
-            ({(tree.wiki.articles?.length ?? 0) + (tree.wiki.entities?.length ?? 0) + (tree.wiki.summaries?.length ?? 0)})
+            ({(tree.wiki.articles?.length ?? 0) + (tree.wiki.entities?.length ?? 0) + (tree.wiki.summaries?.length ?? 0) + (tree.wiki.indices?.length ?? 0)})
           </span>
         </button>
         {expanded.has("wiki") && (
           <div className="ml-3">
-            {(["articles", "entities", "summaries"] as const).map((subdir) => {
+            {(["articles", "entities", "summaries", "indices"] as const).map((subdir) => {
               const files = tree.wiki[subdir] ?? [];
               if (files.length === 0) return null;
               const key = `wiki-${subdir}`;
@@ -742,7 +749,10 @@ function WikiPanel({
 
   const colorClass = SOURCE_TYPE_COLORS[detail.source_type] || "bg-gray-50 text-gray-600";
   const objectType = detail.object_type || "article";
-  const wikiSubdir = objectType === "entity" ? "entities" : objectType === "summary" ? "summaries" : "articles";
+  const wikiSubdir = objectType === "entity" ? "entities"
+    : objectType === "summary" ? "summaries"
+    : objectType === "index" ? "indices"
+    : "articles";
 
   return (
     <div className="flex flex-col h-full">
@@ -1150,7 +1160,7 @@ export default function KnowledgePage() {
           <div style={{ height: graphHeight }} className="shrink-0 relative bg-white border-t border-gray-200">
             <div className="absolute top-2 left-3 z-10 flex items-center gap-3">
               <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">图谱</span>
-              {(["article", "entity", "summary"] as const).map((t) => (
+              {(["article", "entity", "summary", "index"] as const).map((t) => (
                 <span key={t} className="flex items-center gap-1 text-xs text-gray-400">
                   <span className="w-2 h-2 rounded-full inline-block" style={{ background: OBJECT_TYPE_COLORS[t] }} />
                   {t}

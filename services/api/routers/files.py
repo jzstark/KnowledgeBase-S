@@ -75,14 +75,14 @@ async def get_tree():
                     "node_id": path_to_node.get(abs_str),
                 })
 
-    # ── wiki 区：articles/ entities/ summaries/ + index.md ──
-    # Format: {"articles": [...], "entities": [...], "summaries": [...], "index": bool}
-    wiki: dict = {"articles": [], "entities": [], "summaries": [], "index": False}
+    # ── wiki 区：articles/ entities/ summaries/ indices/ + index.md ──
+    # Format: {"articles": [...], "entities": [...], "summaries": [...], "indices": [...], "index": bool}
+    wiki: dict = {"articles": [], "entities": [], "summaries": [], "indices": [], "index": False}
     wiki_dir = base / "wiki"
     if wiki_dir.exists():
         if (wiki_dir / "index.md").exists():
             wiki["index"] = True
-        for subdir in ("articles", "entities", "summaries"):
+        for subdir in ("articles", "entities", "summaries", "indices"):
             sd = wiki_dir / subdir
             if sd.exists():
                 for f in sorted(sd.iterdir()):

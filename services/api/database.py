@@ -125,12 +125,18 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS canonical_name TE
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective TEXT;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS priority_score FLOAT DEFAULT 1.0;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 0;
+ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_priority ON knowledge_nodes(priority_score);
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);

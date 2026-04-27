@@ -40,6 +40,7 @@ class IngestRequest(BaseModel):
     summary_of: str | None = None
     canonical_name: str | None = None
     aliases: list[str] = []
+    perspective: str | None = None
 
 
 @router.post("/ingest")
@@ -63,11 +64,13 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases)
+           tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
+           perspective)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
-           :object_type, :source_node_ids, :summary_of, :canonical_name, :aliases)
+           :object_type, :source_node_ids, :summary_of, :canonical_name, :aliases,
+           :perspective)
         """,
         {
             "id": node_id,
@@ -84,6 +87,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "summary_of": body.summary_of,
             "canonical_name": body.canonical_name,
             "aliases": body.aliases,
+            "perspective": body.perspective,
         },
     )
     background_tasks.add_task(build_similar_edges_and_wiki, node_id, body.user_id)
@@ -152,7 +156,7 @@ def trim_raw_files(user_id: str) -> None:
 
 def _wiki_subdir(object_type: str) -> str:
     """Map object_type to wiki subdirectory name."""
-    return {"article": "articles", "entity": "entities", "summary": "summaries"}.get(object_type, "articles")
+    return {"article": "articles", "entity": "entities", "summary": "summaries", "index": "indices"}.get(object_type, "articles")
 
 
 def _wiki_file_path(user_id: str, node_id: str, object_type: str) -> pathlib.Path:
@@ -165,7 +169,8 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     row = await database.database.fetch_one(
         """
         SELECT id, title, abstract, source_type, raw_ref, tags, object_type,
-               source_node_ids, summary_of, canonical_name, aliases, created_at, updated_at
+               source_node_ids, summary_of, canonical_name, aliases, perspective,
+               created_at, updated_at
         FROM knowledge_nodes WHERE id = :id
         """,
         {"id": node_id},
@@ -242,11 +247,14 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
                 existing_body = body_section
 
     # Build type-specific frontmatter extras
+    perspective_val = node.get("perspective") or ""
     extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}"
     if object_type == "entity":
         extra_fm = f"\ncanonical_name: {node.get('canonical_name') or title}\naliases: {aliases_yaml}\nsources: {sources_yaml}"
     elif object_type == "summary":
-        extra_fm = f"\nsummary_of: {node.get('summary_of') or ''}\nsources: {sources_yaml}"
+        extra_fm = f"\nsummary_of: {node.get('summary_of') or ''}\nsources: {sources_yaml}\nperspective: {perspective_val}"
+    elif object_type == "index":
+        extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}\nperspective: {perspective_val}"
 
     content = f"""---
 id: {node_id}
@@ -284,13 +292,13 @@ async def write_wiki_index(user_id: str) -> None:
     lines = ["# 知识库索引\n\n> 自动生成，请勿手动修改。\n\n"]
     lines.append(f"共 **{len(rows)}** 个对象。\n")
 
-    sections: dict[str, list] = {"article": [], "entity": [], "summary": []}
+    sections: dict[str, list] = {"article": [], "entity": [], "summary": [], "index": []}
     for r in rows:
         r = dict(r)
         ot = r.get("object_type") or "article"
         sections.setdefault(ot, []).append(r)
 
-    section_labels = {"article": "文章", "entity": "实体", "summary": "摘要"}
+    section_labels = {"article": "文章", "entity": "实体", "summary": "摘要", "index": "目录"}
     for ot, items in sections.items():
         if not items:
             continue
@@ -330,7 +338,7 @@ async def wiki_status():
     """返回 wiki 目录中各子目录的 .md 文件数量，无需认证。"""
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki"
     counts = {}
-    for subdir in ("articles", "entities", "summaries"):
+    for subdir in ("articles", "entities", "summaries", "indices"):
         d = wiki_dir / subdir
         counts[subdir] = len(list(d.glob("*.md"))) if d.exists() else 0
     index_path = wiki_dir / "index.md"
