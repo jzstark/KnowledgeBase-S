@@ -725,7 +725,275 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
     return {"processed": processed, "skipped": skipped}
 
 
-# ── 10. Rebuild From Raw ─────────────────────────────────────────────────────────
+# ── 10. Restore From Wiki ────────────────────────────────────────────────────────
+
+async def restore_from_wiki(user_id: str = USER_ID) -> dict:
+    """
+    从 wiki 文件重建 knowledge_nodes 和 knowledge_edges（用于 postgres 数据丢失时恢复）。
+
+    流程：
+      1. 扫描 wiki/{articles,summaries,entities,indices}/ 下所有 .md 文件
+      2. 解析 frontmatter（id、type、title、tags、raw_ref 等）+ 提取 body 作为 abstract
+      3. 用 OpenAI 生成 embedding
+      4. INSERT 到 knowledge_nodes（跳过已存在的）
+      5. 重建 edges：summarizes（来自 summary_of 字段）、part_of（来自 relations 字段）
+
+    幂等：已存在的节点跳过，ON CONFLICT DO NOTHING 保护边。
+    """
+    import pathlib as _pl
+    import yaml as _yaml
+    from datetime import datetime as _dt
+    from openai import AsyncOpenAI
+
+    openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    user_data_dir = _pl.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
+    wiki_dir = user_data_dir / user_id / "wiki"
+
+    if not wiki_dir.exists():
+        return {"error": "wiki directory not found", "nodes_inserted": 0}
+
+    def _parse(path: _pl.Path) -> dict | None:
+        import re as _re
+        try:
+            text = path.read_text(encoding="utf-8")
+            parts = text.split("---", 2)
+            if len(parts) < 3:
+                return None
+            fm_raw = parts[1]
+            body = parts[2].strip()
+            # Sanitize curly/fancy quotes in frontmatter values before yaml parse
+            fm_safe = _re.sub(r'["“”]', '"', fm_raw)
+            try:
+                meta = _yaml.safe_load(fm_safe) or {}
+            except Exception:
+                # fallback: extract id and title with regex
+                meta = {}
+                for key in ("id", "type", "source_type", "raw_ref", "summary_of", "canonical_name"):
+                    m = _re.search(rf'^{key}:\s*(.+)$', fm_raw, _re.MULTILINE)
+                    if m:
+                        meta[key] = m.group(1).strip().strip('"')
+                title_m = _re.search(r'^title:\s*"?(.*?)"?\s*$', fm_raw, _re.MULTILINE)
+                if title_m:
+                    meta["title"] = title_m.group(1).strip('“”"')
+            for marker in ["\n## 関連節点\n", "\n## 关联节点\n"]:
+                if marker in body:
+                    body = body[:body.index(marker)].strip()
+            # strip leading "# Title\n\n"
+            lines = body.split("\n", 2)
+            if lines and lines[0].startswith("# "):
+                body = lines[2].strip() if len(lines) >= 3 else ""
+            meta["_body"] = body
+            return meta
+        except Exception as e:
+            print(f"[restore] parse error {path.name}: {e}", flush=True)
+            return None
+
+    # ── 1. Collect ────────────────────────────────────────────────────────────
+    all_metas: list[dict] = []
+    for subdir in ["articles", "summaries", "entities", "indices"]:
+        subpath = wiki_dir / subdir
+        if subpath.exists():
+            for f in sorted(subpath.glob("*.md")):
+                m = _parse(f)
+                if m and m.get("id"):
+                    all_metas.append(m)
+
+    print(f"[restore] found {len(all_metas)} wiki files", flush=True)
+
+    # ── 2. Ensure placeholder sources exist ───────────────────────────────────
+    VALID_TYPES = {"rss", "url", "plaintext", "pdf", "epub", "word", "image", "wechat"}
+    seen_types: set[str] = set()
+    for m in all_metas:
+        st = (m.get("source_type") or "plaintext").lower()
+        seen_types.add(st)
+    for st in seen_types:
+        src_id = f"restored_{st}"
+        exists = await database.database.fetch_one(
+            "SELECT id FROM sources WHERE id = :id", {"id": src_id}
+        )
+        if not exists:
+            db_type = st if st in VALID_TYPES else "plaintext"
+            await database.database.execute(
+                """
+                INSERT INTO sources (id, user_id, name, type, fetch_mode, is_primary, config)
+                VALUES (:id, :uid, :name, :type, 'manual', true, '{}')
+                """,
+                {"id": src_id, "uid": user_id,
+                 "name": f"[已恢复：{st}]", "type": db_type},
+            )
+            print(f"[restore] created placeholder source: {src_id}", flush=True)
+
+    # ── 3. Insert nodes ───────────────────────────────────────────────────────
+    nodes_inserted = nodes_skipped = 0
+
+    for m in all_metas:
+        node_id = m["id"]
+        existing = await database.database.fetch_one(
+            "SELECT id FROM knowledge_nodes WHERE id = :id", {"id": node_id}
+        )
+        if existing:
+            nodes_skipped += 1
+            continue
+
+        object_type = str(m.get("type") or "article")
+        body = m.get("_body") or ""
+
+        if object_type == "summary":
+            abstract = body
+        else:
+            abstract = body[:500] if body else (str(m.get("canonical_name") or m.get("title") or ""))
+
+        # embedding
+        try:
+            embed_text = (abstract or str(m.get("title") or node_id))
+            resp = await openai_client.embeddings.create(
+                model=config_loader.get("embedding.model", "text-embedding-3-small"),
+                input=embed_text[:config_loader.get("embedding.max_chars", 8000)],
+                dimensions=config_loader.get("embedding.dimensions", 1536),
+            )
+            emb = resp.data[0].embedding
+            emb_lit = "[" + ",".join(repr(x) for x in emb) + "]"
+        except Exception as e:
+            print(f"[restore] embed failed {node_id}: {e}", flush=True)
+            dim = config_loader.get("embedding.dimensions", 1536)
+            emb_lit = "[" + ",".join(["0.0"] * dim) + "]"
+
+        # tags
+        tags_raw = m.get("tags") or []
+        if isinstance(tags_raw, str):
+            import re as _re
+            tags_raw = _re.findall(r'"([^"]*)"', tags_raw) or [t.strip() for t in tags_raw.split(",")]
+        tags = [str(t).strip() for t in tags_raw if t]
+
+        # source
+        source_type = (m.get("source_type") or "plaintext").lower()
+        source_id = f"restored_{source_type}"
+
+        # raw_ref
+        raw_ref_str = str(m.get("raw_ref") or "")
+        if raw_ref_str.startswith("http"):
+            raw_ref_dict: dict = {"type": "url", "url": raw_ref_str}
+        elif "::chapter::" in raw_ref_str:
+            raw_ref_dict = {"type": "book_chapter", "path": raw_ref_str}
+        elif raw_ref_str:
+            raw_ref_dict = {"type": "file", "path": raw_ref_str}
+        else:
+            raw_ref_dict = {}
+
+        # dates
+        created_at = m.get("created_at") or m.get("updated_at")
+        if isinstance(created_at, str):
+            try:
+                created_at = _dt.fromisoformat(created_at.replace("Z", "+00:00"))
+            except Exception:
+                created_at = None
+
+        # entity fields
+        canonical_name = m.get("canonical_name") or None
+        aliases_raw = m.get("aliases") or []
+        if isinstance(aliases_raw, str):
+            aliases_raw = [a.strip().strip('"') for a in aliases_raw.strip("[]").split(",") if a.strip()]
+        aliases = [str(a) for a in aliases_raw]
+
+        # summary fields
+        summary_of = m.get("summary_of") or None
+        sources_raw = m.get("sources") or []
+        if isinstance(sources_raw, str):
+            sources_raw = [s.strip() for s in sources_raw.strip("[]").split(",") if s.strip()]
+        source_node_ids = [str(s) for s in sources_raw]
+
+        perspective = m.get("perspective") or None
+
+        try:
+            await database.database.execute(
+                f"""
+                INSERT INTO knowledge_nodes
+                  (id, user_id, title, abstract, embedding, source_type, source_id,
+                   raw_ref, tags, is_primary, object_type, source_node_ids,
+                   summary_of, canonical_name, aliases, perspective, created_at)
+                VALUES
+                  (:id, :uid, :title, :abstract, '{emb_lit}'::vector,
+                   :source_type, :source_id, :raw_ref, :tags, true,
+                   :object_type, :source_node_ids, :summary_of,
+                   :canonical_name, :aliases, :perspective, :created_at)
+                """,
+                {
+                    "id": node_id, "uid": user_id,
+                    "title": str(m.get("title") or node_id),
+                    "abstract": abstract,
+                    "source_type": source_type,
+                    "source_id": source_id,
+                    "raw_ref": database.jsonb(raw_ref_dict),
+                    "tags": tags,
+                    "object_type": object_type,
+                    "source_node_ids": source_node_ids,
+                    "summary_of": summary_of,
+                    "canonical_name": canonical_name,
+                    "aliases": aliases,
+                    "perspective": perspective,
+                    "created_at": created_at,
+                },
+            )
+            nodes_inserted += 1
+            print(f"[restore] {object_type}: {node_id} — {m.get('title', '')}", flush=True)
+        except Exception as e:
+            print(f"[restore] insert error {node_id}: {e}", flush=True)
+            nodes_skipped += 1
+
+    # ── 4. Reconstruct edges ──────────────────────────────────────────────────
+    import re as _re
+    edges_inserted = 0
+
+    async def _add_edge(from_id: str, to_id: str, rel: str, weight: float = 1.0):
+        nonlocal edges_inserted
+        try:
+            await database.database.execute(
+                """
+                INSERT INTO knowledge_edges
+                  (from_node_id, to_node_id, relation_type, weight, created_by)
+                VALUES (:f, :t, :r, :w, 'restore_from_wiki')
+                ON CONFLICT DO NOTHING
+                """,
+                {"f": from_id, "t": to_id, "r": rel, "w": weight},
+            )
+            edges_inserted += 1
+        except Exception as e:
+            print(f"[restore] edge error {from_id}→{to_id}: {e}", flush=True)
+
+    # Collect all known node IDs for validation
+    known_ids: set[str] = {m["id"] for m in all_metas if m.get("id")}
+
+    for m in all_metas:
+        node_id = m["id"]
+        object_type = str(m.get("type") or "article")
+
+        # summarizes: summary → article
+        if object_type == "summary" and m.get("summary_of"):
+            await _add_edge(node_id, m["summary_of"], "summarizes")
+
+        # part_of: article → index (from relations frontmatter added by write_wiki_node)
+        relations = m.get("relations") or []
+        if isinstance(relations, list):
+            for rel in relations:
+                if isinstance(rel, dict) and rel.get("type") == "part_of" and rel.get("id"):
+                    await _add_edge(node_id, rel["id"], "part_of")
+
+        # mentions: article/summary → entity  (scan [[entity_id|...]] in body)
+        if object_type in ("article", "summary"):
+            body = m.get("_body") or ""
+            for target_id in set(_re.findall(r'\[\[((?:ent|nod)[_a-z0-9A-Z]+)(?:\|[^\]]+)?\]\]', body)):
+                if target_id in known_ids:
+                    await _add_edge(node_id, target_id, "mentions", 0.5)
+
+    print(f"[restore] done: {nodes_inserted} nodes, {edges_inserted} edges", flush=True)
+    return {
+        "nodes_inserted": nodes_inserted,
+        "nodes_skipped": nodes_skipped,
+        "edges_inserted": edges_inserted,
+    }
+
+
+# ── 11. Rebuild From Raw ─────────────────────────────────────────────────────────
 
 async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
     """
@@ -973,7 +1241,9 @@ if __name__ == "__main__":
     async def main():
         await database.init()
         cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-        if cmd == "rebuild_from_raw":
+        if cmd == "restore_from_wiki":
+            result = await restore_from_wiki()
+        elif cmd == "rebuild_from_raw":
             if "--confirm" not in sys.argv:
                 print(
                     "此操作将清空数据库中所有 file-sourced 节点（articles/entities/summaries）"

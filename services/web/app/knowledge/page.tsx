@@ -1106,12 +1106,12 @@ export default function KnowledgePage() {
     svgSel
       .selectAll<SVGPathElement, SimNode>("path")
       .style("display", (d) =>
-        visibleNodeTypes.has(d.object_type || "article") ? null : "none",
+        !d || visibleNodeTypes.has(d.object_type || "article") ? null : "none",
       );
     svgSel
       .selectAll<SVGTextElement, SimNode>("text")
       .style("display", (d) =>
-        visibleNodeTypes.has(d.object_type || "article") ? null : "none",
+        !d || visibleNodeTypes.has(d.object_type || "article") ? null : "none",
       );
     svgSel.selectAll<SVGLineElement, SimLink>("line").style("display", (d) => {
       const srcId =

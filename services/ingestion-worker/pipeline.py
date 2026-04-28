@@ -222,8 +222,11 @@ async def update_last_fetched(source_id: str):
         )
 
 
-def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict):
+def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict,
+                        title_override: str | None = None, source_type_override: str | None = None):
     """Write wiki/articles/{node_id}.md with full cleaned article text."""
+    title = title_override or item.title or "（无标题）"
+    source_type = source_type_override or item.raw_ref.get('type', 'unknown')
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "articles"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
@@ -234,16 +237,16 @@ def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], 
     content = f"""---
 id: {node_id}
 type: article
-title: "{item.title or '（无标题）'}"
+title: "{title}"
 tags: {tags_yaml}
 wikilinks: []
-source_type: {item.raw_ref.get('type', 'unknown')}
+source_type: {source_type}
 raw_ref: {raw_ref_path}
 created_at: {created}
 updated_at: {created}
 ---
 
-# {item.title or "（无标题）"}
+# {title}
 
 {text}
 """
@@ -564,6 +567,13 @@ async def run_book_pipeline(source, source_config: dict):
                         "parent_index_id": index_id,
                     })
                     logger.info(f"[{source_id}] chapter: {article_id} — {ch.title}")
+
+                    # Write wiki file with actual chapter text (not summary)
+                    write_wiki_article(
+                        article_id, item, ch.text, tags, chapter_raw_ref,
+                        title_override=ch.title,
+                        source_type_override="book_chapter",
+                    )
 
                     # Summary node
                     summary_embedding = await embed(abstract) if abstract else embedding
