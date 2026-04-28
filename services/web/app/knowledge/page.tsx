@@ -103,6 +103,17 @@ const SOURCE_TYPE_COLORS: Record<string, string> = {
   manual: "bg-purple-50 text-purple-600",
 };
 
+function nodeSymbolPath(d: SimNode, selected: boolean): string {
+  const base = Math.min(8 + (d.degree || 0) * 1.5, 22);
+  const r = selected ? base + 6 : base;
+  const area = Math.PI * r * r;
+  const type =
+    d.object_type === "index" ? d3.symbolDiamond
+    : d.object_type === "summary" ? d3.symbolTriangle
+    : d3.symbolCircle;
+  return d3.symbol().type(type).size(area)() ?? "";
+}
+
 // ── 可拖拽分隔线 ──────────────────────────────────────────────────────────────
 
 function ResizeHandle({ direction, onMouseDown }: {
@@ -943,6 +954,15 @@ export default function KnowledgePage() {
   const [explorerKey, setExplorerKey] = useState(0);
   const [listRefreshToken, setListRefreshToken] = useState(0);
 
+  // 筛选状态
+  const [visibleNodeTypes, setVisibleNodeTypes] = useState<Set<string>>(
+    () => new Set(["article", "entity", "summary", "index"]),
+  );
+  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<string>>(
+    () => new Set(Object.keys(EDGE_COLORS)),
+  );
+  const [filterOpen, setFilterOpen] = useState(false);
+
   // 面板尺寸（可拖拽）
   const [leftWidth, setLeftWidth] = useState(208);
   const [rightWidth, setRightWidth] = useState(288);
@@ -968,6 +988,22 @@ export default function KnowledgePage() {
     } finally {
       setGraphLoading(false);
     }
+  }
+
+  function toggleNodeType(t: string) {
+    setVisibleNodeTypes((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
+  }
+
+  function toggleEdgeType(t: string) {
+    setVisibleEdgeTypes((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
   }
 
   function clearSelection() {
@@ -1012,22 +1048,19 @@ export default function KnowledgePage() {
 
     // 更新节点样式
     svgSel
-      .selectAll<SVGCircleElement, SimNode>("circle")
+      .selectAll<SVGPathElement, SimNode>("path")
+      .attr("d", (d) => nodeSymbolPath(d, d.id === selectedNodeId))
       .attr("fill", (d) => {
-        if (d.id === selectedNodeId) return "#ef4444";   // 红: selected
-        if (neighborIds.has(d.id)) return "#f97316";     // orange: neighbor
+        if (d.id === selectedNodeId) return "#ef4444";
+        if (neighborIds.has(d.id)) return "#f97316";
         return OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6";
       })
       .attr("fill-opacity", (d) => {
-        if (!selectedNodeId) return 0.8;
+        if (!selectedNodeId) return 0.85;
         if (d.id === selectedNodeId || neighborIds.has(d.id)) return 1;
-        return 0.18; // 非相关节点变暗
+        return 0.18;
       })
-      .attr("r", (d) => {
-        const base = Math.min(8 + (d.degree || 0) * 1.5, 22);
-        return d.id === selectedNodeId ? base + 6 : base;
-      })
-      .attr("stroke", (d) => d.id === selectedNodeId ? "#fff" : "#fff")
+      .attr("stroke", "#fff")
       .attr("stroke-width", (d) => d.id === selectedNodeId ? 3 : 1.5);
 
     // 更新边样式
@@ -1062,6 +1095,35 @@ export default function KnowledgePage() {
       }
     }
   }, [selectedNodeId, graphData]);
+
+  // 筛选：根据 visibleNodeTypes / visibleEdgeTypes 切换 D3 元素显隐
+  useEffect(() => {
+    if (!svgRef.current || !graphData) return;
+    const nodeTypeMap = new Map(
+      graphData.nodes.map((n) => [n.id, n.object_type || "article"]),
+    );
+    const svgSel = d3.select(svgRef.current);
+    svgSel
+      .selectAll<SVGPathElement, SimNode>("path")
+      .style("display", (d) =>
+        visibleNodeTypes.has(d.object_type || "article") ? null : "none",
+      );
+    svgSel
+      .selectAll<SVGTextElement, SimNode>("text")
+      .style("display", (d) =>
+        visibleNodeTypes.has(d.object_type || "article") ? null : "none",
+      );
+    svgSel.selectAll<SVGLineElement, SimLink>("line").style("display", (d) => {
+      const srcId =
+        typeof d.source === "string" ? d.source : (d.source as SimNode).id;
+      const tgtId =
+        typeof d.target === "string" ? d.target : (d.target as SimNode).id;
+      if (!visibleNodeTypes.has(nodeTypeMap.get(srcId) ?? "article")) return "none";
+      if (!visibleNodeTypes.has(nodeTypeMap.get(tgtId) ?? "article")) return "none";
+      if (!visibleEdgeTypes.has(d.relation_type)) return "none";
+      return null;
+    });
+  }, [visibleNodeTypes, visibleEdgeTypes, graphData]);
 
   function renderGraph(data: GraphData) {
     const svgEl = svgRef.current!;
@@ -1111,9 +1173,9 @@ export default function KnowledgePage() {
 
     const node = g
       .append("g")
-      .selectAll<SVGCircleElement, SimNode>("circle")
-      .data(nodes).enter().append("circle")
-      .attr("r", (d) => Math.min(8 + (d.degree || 0) * 1.5, 22))
+      .selectAll<SVGPathElement, SimNode>("path")
+      .data(nodes).enter().append("path")
+      .attr("d", (d) => nodeSymbolPath(d, false))
       .attr("fill", (d) => OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6")
       .attr("fill-opacity", 0.85)
       .attr("stroke", "#fff")
@@ -1122,7 +1184,7 @@ export default function KnowledgePage() {
       .on("click", (_, d) => selectNode(d.id))
       .call(
         d3
-          .drag<SVGCircleElement, SimNode>()
+          .drag<SVGPathElement, SimNode>()
           .on("start", (e, d) => {
             if (!e.active) simulation.alphaTarget(0.3).restart();
             d.fx = d.x; d.fy = d.y;
@@ -1155,8 +1217,8 @@ export default function KnowledgePage() {
           .attr("y1", (d) => (d.source as SimNode).y ?? 0)
           .attr("x2", (d) => (d.target as SimNode).x ?? 0)
           .attr("y2", (d) => (d.target as SimNode).y ?? 0);
-        node.attr("cx", (d) => d.x ?? 0).attr("cy", (d) => d.y ?? 0);
-        label.attr("x", (d) => (d.x ?? 0) + 10).attr("y", (d) => (d.y ?? 0) + 3);
+        node.attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+        label.attr("x", (d) => (d.x ?? 0) + 14).attr("y", (d) => (d.y ?? 0) + 4);
       });
 
     return () => simulation.stop();
@@ -1244,14 +1306,51 @@ export default function KnowledgePage() {
 
           {/* 下：图谱 */}
           <div style={{ height: graphHeight }} className="shrink-0 relative bg-white border-t border-gray-200">
-            <div className="absolute top-2 left-3 z-10 flex items-center gap-3">
+            <div className="absolute top-2 left-3 z-10 flex items-center gap-2 flex-wrap">
               <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">图谱</span>
               {(["article", "entity", "summary", "index"] as const).map((t) => (
-                <span key={t} className="flex items-center gap-1 text-xs text-gray-400">
-                  <span className="w-2 h-2 rounded-full inline-block" style={{ background: OBJECT_TYPE_COLORS[t] }} />
+                <button
+                  key={t}
+                  onClick={() => toggleNodeType(t)}
+                  title={visibleNodeTypes.has(t) ? `隐藏 ${t}` : `显示 ${t}`}
+                  className={`flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-opacity ${
+                    visibleNodeTypes.has(t) ? "text-gray-600" : "text-gray-300 line-through"
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full inline-block shrink-0"
+                    style={{ background: OBJECT_TYPE_COLORS[t] }}
+                  />
                   {t}
-                </span>
+                </button>
               ))}
+              <div className="relative">
+                <button
+                  onClick={() => setFilterOpen((v) => !v)}
+                  className="text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white/90"
+                >
+                  边类型
+                </button>
+                {filterOpen && (
+                  <div className="absolute top-6 left-0 z-20 bg-white border border-gray-200 rounded-lg shadow-md p-2 space-y-0.5 min-w-[9rem]">
+                    {Object.entries(EDGE_COLORS).map(([type, color]) => (
+                      <button
+                        key={type}
+                        onClick={() => toggleEdgeType(type)}
+                        className={`flex items-center gap-2 w-full text-left text-xs py-0.5 px-1 rounded hover:bg-gray-50 ${
+                          visibleEdgeTypes.has(type) ? "text-gray-700" : "text-gray-300 line-through"
+                        }`}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: color }}
+                        />
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {selectedNodeId && (
                 <span className="text-xs text-gray-400">
                   · <kbd className="font-mono bg-gray-100 px-1 rounded">Esc</kbd> 取消
