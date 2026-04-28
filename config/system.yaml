@@ -9,6 +9,7 @@ ingestion:
   chunk_trigger_words: 5000    # 超过此词数 + 有章节结构时，触发 index+article 切分
   chunk_target_words: 1500     # 目标每章节词数（无明确结构时按此切分）
   max_entity_page_sources: 5   # 生成 entity 页时最多引用几篇来源文章的 abstract
+  max_index_children_abstracts: 20  # aggregate_index_abstracts 时最多取几个子节点 abstract
 
 models:
   article_analysis:  "claude-haiku-4-5-20251001"
