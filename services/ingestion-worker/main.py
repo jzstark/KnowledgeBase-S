@@ -15,7 +15,8 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
-from pipeline import run_pipeline
+from pipeline import run_book_pipeline, run_pipeline
+from sources.book import BookSource
 from sources.image import ImageSource
 from sources.pdf import PDFSource
 from sources.plaintext import PlaintextSource
@@ -50,7 +51,7 @@ async def trigger_one(source_id: str):
     source = build_source(config)
     if source is None:
         return {"ok": False, "detail": f"unsupported type: {config.get('type')}"}
-    asyncio.create_task(run_pipeline(source, config))
+    asyncio.create_task(_dispatch_pipeline(source, config))
     return {"ok": True}
 
 
@@ -91,7 +92,18 @@ def build_source(config: dict):
         cls = {"pdf": PDFSource, "image": ImageSource,
                "plaintext": PlaintextSource, "word": WordSource}[t]
         return cls(source_id=config["id"], uploads=uploads)
+    elif t in ("epub", "book"):
+        uploads = raw_config.get("uploads", [])
+        return BookSource(source_id=config["id"], uploads=uploads)
     return None
+
+
+async def _dispatch_pipeline(source, config: dict):
+    """Choose book vs regular pipeline based on source type."""
+    if isinstance(source, BookSource):
+        await run_book_pipeline(source, config)
+    else:
+        await run_pipeline(source, config)
 
 
 async def run_once():
@@ -106,7 +118,7 @@ async def run_once():
         if source is None:
             logger.info(f"跳过暂未支持的类型: {config['type']}")
             continue
-        await run_pipeline(source, config)
+        await _dispatch_pipeline(source, config)
 
 
 async def poll_loop():

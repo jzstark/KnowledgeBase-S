@@ -23,7 +23,7 @@ USER_ID = "default"
 
 class SourceCreate(BaseModel):
     name: str
-    type: str        # 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'
+    type: str        # 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'|'epub'
     config: dict[str, Any] = {}
     is_primary: bool = True
 
@@ -43,6 +43,7 @@ FETCH_MODES = {
     "image": "manual",
     "plaintext": "manual",
     "word": "manual",
+    "epub": "manual",
 }
 
 FILE_ACCEPT = {
@@ -50,6 +51,7 @@ FILE_ACCEPT = {
     "image": ".jpg,.jpeg,.png,.gif,.webp",
     "plaintext": ".txt,.md",
     "word": ".doc,.docx",
+    "epub": ".epub,.mobi,.azw3",
 }
 
 

@@ -21,17 +21,18 @@ interface Source {
 type TabType = "auto" | "manual";
 
 const AUTO_TYPES = ["rss", "wechat"];
-const MANUAL_TYPES = ["url", "pdf", "image", "plaintext", "word"];
-const FILE_TYPES = ["pdf", "image", "plaintext", "word"];
+const MANUAL_TYPES = ["url", "pdf", "image", "plaintext", "word", "epub"];
+const FILE_TYPES = ["pdf", "image", "plaintext", "word", "epub"];
 const FILE_ACCEPT: Record<string, string> = {
   pdf: ".pdf",
   image: ".jpg,.jpeg,.png,.gif,.webp",
   plaintext: ".txt,.md",
   word: ".doc,.docx",
+  epub: ".epub,.mobi,.azw3",
 };
 const TYPE_LABELS: Record<string, string> = {
   rss: "RSS", wechat: "微信", url: "URL",
-  pdf: "PDF", image: "图片", plaintext: "文本", word: "Word",
+  pdf: "PDF", image: "图片", plaintext: "文本", word: "Word", epub: "电子书",
 };
 const TYPE_COLORS: Record<string, string> = {
   rss: "bg-orange-100 text-orange-700",
@@ -41,6 +42,7 @@ const TYPE_COLORS: Record<string, string> = {
   image: "bg-purple-100 text-purple-700",
   plaintext: "bg-gray-100 text-gray-700",
   word: "bg-indigo-100 text-indigo-700",
+  epub: "bg-teal-100 text-teal-700",
 };
 
 function parseCfg(s: Source): Record<string, unknown> {
@@ -496,6 +498,7 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
             <option value="image">图片</option>
             <option value="plaintext">纯文本</option>
             <option value="word">Word</option>
+            <option value="epub">电子书 (EPUB/MOBI)</option>
           </optgroup>
         </select>
       </div>

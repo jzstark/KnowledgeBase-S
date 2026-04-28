@@ -169,6 +169,14 @@ async def post_ingest(payload: dict) -> str:
         return resp.json()["id"]
 
 
+async def _post_ingest_full(payload: dict) -> dict:
+    """Like post_ingest but returns the full response dict (includes 'duplicate' flag)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(f"{API_BASE_URL}/api/kb/ingest", json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def get_analysis_context(embedding: list[float]) -> dict:
     """Fetch nearby entity titles and top candidates from API."""
     async with httpx.AsyncClient() as client:
@@ -465,3 +473,183 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
+
+
+async def run_book_pipeline(source, source_config: dict):
+    """
+    Book ingestion pipeline: parse EPUB/MOBI → create index node + article/summary per chapter.
+
+    Index node uses book file as raw_ref (deduplicated by path).
+    Chapter article nodes use a virtual raw_ref path for deterministic ID + dedup.
+    After ingestion, run_maintenance()'s aggregate_index_abstracts fills the index abstract.
+    """
+    from sources.book import BookSource  # local to avoid circular at module level
+
+    source_id = source_config["id"]
+    source_type = source_config["type"]
+
+    last_fetched_at = source_config.get("last_fetched_at")
+    if last_fetched_at and isinstance(last_fetched_at, str):
+        last_fetched_at = datetime.fromisoformat(last_fetched_at.replace("Z", "+00:00"))
+
+    items: list[RawItem] = source.fetch_new_items(last_fetched_at)
+    logger.info(f"[{source_id}] book pipeline: {len(items)} file(s) to process")
+
+    for item in items:
+        try:
+            # 1. Parse chapters
+            chapters = source.extract_chapters(item)
+            valid_chapters = [ch for ch in chapters if len(ch.text) >= 300]
+            if not valid_chapters:
+                logger.warning(f"[{source_id}] no valid chapters in: {item.title}")
+                continue
+
+            logger.info(f"[{source_id}] {item.title}: {len(valid_chapters)} chapters")
+
+            # 2. Save raw file
+            file_path = save_raw(item, source_type)
+            raw_ref = {"type": "file", "path": file_path}
+
+            # 3. Create index node for the book (abstract empty; maintenance will fill it)
+            book_title = item.title or Path(file_path).stem
+            index_embedding = await embed(book_title)
+            index_resp = await _post_ingest_full({
+                "user_id": USER_ID,
+                "title": book_title,
+                "abstract": "",
+                "embedding": index_embedding,
+                "source_type": source_type,
+                "source_id": source_id,
+                "raw_ref": raw_ref,
+                "tags": [],
+                "object_type": "index",
+            })
+
+            if index_resp.get("duplicate"):
+                logger.info(f"[{source_id}] book already ingested (index exists): {book_title}")
+                continue
+
+            index_id = index_resp["id"]
+            logger.info(f"[{source_id}] index node created: {index_id} — {book_title}")
+
+            # 4. Process each chapter
+            for ch in valid_chapters:
+                try:
+                    truncated = ch.text[:MAX_TEXT_CHARS]
+
+                    # Article analysis (no entity context lookup to keep book ingestion fast)
+                    analysis = analyze_article(truncated, [], [])
+                    abstract = analysis["abstract"]
+                    tags = analysis["tags"]
+                    entities = analysis["entities"]
+
+                    embedding = await embed(abstract) if abstract else await embed(truncated[:8000])
+
+                    # Virtual path for deterministic ID + dedup
+                    chapter_raw_ref = {
+                        "type": "book_chapter",
+                        "path": f"{file_path}::chapter::{ch.order}",
+                    }
+
+                    article_id = await post_ingest({
+                        "user_id": USER_ID,
+                        "title": ch.title,
+                        "abstract": abstract,
+                        "embedding": embedding,
+                        "source_type": source_type,
+                        "source_id": source_id,
+                        "raw_ref": chapter_raw_ref,
+                        "tags": tags,
+                        "object_type": "article",
+                        "parent_index_id": index_id,
+                    })
+                    logger.info(f"[{source_id}] chapter: {article_id} — {ch.title}")
+
+                    # Summary node
+                    summary_embedding = await embed(abstract) if abstract else embedding
+                    await post_ingest({
+                        "user_id": USER_ID,
+                        "title": f"摘要：{ch.title}",
+                        "abstract": abstract,
+                        "embedding": summary_embedding,
+                        "source_type": source_type,
+                        "source_id": source_id,
+                        "raw_ref": {},
+                        "tags": tags,
+                        "object_type": "summary",
+                        "summary_of": article_id,
+                        "source_node_ids": [article_id],
+                    })
+
+                    # Entity candidates (same flow as regular pipeline)
+                    newly_promoted: list[str] = []
+                    if entities:
+                        candidate_result = await process_entity_candidates(article_id, entities)
+                        promoted_list = candidate_result.get("promoted", [])
+
+                        for promoted in promoted_list:
+                            try:
+                                source_abstracts = []
+                                for art_id in promoted.get("source_article_ids", [])[:MAX_ENTITY_PAGE_SOURCES]:
+                                    async with httpx.AsyncClient() as hc:
+                                        art_resp = await hc.get(
+                                            f"{API_BASE_URL}/api/kb/node/{art_id}", timeout=10
+                                        )
+                                        if art_resp.status_code == 200:
+                                            art_data = art_resp.json()
+                                            if art_data.get("abstract"):
+                                                t = art_data.get("title") or art_id
+                                                source_abstracts.append(f"《{t}》: {art_data['abstract']}")
+
+                                entity_body = generate_entity_page(
+                                    promoted["canonical_name"],
+                                    promoted.get("aliases", []),
+                                    source_abstracts,
+                                )
+                                entity_embedding = await embed(promoted["canonical_name"])
+                                entity_id = await post_ingest({
+                                    "user_id": USER_ID,
+                                    "title": promoted["canonical_name"],
+                                    "abstract": entity_body[:500],
+                                    "embedding": entity_embedding,
+                                    "source_type": "entity",
+                                    "source_id": source_id,
+                                    "raw_ref": {},
+                                    "tags": [],
+                                    "object_type": "entity",
+                                    "source_node_ids": promoted.get("source_article_ids", []),
+                                    "canonical_name": promoted["canonical_name"],
+                                    "aliases": promoted.get("aliases", []),
+                                })
+                                write_wiki_entity(
+                                    entity_id,
+                                    promoted["canonical_name"],
+                                    promoted.get("aliases", []),
+                                    promoted.get("source_article_ids", []),
+                                    entity_body,
+                                    [],
+                                )
+                                await mark_candidate_promoted(promoted["candidate_id"], entity_id)
+                                newly_promoted.append(entity_id)
+                            except Exception as e:
+                                logger.error(f"[{source_id}] entity failed: {promoted.get('canonical_name')} — {e}")
+
+                    # Backfill wikilinks for newly promoted entities
+                    for eid in newly_promoted:
+                        try:
+                            async with httpx.AsyncClient() as hc:
+                                await hc.post(
+                                    f"{API_BASE_URL}/api/kb/entities/{eid}/backfill_wikilinks",
+                                    timeout=30,
+                                )
+                        except Exception as e:
+                            logger.warning(f"[{source_id}] wikilink backfill failed for {eid}: {e}")
+
+                except Exception as e:
+                    logger.error(f"[{source_id}] chapter failed: {ch.title} — {e}", exc_info=True)
+
+        except Exception as e:
+            logger.error(f"[{source_id}] book failed: {item.title} — {e}", exc_info=True)
+
+    await update_last_fetched(source_id)
+    logger.info(f"[{source_id}] book pipeline done")

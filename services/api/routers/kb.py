@@ -58,6 +58,7 @@ class IngestRequest(BaseModel):
     canonical_name: str | None = None
     aliases: list[str] = []
     perspective: str | None = None
+    parent_index_id: str | None = None   # if set, creates part_of edge to this index node
 
 
 @router.post("/ingest")
@@ -115,6 +116,16 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "perspective": body.perspective,
         },
     )
+    if body.parent_index_id:
+        await database.database.execute(
+            """
+            INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
+            VALUES (:from_id, :to_id, 'part_of', 1.0, 'book_ingestion')
+            ON CONFLICT DO NOTHING
+            """,
+            {"from_id": node_id, "to_id": body.parent_index_id},
+        )
+
     background_tasks.add_task(build_similar_edges_and_wiki, node_id, body.user_id)
     if body.raw_ref:
         background_tasks.add_task(trim_raw_files, body.user_id)
@@ -254,7 +265,9 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     wiki_file = _wiki_file_path(user_id, node_id, object_type)
     wiki_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Preserve existing body text; update only frontmatter and relations section
+    # Preserve existing body text; update only frontmatter and relations section.
+    # If the file body is empty (e.g. index nodes before aggregate_index_abstracts runs),
+    # fall back to the DB abstract so nodes always show meaningful content.
     existing_body = node["abstract"] or ""
     if wiki_file.exists():
         raw_content = wiki_file.read_text(encoding="utf-8")
@@ -265,11 +278,14 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
                 body_section = body_section[:body_section.index("\n## 关联节点\n")].strip()
             lines = body_section.split("\n", 2)
             if len(lines) >= 3:
-                existing_body = lines[2].strip()
+                file_body = lines[2].strip()
             elif len(lines) == 2:
-                existing_body = ""
+                file_body = ""
             else:
-                existing_body = body_section
+                file_body = body_section
+            # Only override DB abstract if the file actually has content
+            if file_body:
+                existing_body = file_body
 
     # Build type-specific frontmatter extras
     perspective_val = node.get("perspective") or ""
