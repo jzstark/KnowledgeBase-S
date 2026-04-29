@@ -807,7 +807,7 @@ function WikiPanel({
   return (
     <div className="flex flex-col h-full">
       {/* 节点元数据头部 */}
-      <div className="px-5 py-3 border-b border-border bg-muted/20 shrink-0">
+      <div className="px-5 py-3 border-b border-border bg-muted/40 shrink-0">
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
             <h2 className="text-sm font-semibold leading-snug">
@@ -1232,9 +1232,10 @@ export default function KnowledgePage() {
   }
 
   return (
-    <main className="h-screen bg-background flex flex-col">
+    <main className="h-[calc(100vh-52px)] bg-background p-4">
+      <div className="h-full flex flex-col rounded-xl border border-border overflow-hidden shadow-sm">
       {/* 顶部工具栏 */}
-      <header className="bg-card border-b border-border px-5 py-2.5 flex items-center justify-between shrink-0">
+      <header className="bg-muted/50 border-b border-border px-5 py-2.5 flex items-center justify-between shrink-0">
         <h1 className="text-base font-semibold">知识库</h1>
         <Button variant="outline" size="sm" onClick={handleMaintenance}>
           {maintenanceMsg || "立即运行维护"}
@@ -1245,8 +1246,8 @@ export default function KnowledgePage() {
       <div className="flex flex-1 min-h-0">
 
         {/* 左：资源管理器 */}
-        <div style={{ width: leftWidth }} className="shrink-0 border-r border-border bg-card overflow-hidden flex flex-col">
-          <div className="px-3 py-2 border-b border-border shrink-0">
+        <div style={{ width: leftWidth }} className="shrink-0 border-r border-border bg-muted/30 overflow-hidden flex flex-col">
+          <div className="px-3 py-2 border-b border-border bg-muted/40 shrink-0">
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">资源管理器</span>
           </div>
           <div className="flex-1 overflow-hidden">
@@ -1295,7 +1296,7 @@ export default function KnowledgePage() {
           />
 
           {/* 下：图谱 */}
-          <div style={{ height: graphHeight }} className="shrink-0 relative bg-card border-t border-border">
+          <div style={{ height: graphHeight }} className="shrink-0 relative bg-muted/20 border-t border-border">
             <div className="absolute top-2 left-3 z-10 flex items-center gap-2 flex-wrap">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">图谱</span>
               {(["article", "entity", "summary", "index"] as const).map((t) => (
@@ -1364,8 +1365,8 @@ export default function KnowledgePage() {
         />
 
         {/* 右：列表 */}
-        <div style={{ width: rightWidth }} className="shrink-0 border-l border-border bg-card overflow-hidden flex flex-col">
-          <div className="px-3 py-2 border-b border-border shrink-0">
+        <div style={{ width: rightWidth }} className="shrink-0 border-l border-border bg-muted/30 overflow-hidden flex flex-col">
+          <div className="px-3 py-2 border-b border-border bg-muted/40 shrink-0">
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">列表</span>
           </div>
           <div className="flex-1 overflow-hidden">
@@ -1377,6 +1378,7 @@ export default function KnowledgePage() {
           </div>
         </div>
 
+      </div>
       </div>
     </main>
   );

@@ -23,7 +23,7 @@ export default function Nav() {
   if (pathname === "/login") return null;
 
   return (
-    <nav className="bg-card border-b border-border px-6 py-2.5 flex items-center gap-1">
+    <nav className="bg-background/90 backdrop-blur-sm border-b border-border px-6 py-2.5 flex items-center gap-1 sticky top-0 z-30">
       <Link href="/" className="shrink-0 mr-3">
         <img src="/logo.svg" alt="logo" className="h-6 w-6" />
       </Link>

@@ -62,7 +62,7 @@ function SortableCard({
     <div
       ref={setNodeRef}
       style={style}
-      className="bg-card border border-border rounded-lg p-3 flex items-start gap-2 cursor-grab active:cursor-grabbing"
+      className="bg-background border border-border rounded-lg p-3 flex items-start gap-2 cursor-grab active:cursor-grabbing"
     >
       <span
         {...attributes}
@@ -109,7 +109,7 @@ function TopicCard({
       className={cn(
         "rounded-lg border p-3 transition-opacity",
         isSkipped ? "opacity-30" : "opacity-100",
-        isSelected ? "border-primary bg-accent" : "border-border bg-card"
+        isSelected ? "border-primary bg-accent" : "border-border bg-background"
       )}
     >
       <button
@@ -216,9 +216,10 @@ export default function BriefingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="h-[calc(100vh-52px)] bg-background p-4">
+      <div className="h-full flex flex-col rounded-xl border border-border overflow-hidden shadow-sm">
       {/* 顶部状态栏 */}
-      <header className="bg-card border-b border-border px-6 py-3 flex items-center justify-between">
+      <header className="bg-muted/50 border-b border-border px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
           <h1 className="text-base font-semibold">今日简报</h1>
           {briefing?.created_at && (
@@ -236,11 +237,11 @@ export default function BriefingPage() {
       </header>
 
       {/* 三栏布局 */}
-      <div className="flex h-[calc(100vh-57px)]">
+      <div className="flex flex-1 min-h-0">
 
         {/* 左栏：今日选题 */}
-        <div className="w-80 border-r border-border bg-card flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
+        <div className="w-80 border-r border-border bg-muted/30 flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-border bg-muted/40">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">今日选题</p>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -272,7 +273,7 @@ export default function BriefingPage() {
 
         {/* 中栏：已选选题 */}
         <div className="w-72 border-r border-border bg-card flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+          <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">已选选题</p>
             <span className="text-xs text-muted-foreground">{selected.length} 个</span>
           </div>
@@ -309,6 +310,7 @@ export default function BriefingPage() {
         {/* 右栏：生成草稿 */}
         <DraftPanel selected={selected} />
 
+      </div>
       </div>
     </div>
   );
@@ -376,8 +378,8 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
   }
 
   return (
-    <div className="flex-1 bg-card flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-center gap-3">
+    <div className="flex-1 bg-muted/20 flex flex-col overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-3">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide shrink-0">
           生成草稿
         </p>
