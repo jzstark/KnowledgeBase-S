@@ -18,6 +18,7 @@ services:
       INGESTION_WORKER_URL: http://ingestion-worker:8001
 
   web:
+    image: knowledgebase-web-dev
     build:
       context: ./services/web
       target: dev
