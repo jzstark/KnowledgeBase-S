@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 
 interface DraftSummary {
   id: string;
@@ -22,7 +27,6 @@ export default function DraftsPage() {
   const [selected, setSelected] = useState<DraftDetail | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // 定稿反馈状态
   const [showFeedback, setShowFeedback] = useState(false);
   const [finalContent, setFinalContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -94,16 +98,14 @@ export default function DraftsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-background">
       <div className="max-w-6xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-semibold text-gray-900">草稿历史</h1>
-        </div>
+        <h1 className="text-2xl font-semibold mb-6">草稿历史</h1>
 
         {loading ? (
-          <p className="text-gray-400 text-sm">加载中…</p>
+          <p className="text-muted-foreground text-sm">加载中…</p>
         ) : drafts.length === 0 ? (
-          <p className="text-gray-400 text-sm">暂无草稿记录</p>
+          <p className="text-muted-foreground text-sm">暂无草稿记录</p>
         ) : (
           <div className="flex gap-6">
             {/* 草稿列表 */}
@@ -112,24 +114,25 @@ export default function DraftsPage() {
                 <button
                   key={d.id}
                   onClick={() => openDraft(d.id)}
-                  className={`w-full text-left rounded-lg border p-3 transition-colors ${
+                  className={cn(
+                    "w-full text-left rounded-lg border p-3 transition-colors",
                     selected?.id === d.id
-                      ? "border-blue-500 bg-blue-50"
-                      : "border-gray-200 bg-white hover:border-gray-300"
-                  }`}
+                      ? "border-primary bg-accent"
+                      : "border-border bg-card hover:border-muted-foreground/40"
+                  )}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                    <Badge variant="secondary" className="text-xs">
                       {d.template_name || "default"}
-                    </span>
-                    <span className="text-xs text-gray-400">
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
                       {d.created_at ? formatDate(d.created_at) : ""}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 line-clamp-2">
+                  <p className="text-sm line-clamp-2">
                     {d.preview || "（无预览）"}
                   </p>
-                  <p className="text-xs text-gray-400 mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     {(d.selected_node_ids || []).length} 篇素材
                   </p>
                 </button>
@@ -139,91 +142,96 @@ export default function DraftsPage() {
             {/* 草稿详情 */}
             <div className="flex-1 min-w-0">
               {selected ? (
-                <div className="bg-white rounded-lg border border-gray-200 p-5">
-                  {/* 头部工具栏 */}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
-                        {selected.template_name || "default"}
-                      </span>
-                      <span className="text-xs text-gray-400">
-                        {selected.created_at ? formatDate(selected.created_at) : ""}
-                      </span>
-                      {selected.final_content && (
-                        <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
-                          已有定稿
+                <Card>
+                  <CardContent className="p-5">
+                    {/* 头部工具栏 */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary" className="text-xs">
+                          {selected.template_name || "default"}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {selected.created_at ? formatDate(selected.created_at) : ""}
                         </span>
+                        {selected.final_content && (
+                          <Badge variant="outline" className="text-xs text-green-600 border-green-200">
+                            已有定稿
+                          </Badge>
+                        )}
+                      </div>
+                      <Button variant="outline" size="sm" onClick={copy}>
+                        {copied ? "已复制 ✓" : "复制"}
+                      </Button>
+                    </div>
+
+                    {/* 草稿正文编辑区 */}
+                    <Textarea
+                      value={selected.draft_content}
+                      onChange={(e) =>
+                        setSelected({ ...selected, draft_content: e.target.value })
+                      }
+                      className="h-[55vh] text-sm leading-relaxed resize-none border-0 shadow-none focus-visible:ring-0 p-0"
+                      spellCheck={false}
+                    />
+
+                    {/* 定稿反馈区 */}
+                    <div className="mt-3 pt-3">
+                      <Separator className="mb-3" />
+                      {feedbackResult && (
+                        <div className="mb-3 text-sm text-green-700 bg-green-50 dark:bg-green-950 dark:text-green-400 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
+                          {feedbackResult}
+                        </div>
+                      )}
+
+                      {!showFeedback ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground"
+                          onClick={() => { setShowFeedback(true); setFeedbackResult(null); }}
+                        >
+                          + 提交定稿，让系统学习你的写作偏好
+                        </Button>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">
+                            将你修改后的最终版本粘贴到下方，系统将对比草稿并提炼偏好规则：
+                          </p>
+                          <Textarea
+                            value={finalContent}
+                            onChange={(e) => setFinalContent(e.target.value)}
+                            placeholder="粘贴你的定稿内容…"
+                            className="h-[30vh] text-sm leading-relaxed resize-none"
+                            spellCheck={false}
+                          />
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              onClick={submitFeedback}
+                              disabled={submitting || !finalContent.trim()}
+                            >
+                              {submitting ? "分析中…" : "提交定稿"}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-muted-foreground"
+                              onClick={() => { setShowFeedback(false); setFinalContent(""); }}
+                            >
+                              取消
+                            </Button>
+                          </div>
+                        </div>
                       )}
                     </div>
-                    <button
-                      onClick={copy}
-                      className="text-sm px-3 py-1 rounded-md border border-gray-200 hover:bg-gray-50 transition-colors"
-                    >
-                      {copied ? "已复制" : "复制"}
-                    </button>
-                  </div>
-
-                  {/* 草稿正文编辑区 */}
-                  <textarea
-                    value={selected.draft_content}
-                    onChange={(e) =>
-                      setSelected({ ...selected, draft_content: e.target.value })
-                    }
-                    className="w-full h-[55vh] text-sm text-gray-800 leading-relaxed resize-none border-0 outline-none"
-                    spellCheck={false}
-                  />
-
-                  {/* 定稿反馈区 */}
-                  <div className="mt-3 border-t border-gray-100 pt-3">
-                    {feedbackResult && (
-                      <div className="mb-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                        {feedbackResult}
-                      </div>
-                    )}
-
-                    {!showFeedback ? (
-                      <button
-                        onClick={() => { setShowFeedback(true); setFeedbackResult(null); }}
-                        className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-                      >
-                        <span>+</span>
-                        <span>提交定稿，让系统学习你的写作偏好</span>
-                      </button>
-                    ) : (
-                      <div className="space-y-2">
-                        <p className="text-xs text-gray-500">
-                          将你修改后的最终版本粘贴到下方，系统将对比草稿并提炼偏好规则：
-                        </p>
-                        <textarea
-                          value={finalContent}
-                          onChange={(e) => setFinalContent(e.target.value)}
-                          placeholder="粘贴你的定稿内容…"
-                          className="w-full h-[30vh] text-sm text-gray-800 leading-relaxed resize-none border border-gray-200 rounded-lg p-3 outline-none focus:border-blue-400"
-                          spellCheck={false}
-                        />
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={submitFeedback}
-                            disabled={submitting || !finalContent.trim()}
-                            className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                          >
-                            {submitting ? "分析中…" : "提交定稿"}
-                          </button>
-                          <button
-                            onClick={() => { setShowFeedback(false); setFinalContent(""); }}
-                            className="text-sm text-gray-400 hover:text-gray-600"
-                          >
-                            取消
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                  </CardContent>
+                </Card>
               ) : (
-                <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">
-                  点击左侧草稿查看详情
-                </div>
+                <Card>
+                  <CardContent className="p-8 text-center text-muted-foreground text-sm">
+                    点击左侧草稿查看详情
+                  </CardContent>
+                </Card>
               )}
             </div>
           </div>

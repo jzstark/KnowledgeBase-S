@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
@@ -97,10 +101,10 @@ const OBJECT_TYPE_COLORS: Record<string, string> = {
   index: "#8b5cf6",
 };
 
-const SOURCE_TYPE_COLORS: Record<string, string> = {
-  rss: "bg-orange-50 text-orange-600",
-  wechat: "bg-green-50 text-green-600",
-  manual: "bg-purple-50 text-purple-600",
+const SOURCE_TYPE_BADGE: Record<string, string> = {
+  rss: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
+  wechat: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  manual: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
 };
 
 function nodeSymbolPath(d: SimNode, selected: boolean): string {
@@ -114,7 +118,7 @@ function nodeSymbolPath(d: SimNode, selected: boolean): string {
   return d3.symbol().type(type).size(area)() ?? "";
 }
 
-// ── 可拖拽分隔线 ──────────────────────────────────────────────────────────────
+// ── 可拖拽分隔线（保持不变） ──────────────────────────────────────────────────
 
 function ResizeHandle({ direction, onMouseDown }: {
   direction: "h" | "v";
@@ -123,11 +127,10 @@ function ResizeHandle({ direction, onMouseDown }: {
   return (
     <div
       onMouseDown={onMouseDown}
-      className={`shrink-0 ${
-        direction === "h"
-          ? "w-1 cursor-col-resize"
-          : "h-1 cursor-row-resize"
-      } bg-gray-200 hover:bg-blue-400 active:bg-blue-500 transition-colors z-10`}
+      className={cn(
+        "shrink-0 bg-border hover:bg-primary/20 active:bg-primary/40 transition-colors z-10",
+        direction === "h" ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"
+      )}
     />
   );
 }
@@ -172,23 +175,26 @@ function NodeCard({
   selected: boolean;
   onClick: () => void;
 }) {
-  const colorClass = SOURCE_TYPE_COLORS[node.source_type] || "bg-gray-50 text-gray-600";
   return (
     <button
       data-node-id={node.id}
       onClick={onClick}
-      className={`w-full text-left rounded-lg border p-3 transition-colors ${
+      className={cn(
+        "w-full text-left rounded-lg border p-3 transition-colors",
         selected
-          ? "border-blue-500 bg-blue-50"
-          : "border-gray-200 bg-white hover:border-gray-300"
-      }`}
+          ? "border-primary bg-accent"
+          : "border-border bg-card hover:border-muted-foreground/40"
+      )}
     >
       <div className="flex items-center gap-2 mb-1">
-        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${colorClass}`}>
+        <span className={cn(
+          "text-xs px-1.5 py-0.5 rounded font-medium",
+          SOURCE_TYPE_BADGE[node.source_type] || "bg-muted text-muted-foreground"
+        )}>
           {node.source_type || "unknown"}
         </span>
         {node.created_at && (
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-muted-foreground">
             {new Date(node.created_at).toLocaleDateString("zh-CN", {
               month: "2-digit",
               day: "2-digit",
@@ -196,21 +202,21 @@ function NodeCard({
           </span>
         )}
       </div>
-      <p className="text-sm font-medium text-gray-900 line-clamp-2 mb-1">
+      <p className="text-sm font-medium line-clamp-2 mb-1">
         {node.title || node.id}
       </p>
       {node.abstract && (
-        <p className="text-xs text-gray-500 line-clamp-2">{node.abstract}</p>
+        <p className="text-xs text-muted-foreground line-clamp-2">{node.abstract}</p>
       )}
       {(node.tags || []).length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1.5">
           {(node.tags || []).slice(0, 3).map((t) => (
-            <span key={t} className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">
+            <Badge key={t} variant="secondary" className="text-xs px-1.5 py-0">
               {t}
-            </span>
+            </Badge>
           ))}
           {(node.tags || []).length > 3 && (
-            <span className="text-xs text-gray-400">+{node.tags.length - 3}</span>
+            <span className="text-xs text-muted-foreground">+{node.tags.length - 3}</span>
           )}
         </div>
       )}
@@ -263,14 +269,12 @@ function ListPanel({
 
   useEffect(() => { loadNodes("", "", 0); }, [loadNodes]);
 
-  // 外部触发刷新（如节点删除后），保留当前搜索条件重新拉取
   useEffect(() => {
     if (refreshToken === undefined || refreshToken === 0) return;
     loadNodes(q, tagFilter, offset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
-  // 选中节点时自动滚动到对应卡片
   useEffect(() => {
     if (!selectedId || !containerRef.current) return;
     const el = containerRef.current.querySelector(`[data-node-id="${selectedId}"]`);
@@ -293,31 +297,31 @@ function ListPanel({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="p-3 border-b border-gray-200 space-y-2 shrink-0">
-        <input
+      <div className="p-3 border-b border-border space-y-2 shrink-0">
+        <Input
           type="text"
           value={q}
           onChange={(e) => handleQChange(e.target.value)}
           placeholder="搜索标题或 abstract…"
-          className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-400"
+          className="text-sm h-8"
         />
         <div className="flex items-center gap-2">
-          <input
+          <Input
             type="text"
             value={tagFilter}
             onChange={(e) => handleTagChange(e.target.value)}
             placeholder="按标签过滤"
-            className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-blue-400"
+            className="flex-1 text-sm h-8"
           />
-          <span className="text-xs text-gray-400 shrink-0">{total}</span>
+          <span className="text-xs text-muted-foreground shrink-0">{total}</span>
         </div>
       </div>
 
       <div ref={containerRef} className="flex-1 overflow-auto p-3 space-y-2">
         {loading ? (
-          <p className="text-sm text-gray-400">加载中…</p>
+          <p className="text-sm text-muted-foreground">加载中…</p>
         ) : nodes.length === 0 ? (
-          <p className="text-sm text-gray-400">暂无节点</p>
+          <p className="text-sm text-muted-foreground">暂无节点</p>
         ) : (
           nodes.map((n) => (
             <NodeCard
@@ -331,24 +335,28 @@ function ListPanel({
       </div>
 
       {total > LIMIT && (
-        <div className="px-3 py-2 border-t border-gray-200 flex items-center justify-between shrink-0">
-          <button
+        <div className="px-3 py-2 border-t border-border flex items-center justify-between shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
             onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}
             disabled={offset === 0}
-            className="text-xs px-3 py-1 border border-gray-200 rounded disabled:opacity-40"
           >
             上一页
-          </button>
-          <span className="text-xs text-gray-500">
+          </Button>
+          <span className="text-xs text-muted-foreground">
             {Math.floor(offset / LIMIT) + 1} / {Math.ceil(total / LIMIT)}
           </span>
-          <button
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
             onClick={() => setOffset((o) => o + LIMIT)}
             disabled={offset + LIMIT >= total}
-            className="text-xs px-3 py-1 border border-gray-200 rounded disabled:opacity-40"
           >
             下一页
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -416,7 +424,6 @@ function ExplorerPanel({
     });
   }
 
-  // 删除知识节点（raw 文件 + wiki 文件 + DB 记录）
   async function handleDeleteNode(nodeId: string, name: string) {
     if (!confirm(`确认删除「${name}」及其知识节点？原始文件也会一并删除，此操作不可撤销。`)) return;
     setDeleting(nodeId);
@@ -431,7 +438,6 @@ function ExplorerPanel({
     }
   }
 
-  // 删除 wiki 节点文件（同时删除原始文件和 DB 节点记录）
   async function handleDeleteWiki(nodeId: string, name: string) {
     if (!confirm(`确认删除「${name}」？对应的原始文件和知识节点也会一并删除，此操作不可撤销。`)) return;
     setDeleting(nodeId);
@@ -446,7 +452,6 @@ function ExplorerPanel({
     }
   }
 
-  // 删除配置模板文件（仅删除文件）
   async function handleDeleteConfig(relPath: string, name: string) {
     if (!confirm(`确认删除配置文件「${name}」？此操作不可撤销。`)) return;
     setDeleting(relPath);
@@ -461,11 +466,11 @@ function ExplorerPanel({
     }
   }
 
-  if (loading) return <div className="p-4 text-sm text-gray-400">加载中…</div>;
-  if (!tree) return <div className="p-4 text-sm text-red-400">加载失败</div>;
+  if (loading) return <div className="p-4 text-sm text-muted-foreground">加载中…</div>;
+  if (!tree) return <div className="p-4 text-sm text-destructive">加载失败</div>;
 
   const chevron = (key: string) => (
-    <span className="text-gray-400 text-xs mr-1">{expanded.has(key) ? "▾" : "▸"}</span>
+    <span className="text-muted-foreground/50 text-xs mr-1">{expanded.has(key) ? "▾" : "▸"}</span>
   );
 
   return (
@@ -474,7 +479,7 @@ function ExplorerPanel({
       <div>
         <button
           onClick={() => toggle("raw")}
-          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+          className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
         >
           {chevron("raw")} 原始文件
         </button>
@@ -487,25 +492,25 @@ function ExplorerPanel({
                 <div key={type}>
                   <button
                     onClick={() => toggle(key)}
-                    className="flex items-center w-full text-left text-gray-500 py-0.5 hover:text-gray-700"
+                    className="flex items-center w-full text-left text-muted-foreground py-0.5 hover:text-foreground"
                   >
                     {chevron(key)}
                     <span className="text-xs">{RAW_TYPE_LABELS[type] ?? type}</span>
-                    <span className="ml-1 text-xs text-gray-300">({files.length})</span>
+                    <span className="ml-1 text-xs text-muted-foreground/40">({files.length})</span>
                   </button>
                   {expanded.has(key) && (
                     <div className="ml-3 space-y-0.5">
                       {files.map((f) => (
                         <div key={f.rel_path} className="flex items-center gap-1 group py-0.5">
-                          <span className="flex-1 text-xs text-gray-600 truncate" title={f.name}>
+                          <span className="flex-1 text-xs text-muted-foreground truncate" title={f.name}>
                             {f.name}
                           </span>
-                          <span className="text-xs text-gray-300 shrink-0">{formatBytes(f.size)}</span>
+                          <span className="text-xs text-muted-foreground/40 shrink-0">{formatBytes(f.size)}</span>
                           {f.node_id && (
                             <button
                               onClick={() => handleDeleteNode(f.node_id!, f.name)}
                               disabled={deleting === f.node_id}
-                              className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 ml-1"
+                              className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 ml-1"
                               title="删除节点"
                             >
                               {deleting === f.node_id ? "…" : "✕"}
@@ -522,16 +527,16 @@ function ExplorerPanel({
         )}
       </div>
 
-      <div className="border-t border-gray-100 my-2" />
+      <div className="border-t border-border my-2" />
 
       {/* Wiki */}
       <div>
         <button
           onClick={() => toggle("wiki")}
-          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+          className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
         >
           {chevron("wiki")} Wiki
-          <span className="ml-1 text-xs text-gray-300">
+          <span className="ml-1 text-xs text-muted-foreground/40">
             ({(tree.wiki.articles?.length ?? 0) + (tree.wiki.entities?.length ?? 0) + (tree.wiki.summaries?.length ?? 0) + (tree.wiki.indices?.length ?? 0)})
           </span>
         </button>
@@ -545,11 +550,11 @@ function ExplorerPanel({
                 <div key={subdir}>
                   <button
                     onClick={() => toggle(key)}
-                    className="flex items-center w-full text-left text-gray-500 py-0.5 hover:text-gray-700"
+                    className="flex items-center w-full text-left text-muted-foreground py-0.5 hover:text-foreground"
                   >
                     {chevron(key)}
                     <span className="text-xs">{WIKI_SECTION_LABELS[subdir]}</span>
-                    <span className="ml-1 text-xs text-gray-300">({files.length})</span>
+                    <span className="ml-1 text-xs text-muted-foreground/40">({files.length})</span>
                   </button>
                   {expanded.has(key) && (
                     <div className="ml-3 space-y-0.5">
@@ -563,9 +568,10 @@ function ExplorerPanel({
                                 onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true });
                                 onSelectNode(nodeId);
                               }}
-                              className={`flex-1 min-w-0 text-left text-xs truncate rounded px-1 transition-colors ${
-                                isSelected ? "bg-blue-50 text-blue-700" : "text-blue-600 hover:text-blue-800"
-                              }`}
+                              className={cn(
+                                "flex-1 min-w-0 text-left text-xs truncate rounded px-1 transition-colors",
+                                isSelected ? "bg-accent text-primary" : "text-blue-600 dark:text-blue-400 hover:text-blue-800"
+                              )}
                               title={f.name}
                             >
                               📄 {f.name}
@@ -573,7 +579,7 @@ function ExplorerPanel({
                             <button
                               onClick={() => handleDeleteWiki(nodeId, f.name)}
                               disabled={deleting === nodeId}
-                              className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
+                              className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
                               title="删除节点"
                             >
                               {deleting === nodeId ? "…" : "✕"}
@@ -590,16 +596,16 @@ function ExplorerPanel({
         )}
       </div>
 
-      <div className="border-t border-gray-100 my-2" />
+      <div className="border-t border-border my-2" />
 
       {/* 配置模板 */}
       <div>
         <button
           onClick={() => toggle("config")}
-          className="flex items-center w-full text-left font-medium text-gray-700 py-1 hover:text-gray-900"
+          className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
         >
           {chevron("config")} 配置模板
-          <span className="ml-1 text-xs text-gray-300">({tree.config.length})</span>
+          <span className="ml-1 text-xs text-muted-foreground/40">({tree.config.length})</span>
         </button>
         {expanded.has("config") && (
           <div className="ml-3 space-y-0.5">
@@ -607,7 +613,7 @@ function ExplorerPanel({
               <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
                 <button
                   onClick={() => onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true })}
-                  className="flex-1 min-w-0 text-left text-xs text-blue-600 hover:text-blue-800 truncate rounded px-1"
+                  className="flex-1 min-w-0 text-left text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 truncate rounded px-1"
                   title={f.name}
                 >
                   📄 {f.name}
@@ -615,7 +621,7 @@ function ExplorerPanel({
                 <button
                   onClick={() => handleDeleteConfig(f.rel_path, f.name)}
                   disabled={deleting === f.rel_path}
-                  className="shrink-0 text-gray-300 hover:text-red-500 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
+                  className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
                   title="删除配置文件"
                 >
                   {deleting === f.rel_path ? "…" : "✕"}
@@ -674,51 +680,49 @@ function FilePanel({ file, onClose }: { file: OpenFile; onClose: () => void }) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 shrink-0 bg-gray-50">
-        <span className="flex-1 text-xs font-medium text-gray-700 truncate" title={file.name}>
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0 bg-muted/30">
+        <span className="flex-1 text-xs font-medium truncate" title={file.name}>
           {file.name}
         </span>
         {saveMsg && <span className="text-xs text-green-500">{saveMsg}</span>}
         {file.writable && !editing && (
-          <button
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-xs"
             onClick={() => { setDraft(content ?? ""); setEditing(true); }}
-            className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-0.5 bg-white"
           >
             编辑
-          </button>
+          </Button>
         )}
         {editing && (
           <>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="text-xs text-white bg-gray-900 rounded px-2 py-0.5 disabled:opacity-40"
-            >
+            <Button size="sm" className="h-6 text-xs" onClick={handleSave} disabled={saving}>
               {saving ? "保存中…" : "保存"}
-            </button>
-            <button onClick={() => setEditing(false)} className="text-xs text-gray-500 hover:text-gray-800">
+            </Button>
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setEditing(false)}>
               取消
-            </button>
+            </Button>
           </>
         )}
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-1">
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none ml-1">
           ×
         </button>
       </div>
       <div className="flex-1 overflow-auto">
         {loading ? (
-          <div className="p-4 text-sm text-gray-400">加载中…</div>
+          <div className="p-4 text-sm text-muted-foreground">加载中…</div>
         ) : content === null ? (
-          <div className="p-4 text-sm text-red-400">加载失败</div>
+          <div className="p-4 text-sm text-destructive">加载失败</div>
         ) : editing ? (
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            className="w-full h-full p-4 text-xs font-mono text-gray-800 resize-none outline-none"
+            className="w-full h-full p-4 text-xs font-mono bg-background text-foreground resize-none outline-none"
             spellCheck={false}
           />
         ) : (
-          <pre className="p-4 text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+          <pre className="p-4 text-xs text-muted-foreground whitespace-pre-wrap font-mono leading-relaxed">
             {content}
           </pre>
         )}
@@ -781,19 +785,18 @@ function WikiPanel({
 
   if (detailLoading) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-gray-400">加载中…</div>
+      <div className="flex items-center justify-center h-full text-sm text-muted-foreground">加载中…</div>
     );
   }
 
   if (!detail) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-gray-400">
+      <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
         从右侧列表或图谱中选择一个节点
       </div>
     );
   }
 
-  const colorClass = SOURCE_TYPE_COLORS[detail.source_type] || "bg-gray-50 text-gray-600";
   const objectType = detail.object_type || "article";
   const wikiSubdir = objectType === "entity" ? "entities"
     : objectType === "summary" ? "summaries"
@@ -804,10 +807,10 @@ function WikiPanel({
   return (
     <div className="flex flex-col h-full">
       {/* 节点元数据头部 */}
-      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 shrink-0">
+      <div className="px-5 py-3 border-b border-border bg-muted/20 shrink-0">
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
-            <h2 className="text-sm font-semibold text-gray-900 leading-snug">
+            <h2 className="text-sm font-semibold leading-snug">
               {detail.title || detail.id}
             </h2>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -817,31 +820,39 @@ function WikiPanel({
               >
                 {objectType}
               </span>
-              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${colorClass}`}>
+              <span className={cn(
+                "text-xs px-1.5 py-0.5 rounded font-medium",
+                SOURCE_TYPE_BADGE[detail.source_type] || "bg-muted text-muted-foreground"
+              )}>
                 {detail.source_type || "unknown"}
               </span>
               {detail.created_at && (
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-muted-foreground">
                   {new Date(detail.created_at).toLocaleDateString("zh-CN")}
                 </span>
               )}
               {(detail.tags || []).map((t) => (
-                <span key={t} className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">
+                <Badge key={t} variant="secondary" className="text-xs px-1.5 py-0">
                   {t}
-                </span>
+                </Badge>
               ))}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {canCreateSummary && (
-              <button
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
                 onClick={() => { setSumFormOpen((v) => !v); setSumMsg(""); }}
-                className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 bg-white"
               >
                 ＋ 摘要
-              </button>
+              </Button>
             )}
-            <button
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
               onClick={() =>
                 onOpenFile({
                   rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
@@ -849,44 +860,44 @@ function WikiPanel({
                   writable: true,
                 })
               }
-              className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 bg-white"
             >
               在编辑器中打开
-            </button>
+            </Button>
           </div>
         </div>
         {detail.abstract && (
-          <p className="text-xs text-gray-500 mt-2 leading-relaxed">{detail.abstract}</p>
+          <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{detail.abstract}</p>
         )}
 
         {/* 摘要生成内联表单 */}
         {sumFormOpen && (
-          <div className="mt-3 pt-3 border-t border-gray-200 flex flex-col gap-2">
-            <input
+          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+            <Input
               type="text"
               value={perspInput}
               onChange={(e) => setPerspInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleCreateSummary(); }}
               placeholder='视角（可选，如"人物关系"、"技术架构"）'
-              className="text-xs border border-gray-200 rounded px-3 py-1.5 outline-none focus:border-blue-400 bg-white"
+              className="text-xs h-7"
               disabled={sumLoading}
             />
             <div className="flex items-center gap-2">
-              <button
-                onClick={handleCreateSummary}
-                disabled={sumLoading}
-                className="text-xs text-white bg-gray-900 rounded px-3 py-1 disabled:opacity-40"
-              >
+              <Button size="sm" className="h-6 text-xs" onClick={handleCreateSummary} disabled={sumLoading}>
                 {sumLoading ? "生成中…" : "生成"}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-muted-foreground"
                 onClick={() => { setSumFormOpen(false); setSumMsg(""); }}
-                className="text-xs text-gray-500 hover:text-gray-700"
               >
                 取消
-              </button>
+              </Button>
               {sumMsg && (
-                <span className={`text-xs ${sumMsg.startsWith("生成失败") || sumMsg.startsWith("网络") ? "text-red-500" : "text-green-600"}`}>
+                <span className={cn(
+                  "text-xs",
+                  sumMsg.startsWith("生成失败") || sumMsg.startsWith("网络") ? "text-destructive" : "text-green-600"
+                )}>
                   {sumMsg}
                 </span>
               )}
@@ -898,28 +909,28 @@ function WikiPanel({
       {/* Wiki 正文 */}
       <div className="flex-1 overflow-auto p-5">
         {detail.wiki_body ? (
-          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+          <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono leading-relaxed">
             {detail.wiki_body}
           </pre>
         ) : (
-          <p className="text-sm text-gray-400">暂无 Wiki 内容</p>
+          <p className="text-sm text-muted-foreground">暂无 Wiki 内容</p>
         )}
 
         {(detail.edges || []).length > 0 && (
-          <div className="mt-6 pt-4 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-400 mb-2">
+          <div className="mt-6 pt-4 border-t border-border">
+            <p className="text-xs font-medium text-muted-foreground mb-2">
               关联 {detail.edges.length} 条边
             </p>
             <div className="space-y-1">
               {detail.edges.slice(0, 10).map((e) => (
-                <div key={e.id} className="flex items-center gap-2 text-xs text-gray-500">
+                <div key={e.id} className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span
                     className="w-1.5 h-1.5 rounded-full shrink-0"
                     style={{ background: EDGE_COLORS[e.relation_type] || "#d1d5db" }}
                   />
                   <span>{e.relation_type}</span>
-                  <span className="text-gray-300">{e.from_node_id === detail.id ? "→" : "←"}</span>
-                  <span className="text-gray-400">{(e.weight * 100).toFixed(0)}%</span>
+                  <span className="text-muted-foreground/40">{e.from_node_id === detail.id ? "→" : "←"}</span>
+                  <span className="text-muted-foreground/60">{(e.weight * 100).toFixed(0)}%</span>
                 </div>
               ))}
             </div>
@@ -935,26 +946,21 @@ function WikiPanel({
 export default function KnowledgePage() {
   const [maintenanceMsg, setMaintenanceMsg] = useState("");
 
-  // 中央同步状态
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // 节点详情
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  // 图谱
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const simNodesRef = useRef<SimNode[]>([]);
 
-  // 文件编辑器
   const [openFile, setOpenFile] = useState<OpenFile | null>(null);
   const [explorerKey, setExplorerKey] = useState(0);
   const [listRefreshToken, setListRefreshToken] = useState(0);
 
-  // 筛选状态
   const [visibleNodeTypes, setVisibleNodeTypes] = useState<Set<string>>(
     () => new Set(["article", "entity", "summary", "index"]),
   );
@@ -963,15 +969,12 @@ export default function KnowledgePage() {
   );
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // 面板尺寸（可拖拽）
   const [leftWidth, setLeftWidth] = useState(208);
   const [rightWidth, setRightWidth] = useState(288);
   const [graphHeight, setGraphHeight] = useState(256);
 
-  // 挂载时加载图谱
   useEffect(() => { loadGraph(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Esc 取消选中
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") clearSelection();
@@ -1025,17 +1028,14 @@ export default function KnowledgePage() {
     }
   }
 
-  // D3 渲染（graphData 变化时重绘）
   useEffect(() => {
     if (!graphData || !svgRef.current) return;
     renderGraph(graphData);
   }, [graphData]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 高亮选中节点及其邻居，并将其平移到图谱中心
   useEffect(() => {
     if (!svgRef.current) return;
 
-    // 计算邻居节点 ID
     const neighborIds = new Set<string>();
     if (selectedNodeId && graphData) {
       graphData.edges.forEach((e) => {
@@ -1046,7 +1046,6 @@ export default function KnowledgePage() {
 
     const svgSel = d3.select(svgRef.current);
 
-    // 更新节点样式
     svgSel
       .selectAll<SVGPathElement, SimNode>("path")
       .attr("d", (d) => nodeSymbolPath(d, d.id === selectedNodeId))
@@ -1063,7 +1062,6 @@ export default function KnowledgePage() {
       .attr("stroke", "#fff")
       .attr("stroke-width", (d) => d.id === selectedNodeId ? 3 : 1.5);
 
-    // 更新边样式
     svgSel
       .selectAll<SVGLineElement, SimLink>("line")
       .attr("stroke-opacity", (d) => {
@@ -1075,7 +1073,6 @@ export default function KnowledgePage() {
         return srcId === selectedNodeId || tgtId === selectedNodeId ? 0.9 : 0.08;
       });
 
-    // 将选中节点平移到图谱中心
     if (selectedNodeId && zoomRef.current) {
       const target = simNodesRef.current.find((n) => n.id === selectedNodeId);
       if (target && target.x != null && target.y != null) {
@@ -1096,7 +1093,6 @@ export default function KnowledgePage() {
     }
   }, [selectedNodeId, graphData]);
 
-  // 筛选：根据 visibleNodeTypes / visibleEdgeTypes 切换 D3 元素显隐
   useEffect(() => {
     if (!svgRef.current || !graphData) return;
     const nodeTypeMap = new Map(
@@ -1236,25 +1232,22 @@ export default function KnowledgePage() {
   }
 
   return (
-    <main className="h-screen bg-gray-50 flex flex-col">
+    <main className="h-screen bg-background flex flex-col">
       {/* 顶部工具栏 */}
-      <header className="bg-white border-b border-gray-200 px-5 py-2.5 flex items-center justify-between shrink-0">
-        <h1 className="text-base font-semibold text-gray-900">知识库</h1>
-        <button
-          onClick={handleMaintenance}
-          className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors"
-        >
+      <header className="bg-card border-b border-border px-5 py-2.5 flex items-center justify-between shrink-0">
+        <h1 className="text-base font-semibold">知识库</h1>
+        <Button variant="outline" size="sm" onClick={handleMaintenance}>
           {maintenanceMsg || "立即运行维护"}
-        </button>
+        </Button>
       </header>
 
       {/* 四面板主体 */}
       <div className="flex flex-1 min-h-0">
 
         {/* 左：资源管理器 */}
-        <div style={{ width: leftWidth }} className="shrink-0 border-r border-gray-200 bg-white overflow-hidden flex flex-col">
-          <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">资源管理器</span>
+        <div style={{ width: leftWidth }} className="shrink-0 border-r border-border bg-card overflow-hidden flex flex-col">
+          <div className="px-3 py-2 border-b border-border shrink-0">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">资源管理器</span>
           </div>
           <div className="flex-1 overflow-hidden">
             <ExplorerPanel
@@ -1274,7 +1267,6 @@ export default function KnowledgePage() {
           </div>
         </div>
 
-        {/* 左右分隔线 */}
         <ResizeHandle
           direction="h"
           onMouseDown={(e) => startDrag(e, "h", leftWidth, 1, setLeftWidth, 140, 480)}
@@ -1282,8 +1274,7 @@ export default function KnowledgePage() {
 
         {/* 中：Wiki 查看器（上）+ 图谱（下） */}
         <div className="flex-1 min-w-0 flex flex-col">
-          {/* 上：Wiki / 文件查看器 */}
-          <div className="flex-1 min-h-0 bg-white overflow-hidden">
+          <div className="flex-1 min-h-0 bg-card overflow-hidden">
             <WikiPanel
               detail={detail}
               detailLoading={detailLoading}
@@ -1298,24 +1289,24 @@ export default function KnowledgePage() {
             />
           </div>
 
-          {/* 上下分隔线 */}
           <ResizeHandle
             direction="v"
             onMouseDown={(e) => startDrag(e, "v", graphHeight, -1, setGraphHeight, 100, 560)}
           />
 
           {/* 下：图谱 */}
-          <div style={{ height: graphHeight }} className="shrink-0 relative bg-white border-t border-gray-200">
+          <div style={{ height: graphHeight }} className="shrink-0 relative bg-card border-t border-border">
             <div className="absolute top-2 left-3 z-10 flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">图谱</span>
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">图谱</span>
               {(["article", "entity", "summary", "index"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => toggleNodeType(t)}
                   title={visibleNodeTypes.has(t) ? `隐藏 ${t}` : `显示 ${t}`}
-                  className={`flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-opacity ${
-                    visibleNodeTypes.has(t) ? "text-gray-600" : "text-gray-300 line-through"
-                  }`}
+                  className={cn(
+                    "flex items-center gap-1 text-xs rounded px-1 py-0.5 transition-opacity",
+                    visibleNodeTypes.has(t) ? "text-foreground/70" : "text-muted-foreground/30 line-through"
+                  )}
                 >
                   <span
                     className="w-2 h-2 rounded-full inline-block shrink-0"
@@ -1327,19 +1318,20 @@ export default function KnowledgePage() {
               <div className="relative">
                 <button
                   onClick={() => setFilterOpen((v) => !v)}
-                  className="text-xs text-gray-400 hover:text-gray-700 border border-gray-200 rounded px-2 py-0.5 bg-white/90"
+                  className="text-xs text-muted-foreground hover:text-foreground border border-border rounded px-2 py-0.5 bg-card/90"
                 >
                   边类型
                 </button>
                 {filterOpen && (
-                  <div className="absolute top-6 left-0 z-20 bg-white border border-gray-200 rounded-lg shadow-md p-2 space-y-0.5 min-w-[9rem]">
+                  <div className="absolute top-6 left-0 z-20 bg-card border border-border rounded-lg shadow-md p-2 space-y-0.5 min-w-[9rem]">
                     {Object.entries(EDGE_COLORS).map(([type, color]) => (
                       <button
                         key={type}
                         onClick={() => toggleEdgeType(type)}
-                        className={`flex items-center gap-2 w-full text-left text-xs py-0.5 px-1 rounded hover:bg-gray-50 ${
-                          visibleEdgeTypes.has(type) ? "text-gray-700" : "text-gray-300 line-through"
-                        }`}
+                        className={cn(
+                          "flex items-center gap-2 w-full text-left text-xs py-0.5 px-1 rounded hover:bg-muted",
+                          visibleEdgeTypes.has(type) ? "text-foreground/80" : "text-muted-foreground/30 line-through"
+                        )}
                       >
                         <span
                           className="w-2 h-2 rounded-full shrink-0"
@@ -1352,13 +1344,13 @@ export default function KnowledgePage() {
                 )}
               </div>
               {selectedNodeId && (
-                <span className="text-xs text-gray-400">
-                  · <kbd className="font-mono bg-gray-100 px-1 rounded">Esc</kbd> 取消
+                <span className="text-xs text-muted-foreground">
+                  · <kbd className="font-mono bg-muted px-1 rounded">Esc</kbd> 取消
                 </span>
               )}
             </div>
             {graphLoading && (
-              <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm z-10 bg-white/70">
+              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm z-10 bg-card/70">
                 加载图谱中…
               </div>
             )}
@@ -1366,16 +1358,15 @@ export default function KnowledgePage() {
           </div>
         </div>
 
-        {/* 右左分隔线 */}
         <ResizeHandle
           direction="h"
           onMouseDown={(e) => startDrag(e, "h", rightWidth, -1, setRightWidth, 200, 520)}
         />
 
         {/* 右：列表 */}
-        <div style={{ width: rightWidth }} className="shrink-0 border-l border-gray-200 bg-white overflow-hidden flex flex-col">
-          <div className="px-3 py-2 border-b border-gray-100 shrink-0">
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">列表</span>
+        <div style={{ width: rightWidth }} className="shrink-0 border-l border-border bg-card overflow-hidden flex flex-col">
+          <div className="px-3 py-2 border-b border-border shrink-0">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">列表</span>
           </div>
           <div className="flex-1 overflow-hidden">
             <ListPanel

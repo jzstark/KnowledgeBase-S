@@ -18,6 +18,9 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
@@ -59,24 +62,24 @@ function SortableCard({
     <div
       ref={setNodeRef}
       style={style}
-      className="bg-white border border-gray-200 rounded-lg p-3 flex items-start gap-2 cursor-grab active:cursor-grabbing"
+      className="bg-card border border-border rounded-lg p-3 flex items-start gap-2 cursor-grab active:cursor-grabbing"
     >
       <span
         {...attributes}
         {...listeners}
-        className="text-gray-300 hover:text-gray-500 mt-0.5 text-lg leading-none select-none"
+        className="text-muted-foreground/40 hover:text-muted-foreground mt-0.5 text-lg leading-none select-none"
       >
         ⠿
       </span>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 truncate">{topic.title}</p>
+        <p className="text-sm font-medium truncate">{topic.title}</p>
         {topic.description && (
-          <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{topic.description}</p>
+          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{topic.description}</p>
         )}
       </div>
       <button
         onClick={() => onRemove(topic.id)}
-        className="text-gray-300 hover:text-red-400 text-xs shrink-0"
+        className="text-muted-foreground/40 hover:text-destructive text-xs shrink-0"
       >
         ✕
       </button>
@@ -103,43 +106,35 @@ function TopicCard({
 
   return (
     <div
-      className={`rounded-lg border p-3 transition-opacity ${
-        isSkipped ? "opacity-30" : "opacity-100"
-      } ${isSelected ? "border-gray-900 bg-gray-50" : "border-gray-200 bg-white"}`}
+      className={cn(
+        "rounded-lg border p-3 transition-opacity",
+        isSkipped ? "opacity-30" : "opacity-100",
+        isSelected ? "border-primary bg-accent" : "border-border bg-card"
+      )}
     >
       <button
         className="w-full text-left"
         onClick={() => setExpanded((v) => !v)}
       >
-        <p className="text-sm font-medium text-gray-900 leading-snug mb-1">
+        <p className="text-sm font-medium leading-snug mb-1">
           {topic.title}
-          <span className="ml-1 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
+          <span className="ml-1 text-xs text-muted-foreground">{expanded ? "▲" : "▼"}</span>
         </p>
         {topic.description && (
-          <p className={`text-xs text-gray-500 mb-2 ${expanded ? "" : "line-clamp-2"}`}>
+          <p className={`text-xs text-muted-foreground mb-2 ${expanded ? "" : "line-clamp-2"}`}>
             {topic.description}
           </p>
         )}
       </button>
       <div className="flex items-center justify-between">
-        <span className="text-xs text-gray-300">{topic.source_count} 篇来源</span>
+        <span className="text-xs text-muted-foreground/50">{topic.source_count} 篇来源</span>
         {!isSkipped && !isSelected && (
           <div className="flex gap-1 shrink-0">
-            <button
-              onClick={onSelect}
-              className="text-xs px-2 py-0.5 bg-gray-900 text-white rounded hover:bg-gray-700"
-            >
-              选入
-            </button>
-            <button
-              onClick={onSkip}
-              className="text-xs px-2 py-0.5 border border-gray-300 text-gray-500 rounded hover:bg-gray-50"
-            >
-              跳过
-            </button>
+            <Button size="sm" className="h-6 text-xs px-2" onClick={onSelect}>选入</Button>
+            <Button size="sm" variant="outline" className="h-6 text-xs px-2" onClick={onSkip}>跳过</Button>
           </div>
         )}
-        {isSelected && <span className="text-xs text-gray-400">已选</span>}
+        {isSelected && <span className="text-xs text-muted-foreground">已选</span>}
       </div>
     </div>
   );
@@ -220,57 +215,46 @@ export default function BriefingPage() {
     }
   }
 
-  // ── 渲染 ──────────────────────────────────────────────────────────────────
-
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* 顶部状态栏 */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+      <header className="bg-card border-b border-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-base font-semibold text-gray-900">今日简报</h1>
+          <h1 className="text-base font-semibold">今日简报</h1>
           {briefing?.created_at && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-muted-foreground">
               更新于 {new Date(briefing.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
           {statusMsg && (
-            <span className="text-xs text-gray-500">{statusMsg}</span>
+            <span className="text-xs text-muted-foreground">{statusMsg}</span>
           )}
         </div>
-        <button
-          onClick={handleGenerate}
-          disabled={generating}
-          className="px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg
-                     hover:bg-gray-700 disabled:opacity-40 transition-colors"
-        >
+        <Button size="sm" onClick={handleGenerate} disabled={generating}>
           {generating ? "生成中..." : "立即生成选题"}
-        </button>
+        </Button>
       </header>
 
       {/* 三栏布局 */}
       <div className="flex h-[calc(100vh-57px)]">
 
         {/* 左栏：今日选题 */}
-        <div className="w-80 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">今日选题</p>
+        <div className="w-80 border-r border-border bg-card flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">今日选题</p>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {loading ? (
-              <p className="text-sm text-gray-400 text-center pt-8">加载中...</p>
+              <p className="text-sm text-muted-foreground text-center pt-8">加载中...</p>
             ) : !briefing?.generated ? (
               <div className="pt-8 text-center">
-                <p className="text-sm text-gray-400 mb-3">暂无今日选题</p>
-                <button
-                  onClick={handleGenerate}
-                  disabled={generating}
-                  className="text-xs text-gray-600 underline"
-                >
+                <p className="text-sm text-muted-foreground mb-3">暂无今日选题</p>
+                <Button variant="ghost" size="sm" onClick={handleGenerate} disabled={generating}>
                   点击生成
-                </button>
+                </Button>
               </div>
             ) : briefing.topics.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center pt-8">今日暂无新内容</p>
+              <p className="text-sm text-muted-foreground text-center pt-8">今日暂无新内容</p>
             ) : (
               briefing.topics.map((topic) => (
                 <TopicCard
@@ -287,14 +271,14 @@ export default function BriefingPage() {
         </div>
 
         {/* 中栏：已选选题 */}
-        <div className="w-72 border-r border-gray-200 bg-white flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">已选选题</p>
-            <span className="text-xs text-gray-400">{selected.length} 个</span>
+        <div className="w-72 border-r border-border bg-card flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">已选选题</p>
+            <span className="text-xs text-muted-foreground">{selected.length} 个</span>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
             {selected.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center pt-8">
+              <p className="text-sm text-muted-foreground text-center pt-8">
                 从左侧选入选题
               </p>
             ) : (
@@ -350,17 +334,16 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
       })
       .catch(() => {});
   }, []);
+
   const [drafting, setDrafting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [draft, setDraft] = useState<string | null>(null);
-  const [draftId, setDraftId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   async function handleGenerate() {
     if (selected.length === 0) return;
     setDrafting(true);
     setDraft(null);
-    setDraftId(null);
     setCopied(false);
     setDraftStatus("⏳ 正在检索知识库...");
 
@@ -377,7 +360,6 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setDraft(data.draft_content);
-      setDraftId(data.id);
       setDraftStatus(`✅ 完成（参考了 ${data.knowledge_count} 条知识）`);
     } catch (e: unknown) {
       setDraftStatus(`❌ 生成失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -394,70 +376,64 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
   }
 
   return (
-    <div className="flex-1 bg-white flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide shrink-0">
+    <div className="flex-1 bg-card flex flex-col overflow-hidden">
+      <div className="px-4 py-3 border-b border-border flex items-center gap-3">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide shrink-0">
           生成草稿
         </p>
         <select
           value={template}
           onChange={(e) => setTemplate(e.target.value)}
           disabled={drafting}
-          className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-700
-                     focus:outline-none focus:ring-1 focus:ring-gray-400 disabled:opacity-40"
+          className="text-xs border border-input rounded-md px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-40"
         >
           {templates.map((t) => (
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        <button
+        <Button
+          size="sm"
+          className="ml-auto text-xs shrink-0"
           onClick={handleGenerate}
           disabled={drafting || selected.length === 0}
-          className="ml-auto px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg
-                     hover:bg-gray-700 disabled:opacity-40 transition-colors shrink-0"
         >
           {drafting ? "生成中..." : "生成草稿"}
-        </button>
+        </Button>
       </div>
 
       {draftStatus && (
-        <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
-          <p className="text-xs text-gray-500">{draftStatus}</p>
+        <div className="px-4 py-2 border-b border-border flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">{draftStatus}</p>
           {draft && (
-            <button
-              onClick={handleCopy}
-              className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50"
-            >
+            <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleCopy}>
               {copied ? "已复制 ✓" : "复制全文"}
-            </button>
+            </Button>
           )}
         </div>
       )}
 
       <div className="flex-1 overflow-y-auto p-4">
         {selected.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center pt-12">请先在左侧选择选题</p>
+          <p className="text-sm text-muted-foreground text-center pt-12">请先在左侧选择选题</p>
         ) : !draft && !drafting ? (
           <div className="pt-12 text-center">
-            <p className="text-sm text-gray-400 mb-1">
-              已选 <span className="font-semibold text-gray-700">{selected.length}</span> 个选题
+            <p className="text-sm text-muted-foreground mb-1">
+              已选 <span className="font-semibold">{selected.length}</span> 个选题
             </p>
-            <p className="text-xs text-gray-300">点击"生成草稿"开始</p>
+            <p className="text-xs text-muted-foreground/50">点击"生成草稿"开始</p>
           </div>
         ) : drafting ? (
           <div className="pt-12 text-center">
-            <p className="text-sm text-gray-400">{draftStatus}</p>
+            <p className="text-sm text-muted-foreground">{draftStatus}</p>
           </div>
         ) : (
           <div className="space-y-3">
-            <textarea
+            <Textarea
               value={draft ?? ""}
               onChange={(e) => setDraft(e.target.value)}
-              className="w-full h-[calc(100vh-220px)] text-sm text-gray-800 leading-relaxed
-                         border border-gray-200 rounded-lg p-3 resize-none
-                         focus:outline-none focus:ring-1 focus:ring-gray-400"
+              className="h-[calc(100vh-220px)] text-sm leading-relaxed resize-none"
             />
-            <p className="text-xs text-gray-300 text-center">
+            <p className="text-xs text-muted-foreground/50 text-center">
               定稿后可提交反馈以改善未来草稿质量（第八步功能）
             </p>
           </div>

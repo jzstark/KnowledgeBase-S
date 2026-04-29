@@ -2,6 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,15 +48,15 @@ const TYPE_LABELS: Record<string, string> = {
   rss: "RSS", wechat: "微信", url: "URL",
   pdf: "PDF", image: "图片", plaintext: "文本", word: "Word", epub: "电子书",
 };
-const TYPE_COLORS: Record<string, string> = {
-  rss: "bg-orange-100 text-orange-700",
-  wechat: "bg-green-100 text-green-700",
-  url: "bg-blue-100 text-blue-700",
-  pdf: "bg-red-100 text-red-700",
-  image: "bg-purple-100 text-purple-700",
-  plaintext: "bg-gray-100 text-gray-700",
-  word: "bg-indigo-100 text-indigo-700",
-  epub: "bg-teal-100 text-teal-700",
+const TYPE_VARIANT: Record<string, string> = {
+  rss: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
+  wechat: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  url: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+  pdf: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  image: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  plaintext: "bg-muted text-muted-foreground",
+  word: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400",
+  epub: "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400",
 };
 
 function parseCfg(s: Source): Record<string, unknown> {
@@ -62,7 +76,6 @@ export default function SourcesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [fetching, setFetching] = useState<string | null>(null);
   const [newlyCreatedWechat, setNewlyCreatedWechat] = useState<Source | null>(null);
-  // upload/add-url modal state
   const [uploadTarget, setUploadTarget] = useState<Source | null>(null);
   const [addUrlTarget, setAddUrlTarget] = useState<Source | null>(null);
 
@@ -117,98 +130,96 @@ export default function SourcesPage() {
 
   const autoSources = sources.filter((s) => AUTO_TYPES.includes(s.type));
   const manualSources = sources.filter((s) => MANUAL_TYPES.includes(s.type));
-  const displayed = tab === "auto" ? autoSources : manualSources;
 
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-background">
       <div className="max-w-4xl mx-auto px-6 py-8">
-        {/* 顶部 */}
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-semibold text-gray-900">订阅源管理</h1>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => { setShowAdd((v) => !v); setNewlyCreatedWechat(null); }}
-              className="px-3 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              {showAdd ? "取消" : "+ 新建 Source"}
-            </button>
-          </div>
+          <h1 className="text-2xl font-semibold">订阅源管理</h1>
+          <Button
+            size="sm"
+            variant={showAdd ? "outline" : "default"}
+            onClick={() => { setShowAdd((v) => !v); setNewlyCreatedWechat(null); }}
+          >
+            {showAdd ? "取消" : "+ 新建 Source"}
+          </Button>
         </div>
 
-        {/* 微信创建后 token 展示 */}
         {newlyCreatedWechat && (
           <WechatInfo source={newlyCreatedWechat} onClose={() => setNewlyCreatedWechat(null)} />
         )}
 
-        {/* 添加表单 */}
         {showAdd && <AddForm onCreated={handleCreated} />}
 
-        {/* Tab */}
-        <div className="flex gap-1 mb-4 border-b border-gray-200">
-          {(["auto", "manual"] as TabType[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                tab === t
-                  ? "border-gray-900 text-gray-900"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              {t === "auto"
-                ? `自动抓取型 (${autoSources.length})`
-                : `手动管理型 (${manualSources.length})`}
-            </button>
-          ))}
-        </div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as TabType)}>
+          <TabsList className="mb-4">
+            <TabsTrigger value="auto">自动抓取型 ({autoSources.length})</TabsTrigger>
+            <TabsTrigger value="manual">手动管理型 ({manualSources.length})</TabsTrigger>
+          </TabsList>
 
-        {/* 类型说明 */}
-        <p className="text-xs text-gray-400 mb-4">
-          {tab === "auto"
-            ? "系统定时自动抓取，无需手动操作。"
-            : "持久渠道 — 可随时向其中追加 URL 或上传文件，每次处理后知识入库。"}
-        </p>
+          <TabsContent value="auto">
+            <p className="text-xs text-muted-foreground mb-4">系统定时自动抓取，无需手动操作。</p>
+            {loading ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">加载中…</p>
+            ) : autoSources.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">暂无 source，点击"新建 Source"添加</p>
+            ) : (
+              <div className="space-y-3">
+                {autoSources.map((s) => (
+                  <SourceCard
+                    key={s.id}
+                    source={s}
+                    fetching={fetching === s.id}
+                    onFetch={() => handleFetch(s.id)}
+                    onDelete={() => handleDelete(s.id, s.name)}
+                    onUpload={() => setUploadTarget(s)}
+                    onAddUrl={() => setAddUrlTarget(s)}
+                    onTogglePrimary={() => handleTogglePrimary(s.id, s.is_primary)}
+                  />
+                ))}
+              </div>
+            )}
+          </TabsContent>
 
-        {/* 列表 */}
-        {loading ? (
-          <p className="text-sm text-gray-400 py-8 text-center">加载中…</p>
-        ) : displayed.length === 0 ? (
-          <p className="text-sm text-gray-400 py-8 text-center">暂无 source，点击"新建 Source"添加</p>
-        ) : (
-          <div className="space-y-3">
-            {displayed.map((s) => (
-              <SourceCard
-                key={s.id}
-                source={s}
-                fetching={fetching === s.id}
-                onFetch={() => handleFetch(s.id)}
-                onDelete={() => handleDelete(s.id, s.name)}
-                onUpload={() => setUploadTarget(s)}
-                onAddUrl={() => setAddUrlTarget(s)}
-                onTogglePrimary={() => handleTogglePrimary(s.id, s.is_primary)}
-              />
-            ))}
-          </div>
-        )}
+          <TabsContent value="manual">
+            <p className="text-xs text-muted-foreground mb-4">
+              持久渠道 — 可随时向其中追加 URL 或上传文件，每次处理后知识入库。
+            </p>
+            {loading ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">加载中…</p>
+            ) : manualSources.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">暂无 source，点击"新建 Source"添加</p>
+            ) : (
+              <div className="space-y-3">
+                {manualSources.map((s) => (
+                  <SourceCard
+                    key={s.id}
+                    source={s}
+                    fetching={fetching === s.id}
+                    onFetch={() => handleFetch(s.id)}
+                    onDelete={() => handleDelete(s.id, s.name)}
+                    onUpload={() => setUploadTarget(s)}
+                    onAddUrl={() => setAddUrlTarget(s)}
+                    onTogglePrimary={() => handleTogglePrimary(s.id, s.is_primary)}
+                  />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
 
-      {/* 上传文件 Modal */}
-      {uploadTarget && (
-        <UploadModal
-          source={uploadTarget}
-          onClose={() => setUploadTarget(null)}
-          onDone={() => { setUploadTarget(null); setTimeout(loadSources, 2000); }}
-        />
-      )}
+      <UploadModal
+        source={uploadTarget}
+        onClose={() => setUploadTarget(null)}
+        onDone={() => { setUploadTarget(null); setTimeout(loadSources, 2000); }}
+      />
 
-      {/* 添加 URL Modal */}
-      {addUrlTarget && (
-        <AddUrlModal
-          source={addUrlTarget}
-          onClose={() => setAddUrlTarget(null)}
-          onDone={() => { setAddUrlTarget(null); setTimeout(loadSources, 2000); }}
-        />
-      )}
+      <AddUrlModal
+        source={addUrlTarget}
+        onClose={() => setAddUrlTarget(null)}
+        onDone={() => { setAddUrlTarget(null); setTimeout(loadSources, 2000); }}
+      />
     </main>
   );
 }
@@ -248,96 +259,86 @@ function SourceCard({
     : 0;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${TYPE_COLORS[source.type] || "bg-gray-100 text-gray-600"}`}>
-            {TYPE_LABELS[source.type] || source.type}
-          </span>
-          <div className="min-w-0">
-            <p className="font-medium text-gray-900 truncate">{source.name}</p>
-            {typeof cfg.url === "string" && (
-              <p className="text-xs text-gray-400 truncate mt-0.5">{cfg.url}</p>
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className={cn(
+              "text-xs font-medium px-2 py-0.5 rounded-full shrink-0",
+              TYPE_VARIANT[source.type] || "bg-muted text-muted-foreground"
+            )}>
+              {TYPE_LABELS[source.type] || source.type}
+            </span>
+            <div className="min-w-0">
+              <p className="font-medium truncate">{source.name}</p>
+              {typeof cfg.url === "string" && (
+                <p className="text-xs text-muted-foreground truncate mt-0.5">{cfg.url}</p>
+              )}
+              {FILE_TYPES.includes(source.type) && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {uploadCount > 0 ? `${uploadCount} 次上传批次` : "暂无上传记录"}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={onTogglePrimary}
+              title={source.is_primary ? "点击切换为参考型" : "点击切换为主要型"}
+            >
+              {source.is_primary ? "主要" : "参考"}
+            </Button>
+            <span className="text-xs text-muted-foreground">{source.article_count} 篇</span>
+
+            {source.type === "rss" && (
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onFetch} disabled={fetching}>
+                {fetching ? "抓取中…" : "立即抓取"}
+              </Button>
             )}
+
+            {source.type === "wechat" && (
+              <>
+                <Button variant="outline" size="sm" className="h-7 text-xs text-green-700 border-green-200" asChild>
+                  <Link href={`/sources/${source.id}`}>查看配置</Link>
+                </Button>
+                {source.api_token && (
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={copyToken}>
+                    {copied ? "已复制 ✓" : "复制 Token"}
+                  </Button>
+                )}
+              </>
+            )}
+
+            {source.type === "url" && (
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onAddUrl}>
+                添加 URL
+              </Button>
+            )}
+
             {FILE_TYPES.includes(source.type) && (
-              <p className="text-xs text-gray-400 mt-0.5">
-                {uploadCount > 0 ? `${uploadCount} 次上传批次` : "暂无上传记录"}
-              </p>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onUpload}>
+                上传文件
+              </Button>
             )}
+
+            <Button variant="outline" size="sm" className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10" onClick={onDelete}>
+              删除
+            </Button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          {/* is_primary 徽章 + 切换 */}
-          <button
-            onClick={onTogglePrimary}
-            title={source.is_primary ? "点击切换为参考型（不出现在简报）" : "点击切换为主要型（出现在简报）"}
-            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-              source.is_primary
-                ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                : "border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100"
-            }`}
-          >
-            {source.is_primary ? "主要" : "参考"}
-          </button>
-          <span className="text-xs text-gray-400">{source.article_count} 篇</span>
-
-          {/* 自动型：立即抓取 */}
-          {source.type === "rss" && (
-            <button onClick={onFetch} disabled={fetching}
-              className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition-colors">
-              {fetching ? "抓取中…" : "立即抓取"}
-            </button>
+        <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+          {source.fetch_mode === "subscription" && (
+            <span>上次抓取：{fmtDate(source.last_fetched_at)}</span>
           )}
-
-          {/* WeChat：查看配置 + 复制 token */}
-          {source.type === "wechat" && (
-            <>
-              <Link
-                href={`/sources/${source.id}`}
-                className="text-xs px-2 py-1 rounded border border-green-200 text-green-700 hover:bg-green-50 transition-colors"
-              >
-                查看配置
-              </Link>
-              {source.api_token && (
-                <button onClick={copyToken}
-                  className="text-xs px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 transition-colors">
-                  {copied ? "已复制 ✓" : "复制 Token"}
-                </button>
-              )}
-            </>
-          )}
-
-          {/* URL：添加 URL */}
-          {source.type === "url" && (
-            <button onClick={onAddUrl}
-              className="text-xs px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors">
-              添加 URL
-            </button>
-          )}
-
-          {/* 文件型：上传文件 */}
-          {FILE_TYPES.includes(source.type) && (
-            <button onClick={onUpload}
-              className="text-xs px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors">
-              上传文件
-            </button>
-          )}
-
-          <button onClick={onDelete}
-            className="text-xs px-2 py-1 rounded border border-red-100 text-red-500 hover:bg-red-50 transition-colors">
-            删除
-          </button>
+          <span>创建：{fmtDate(source.created_at)}</span>
         </div>
-      </div>
-
-      <div className="mt-2 flex items-center gap-4 text-xs text-gray-400">
-        {source.fetch_mode === "subscription" && (
-          <span>上次抓取：{fmtDate(source.last_fetched_at)}</span>
-        )}
-        <span>创建：{fmtDate(source.created_at)}</span>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -362,85 +363,79 @@ function WechatInfo({ source, onClose }: { source: Source; onClose: () => void }
   }, null, 2);
 
   return (
-    <div className="mb-6 bg-green-50 border border-green-200 rounded-lg p-4">
-      <div className="flex justify-between items-start mb-3">
-        <p className="text-sm font-medium text-green-800">微信公众号 Source 已创建 — 配置快捷指令：</p>
-        <button onClick={onClose} className="text-green-600 hover:text-green-800 text-xs">关闭</button>
-      </div>
+    <Card className="mb-6 border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-900">
+      <CardContent className="p-4">
+        <div className="flex justify-between items-start mb-3">
+          <p className="text-sm font-medium text-green-800 dark:text-green-400">微信公众号 Source 已创建 — 配置快捷指令：</p>
+          <Button variant="ghost" size="sm" className="h-6 text-xs text-green-700" onClick={onClose}>关闭</Button>
+        </div>
 
-      {/* 三个可复制字段 */}
-      <div className="space-y-2 text-xs">
-        <InfoRow label="推送地址" value={pushUrl} onCopy={() => copy(pushUrl, "url")} copied={copied === "url"} />
-        <InfoRow label="Source ID" value={source.id} onCopy={() => copy(source.id, "id")} copied={copied === "id"} />
-        {source.api_token && (
-          <InfoRow label="API Token" value={source.api_token} onCopy={() => copy(source.api_token!, "token")} copied={copied === "token"} />
-        )}
-      </div>
+        <div className="space-y-2 text-xs">
+          <InfoRow label="推送地址" value={pushUrl} onCopy={() => copy(pushUrl, "url")} copied={copied === "url"} />
+          <InfoRow label="Source ID" value={source.id} onCopy={() => copy(source.id, "id")} copied={copied === "id"} />
+          {source.api_token && (
+            <InfoRow label="API Token" value={source.api_token} onCopy={() => copy(source.api_token!, "token")} copied={copied === "token"} />
+          )}
+        </div>
 
-      {/* 快捷指令配置指南 */}
-      <div className="mt-3">
-        <button
-          onClick={() => setShowGuide((v) => !v)}
-          className="text-xs text-green-700 hover:text-green-900 flex items-center gap-1"
-        >
-          <span>{showGuide ? "▼" : "▶"}</span>
-          <span>iPhone 快捷指令配置方法</span>
-        </button>
+        <div className="mt-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs text-green-700"
+            onClick={() => setShowGuide((v) => !v)}
+          >
+            {showGuide ? "▼" : "▶"} iPhone 快捷指令配置方法
+          </Button>
 
-        {showGuide && (
-          <div className="mt-2 space-y-2 text-xs text-green-800 bg-white border border-green-100 rounded p-3">
-            <p className="font-medium">在「快捷指令」App 中新建快捷指令，添加以下操作：</p>
-            <ol className="list-decimal list-inside space-y-1.5 text-green-700">
-              <li>操作：<strong>获取 URL 的内容</strong></li>
-              <li>URL 填写上方「推送地址」</li>
-              <li>方法：<strong>POST</strong></li>
-              <li>
-                标头添加一项：
-                <code className="mx-1 bg-green-50 border border-green-200 px-1 rounded">X-API-Token</code>
-                值填写上方「API Token」
-              </li>
-              <li>
-                请求体选 <strong>JSON</strong>，内容参考下方模板
-                （title / content / url 替换为快捷指令变量）
-              </li>
-              <li>将快捷指令加入「共享表单」，在微信 / Safari 分享文章时触发</li>
-            </ol>
+          {showGuide && (
+            <div className="mt-2 space-y-2 text-xs text-green-800 dark:text-green-300 bg-card border border-border rounded-lg p-3">
+              <p className="font-medium">在「快捷指令」App 中新建快捷指令，添加以下操作：</p>
+              <ol className="list-decimal list-inside space-y-1.5 text-green-700 dark:text-green-400">
+                <li>操作：<strong>获取 URL 的内容</strong></li>
+                <li>URL 填写上方「推送地址」</li>
+                <li>方法：<strong>POST</strong></li>
+                <li>
+                  标头添加一项：
+                  <code className="mx-1 bg-muted px-1 rounded">X-API-Token</code>
+                  值填写上方「API Token」
+                </li>
+                <li>请求体选 <strong>JSON</strong>，内容参考下方模板</li>
+                <li>将快捷指令加入「共享表单」，在微信 / Safari 分享文章时触发</li>
+              </ol>
 
-            {/* 请求体模板 */}
-            <div className="mt-2">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-medium text-green-700">请求体模板（source_id 已预填）</span>
-                <button
-                  onClick={() => copy(bodyTemplate, "body")}
-                  className="px-2 py-0.5 border border-green-200 rounded bg-green-50 hover:bg-green-100 text-green-700"
-                >
-                  {copied === "body" ? "已复制 ✓" : "复制"}
-                </button>
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium">请求体模板（source_id 已预填）</span>
+                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => copy(bodyTemplate, "body")}>
+                    {copied === "body" ? "已复制 ✓" : "复制"}
+                  </Button>
+                </div>
+                <pre className="bg-muted rounded p-2 text-muted-foreground overflow-x-auto text-xs leading-relaxed">
+                  {bodyTemplate}
+                </pre>
               </div>
-              <pre className="bg-gray-50 border border-gray-200 rounded p-2 text-gray-600 overflow-x-auto text-xs leading-relaxed">
-                {bodyTemplate}
-              </pre>
             </div>
-          </div>
-        )}
-      </div>
-    </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function InfoRow({ label, value, onCopy, copied }: { label: string; value: string; onCopy: () => void; copied: boolean }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-green-700 w-20 shrink-0">{label}：</span>
-      <code className="flex-1 bg-white border border-green-200 rounded px-2 py-1 text-gray-700 truncate">{value}</code>
-      <button onClick={onCopy} className="shrink-0 text-green-700 hover:text-green-900 px-2 py-1 border border-green-200 rounded bg-white">
+      <span className="text-green-700 dark:text-green-400 w-20 shrink-0">{label}：</span>
+      <code className="flex-1 bg-card border border-border rounded px-2 py-1 truncate text-xs">{value}</code>
+      <Button variant="outline" size="sm" className="h-6 text-xs shrink-0" onClick={onCopy}>
         {copied ? "✓" : "复制"}
-      </button>
+      </Button>
     </div>
   );
 }
 
-// ── Add Form (create source channel, no file) ────────────────────────────────
+// ── Add Form ─────────────────────────────────────────────────────────────────
 
 function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
   const [type, setType] = useState("rss");
@@ -481,71 +476,85 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mb-6 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-      <p className="text-sm font-medium text-gray-700">新建 Source 渠道</p>
+    <Card className="mb-6">
+      <CardContent className="p-4">
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <p className="text-sm font-medium">新建 Source 渠道</p>
 
-      <div className="flex gap-3 items-center">
-        <label className="text-xs text-gray-500 w-14 shrink-0">类型</label>
-        <select value={type} onChange={(e) => { setType(e.target.value); setUrl(""); }}
-          className="text-sm border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-gray-400">
-          <optgroup label="自动抓取型">
-            <option value="rss">RSS</option>
-            <option value="wechat">微信公众号</option>
-          </optgroup>
-          <optgroup label="手动管理型">
-            <option value="url">URL</option>
-            <option value="pdf">PDF</option>
-            <option value="image">图片</option>
-            <option value="plaintext">纯文本</option>
-            <option value="word">Word</option>
-            <option value="epub">电子书 (EPUB/MOBI)</option>
-          </optgroup>
-        </select>
-      </div>
+          <div className="flex gap-3 items-center">
+            <Label className="text-xs w-14 shrink-0">类型</Label>
+            <select
+              value={type}
+              onChange={(e) => { setType(e.target.value); setUrl(""); }}
+              className="text-sm border border-input rounded-md px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <optgroup label="自动抓取型">
+                <option value="rss">RSS</option>
+                <option value="wechat">微信公众号</option>
+              </optgroup>
+              <optgroup label="手动管理型">
+                <option value="url">URL</option>
+                <option value="pdf">PDF</option>
+                <option value="image">图片</option>
+                <option value="plaintext">纯文本</option>
+                <option value="word">Word</option>
+                <option value="epub">电子书 (EPUB/MOBI)</option>
+              </optgroup>
+            </select>
+          </div>
 
-      <div className="flex gap-3 items-center">
-        <label className="text-xs text-gray-500 w-14 shrink-0">名称</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-          placeholder={type === "pdf" ? "例：有趣的 Paper" : "例：科技早报"}
-          className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-gray-400" />
-      </div>
+          <div className="flex gap-3 items-center">
+            <Label className="text-xs w-14 shrink-0">名称</Label>
+            <Input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={type === "pdf" ? "例：有趣的 Paper" : "例：科技早报"}
+              className="flex-1 text-sm"
+            />
+          </div>
 
-      {(type === "rss" || type === "url") && (
-        <div className="flex gap-3 items-center">
-          <label className="text-xs text-gray-500 w-14 shrink-0">{type === "rss" ? "Feed URL" : "初始 URL"}</label>
-          <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
-            placeholder={type === "rss" ? "https://example.com/feed.xml" : "https://example.com/article"}
-            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-gray-400" />
-        </div>
-      )}
+          {(type === "rss" || type === "url") && (
+            <div className="flex gap-3 items-center">
+              <Label className="text-xs w-14 shrink-0">{type === "rss" ? "Feed URL" : "初始 URL"}</Label>
+              <Input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder={type === "rss" ? "https://example.com/feed.xml" : "https://example.com/article"}
+                className="flex-1 text-sm"
+              />
+            </div>
+          )}
 
-      {FILE_TYPES.includes(type) && (
-        <p className="text-xs text-gray-400 pl-[4.5rem]">
-          创建后点击 Source 卡片上的"上传文件"按钮，支持随时批量追加。
-        </p>
-      )}
+          {FILE_TYPES.includes(type) && (
+            <p className="text-xs text-muted-foreground pl-[4.5rem]">
+              创建后点击 Source 卡片上的"上传文件"按钮，支持随时批量追加。
+            </p>
+          )}
 
-      {type === "wechat" && (
-        <p className="text-xs text-gray-400 pl-[4.5rem]">
-          创建后自动生成专属 API Token，配置到 iPhone 快捷指令使用。
-        </p>
-      )}
+          {type === "wechat" && (
+            <p className="text-xs text-muted-foreground pl-[4.5rem]">
+              创建后自动生成专属 API Token，配置到 iPhone 快捷指令使用。
+            </p>
+          )}
 
-      {error && <p className="text-xs text-red-500">{error}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
 
-      <div className="flex justify-end">
-        <button type="submit" disabled={saving}
-          className="px-4 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-40 transition-colors">
-          {saving ? "创建中…" : "创建渠道"}
-        </button>
-      </div>
-    </form>
+          <div className="flex justify-end">
+            <Button type="submit" size="sm" disabled={saving}>
+              {saving ? "创建中…" : "创建渠道"}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 
 // ── Upload Files Modal ────────────────────────────────────────────────────────
 
-function UploadModal({ source, onClose, onDone }: { source: Source; onClose: () => void; onDone: () => void }) {
+function UploadModal({ source, onClose, onDone }: { source: Source | null; onClose: () => void; onDone: () => void }) {
   const [files, setFiles] = useState<FileList | null>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState("");
@@ -553,7 +562,7 @@ function UploadModal({ source, onClose, onDone }: { source: Source; onClose: () 
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0 || !source) return;
     setUploading(true);
     try {
       const fd = new FormData();
@@ -563,11 +572,11 @@ function UploadModal({ source, onClose, onDone }: { source: Source; onClose: () 
       });
       if (res.ok) {
         const data = await res.json();
-        setResult(`✅ 已上传 ${data.files_saved} 个文件，ingestion-worker 正在处理中…`);
+        setResult(`已上传 ${data.files_saved} 个文件，ingestion-worker 正在处理中…`);
         setTimeout(onDone, 2000);
       } else {
         const err = await res.json().catch(() => ({}));
-        setResult(`❌ ${err.detail || "上传失败"}`);
+        setResult(`上传失败：${err.detail || "请重试"}`);
       }
     } finally {
       setUploading(false);
@@ -575,48 +584,44 @@ function UploadModal({ source, onClose, onDone }: { source: Source; onClose: () 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
-        <div className="flex justify-between items-center mb-4">
-          <p className="font-medium text-gray-900">向「{source.name}」上传文件</p>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
-        </div>
+    <Dialog open={!!source} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>向「{source?.name}」上传文件</DialogTitle>
+        </DialogHeader>
         <form onSubmit={handleUpload} className="space-y-4">
           <input
             ref={fileRef}
             type="file"
             multiple
-            accept={FILE_ACCEPT[source.type] || "*"}
+            accept={source ? (FILE_ACCEPT[source.type] || "*") : "*"}
             onChange={(e) => setFiles(e.target.files)}
-            className="text-sm text-gray-600 w-full"
+            className="text-sm text-muted-foreground w-full"
           />
-          <p className="text-xs text-gray-400">可一次选择多个文件，每个文件独立处理后进入知识库。</p>
+          <p className="text-xs text-muted-foreground">可一次选择多个文件，每个文件独立处理后进入知识库。</p>
           {result && <p className="text-sm">{result}</p>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">
-              取消
-            </button>
-            <button type="submit" disabled={uploading || !files?.length}
-              className="px-4 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-40 transition-colors">
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>
+            <Button type="submit" size="sm" disabled={uploading || !files?.length}>
               {uploading ? "上传中…" : `上传${files?.length ? ` (${files.length})` : ""}`}
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 // ── Add URL Modal ─────────────────────────────────────────────────────────────
 
-function AddUrlModal({ source, onClose, onDone }: { source: Source; onClose: () => void; onDone: () => void }) {
+function AddUrlModal({ source, onClose, onDone }: { source: Source | null; onClose: () => void; onDone: () => void }) {
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!source) return;
     const urls = text.split("\n").map((u) => u.trim()).filter(Boolean);
     if (!urls.length) return;
     setSaving(true);
@@ -628,11 +633,11 @@ function AddUrlModal({ source, onClose, onDone }: { source: Source; onClose: () 
       });
       if (res.ok) {
         const data = await res.json();
-        setResult(`✅ 已加入队列 ${data.urls_queued} 条 URL，ingestion-worker 正在处理中…`);
+        setResult(`已加入队列 ${data.urls_queued} 条 URL，ingestion-worker 正在处理中…`);
         setTimeout(onDone, 2000);
       } else {
         const err = await res.json().catch(() => ({}));
-        setResult(`❌ ${err.detail || "操作失败"}`);
+        setResult(`操作失败：${err.detail || "请重试"}`);
       }
     } finally {
       setSaving(false);
@@ -640,35 +645,29 @@ function AddUrlModal({ source, onClose, onDone }: { source: Source; onClose: () 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
-        <div className="flex justify-between items-center mb-4">
-          <p className="font-medium text-gray-900">向「{source.name}」添加 URL</p>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
-        </div>
+    <Dialog open={!!source} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>向「{source?.name}」添加 URL</DialogTitle>
+        </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <textarea
+          <Textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder={"https://example.com/article-1\nhttps://example.com/article-2"}
             rows={5}
-            className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none
-                       focus:outline-none focus:ring-1 focus:ring-gray-400"
+            className="text-sm resize-none"
           />
-          <p className="text-xs text-gray-400">每行一个 URL，可批量添加。</p>
+          <p className="text-xs text-muted-foreground">每行一个 URL，可批量添加。</p>
           {result && <p className="text-sm">{result}</p>}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">
-              取消
-            </button>
-            <button type="submit" disabled={saving || !text.trim()}
-              className="px-4 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-40 transition-colors">
+            <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>
+            <Button type="submit" size="sm" disabled={saving || !text.trim()}>
               {saving ? "处理中…" : "添加"}
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

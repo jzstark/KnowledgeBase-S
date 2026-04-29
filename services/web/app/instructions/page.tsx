@@ -1,39 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AlertTriangle } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Template {
   name: string;
   content: string;
-}
-
-// ── Section 容器 ──────────────────────────────────────────────────────────────
-
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="px-5 py-3 border-b border-gray-100">
-        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
-      </div>
-      <div className="px-5 py-4">
-        {description && (
-          <p className="text-xs text-gray-400 mb-4">{description}</p>
-        )}
-        {children}
-      </div>
-    </div>
-  );
 }
 
 // ── 主页面 ────────────────────────────────────────────────────────────────────
@@ -249,260 +228,256 @@ export default function InstructionsPage() {
   // ── 渲染 ──────────────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-gray-50">
+    <main className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-6 py-8 space-y-5">
 
-        {/* 顶部导航 */}
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold text-gray-900">指令设置</h1>
-        </div>
+        <h1 className="text-2xl font-semibold">指令设置</h1>
 
         {/* ① 选题方向 */}
-        <Section
-          title="选题方向"
-          description="用自然语言描述你关注的领域，用于每日简报分类和草稿生成。"
-        >
-          {topicsLoading ? (
-            <div className="h-16 bg-gray-100 animate-pulse rounded-lg" />
-          ) : topicsEditing ? (
-            <div className="space-y-2">
-              <textarea
-                value={topicsDraft}
-                onChange={(e) => setTopicsDraft(e.target.value)}
-                rows={4}
-                autoFocus
-                className="w-full text-sm border border-blue-300 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-none"
-                placeholder="例如：AI 行业动态、创业融资、产品设计"
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={saveTopics}
-                  disabled={topicsSaving}
-                  className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                >
-                  {topicsSaving ? "保存中…" : "保存"}
-                </button>
-                <button
-                  onClick={() => setTopicsEditing(false)}
-                  className="text-sm text-gray-400 hover:text-gray-600"
-                >
-                  取消
-                </button>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold">选题方向</CardTitle>
+            <p className="text-xs text-muted-foreground">用自然语言描述你关注的领域，用于每日简报分类和草稿生成。</p>
+          </CardHeader>
+          <CardContent>
+            {topicsLoading ? (
+              <div className="h-16 bg-muted animate-pulse rounded-lg" />
+            ) : topicsEditing ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={topicsDraft}
+                  onChange={(e) => setTopicsDraft(e.target.value)}
+                  rows={4}
+                  autoFocus
+                  placeholder="例如：AI 行业动态、创业融资、产品设计"
+                  className="resize-none text-sm"
+                />
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={saveTopics} disabled={topicsSaving}>
+                    {topicsSaving ? "保存中…" : "保存"}
+                  </Button>
+                  <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setTopicsEditing(false)}>
+                    取消
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div>
-              <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed min-h-[3rem]">
-                {topics || <span className="text-gray-400 italic">（未设置）</span>}
-              </div>
-              <div className="mt-2 flex items-center gap-3 flex-wrap">
-                <button
-                  onClick={() => { setTopicsDraft(topics); setTopicsEditing(true); }}
-                  className="text-xs text-blue-600 hover:text-blue-800"
-                >
-                  编辑
-                </button>
-                {topicsSaved && (
-                  <>
-                    <span className="text-xs text-green-600">已保存</span>
-                    <button
-                      onClick={regenTopics}
-                      disabled={topicsRegenStatus === "generating"}
-                      className="text-xs px-3 py-1 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50 transition-colors"
-                    >
-                      {topicsRegenStatus === "generating"
-                        ? "重新生成中…"
-                        : topicsRegenStatus === "done"
-                        ? `✓ 已生成 ${topicsRegenCount} 条新选题`
-                        : "用新方向重新生成今日选题"}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </Section>
-
-        {/* ② 写作模板 */}
-        <Section
-          title="写作模板"
-          description="模板是纯自然语言描述，告诉 AI「你想要什么样的文章」。"
-        >
-          {templatesLoading ? (
-            <div className="h-24 bg-gray-100 animate-pulse rounded-lg" />
-          ) : (
-            <div className="space-y-3">
-              {templateList.length === 0 && !newTplMode && (
-                <p className="text-sm text-gray-400">暂无模板。</p>
-              )}
-
-              {templateList.map((tpl) => (
-                <div key={tpl.name} className="border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
-                    <span className="text-sm font-medium text-gray-800">{tpl.name}</span>
-                    <div className="flex items-center gap-3">
-                      {editingTpl !== tpl.name && (
-                        <button
-                          onClick={() => startEditTpl(tpl.name, tpl.content)}
-                          className="text-xs text-blue-600 hover:text-blue-800"
-                        >
-                          编辑
-                        </button>
-                      )}
-                      <button
-                        onClick={() => deleteTpl(tpl.name)}
-                        className="text-xs text-gray-400 hover:text-red-500"
+            ) : (
+              <div>
+                <div className="bg-muted/50 rounded-lg px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed min-h-[3rem]">
+                  {topics || <span className="text-muted-foreground italic">（未设置）</span>}
+                </div>
+                <div className="mt-2 flex items-center gap-3 flex-wrap">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-muted-foreground"
+                    onClick={() => { setTopicsDraft(topics); setTopicsEditing(true); }}
+                  >
+                    编辑
+                  </Button>
+                  {topicsSaved && (
+                    <>
+                      <span className="text-xs text-green-600">已保存</span>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-xs"
+                        onClick={regenTopics}
+                        disabled={topicsRegenStatus === "generating"}
                       >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-
-                  {editingTpl === tpl.name ? (
-                    <div className="p-3 space-y-2">
-                      <textarea
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        rows={7}
-                        autoFocus
-                        className="w-full text-sm border border-blue-300 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-y font-mono"
-                      />
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={saveEditTpl}
-                          disabled={tplSaving}
-                          className="text-sm px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                        >
-                          {tplSaving ? "保存中…" : "保存"}
-                        </button>
-                        <button
-                          onClick={() => setEditingTpl(null)}
-                          className="text-sm text-gray-400 hover:text-gray-600"
-                        >
-                          取消
-                        </button>
-                        {tplMsg && <span className="text-xs text-red-500">{tplMsg}</span>}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="px-4 py-3 text-sm text-gray-600 whitespace-pre-wrap leading-relaxed font-mono max-h-48 overflow-y-auto">
-                      {tpl.content || <span className="text-gray-400 italic">（内容为空）</span>}
-                    </div>
+                        {topicsRegenStatus === "generating"
+                          ? "重新生成中…"
+                          : topicsRegenStatus === "done"
+                          ? `✓ 已生成 ${topicsRegenCount} 条新选题`
+                          : "用新方向重新生成今日选题"}
+                      </Button>
+                    </>
                   )}
                 </div>
-              ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-              {newTplMode && (
-                <div className="border border-blue-200 rounded-lg overflow-hidden">
-                  <div className="px-4 py-2.5 bg-blue-50 border-b border-blue-200">
-                    <input
-                      type="text"
-                      value={newTplName}
-                      onChange={(e) => setNewTplName(e.target.value)}
-                      placeholder="模板名称（如：公众号推文）"
-                      autoFocus
-                      className="w-full text-sm bg-transparent outline-none font-medium text-gray-800 placeholder:text-gray-400"
-                    />
+        {/* ② 写作模板 */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold">写作模板</CardTitle>
+            <p className="text-xs text-muted-foreground">模板是纯自然语言描述，告诉 AI「你想要什么样的文章」。</p>
+          </CardHeader>
+          <CardContent>
+            {templatesLoading ? (
+              <div className="h-24 bg-muted animate-pulse rounded-lg" />
+            ) : (
+              <div className="space-y-3">
+                {templateList.length === 0 && !newTplMode && (
+                  <p className="text-sm text-muted-foreground">暂无模板。</p>
+                )}
+
+                {templateList.map((tpl) => (
+                  <div key={tpl.name} className="border border-border rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-muted/30 border-b border-border">
+                      <span className="text-sm font-medium">{tpl.name}</span>
+                      <div className="flex items-center gap-2">
+                        {editingTpl !== tpl.name && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-xs"
+                            onClick={() => startEditTpl(tpl.name, tpl.content)}
+                          >
+                            编辑
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 text-xs text-muted-foreground hover:text-destructive"
+                          onClick={() => deleteTpl(tpl.name)}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </div>
+
+                    {editingTpl === tpl.name ? (
+                      <div className="p-3 space-y-2">
+                        <Textarea
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          rows={7}
+                          autoFocus
+                          className="text-sm font-mono resize-y"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" onClick={saveEditTpl} disabled={tplSaving}>
+                            {tplSaving ? "保存中…" : "保存"}
+                          </Button>
+                          <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setEditingTpl(null)}>
+                            取消
+                          </Button>
+                          {tplMsg && <span className="text-xs text-destructive">{tplMsg}</span>}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed font-mono max-h-48 overflow-y-auto">
+                        {tpl.content || <span className="italic">（内容为空）</span>}
+                      </div>
+                    )}
                   </div>
-                  <div className="p-3 space-y-2">
-                    <textarea
-                      value={newTplContent}
-                      onChange={(e) => setNewTplContent(e.target.value)}
-                      rows={7}
-                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-y font-mono"
-                      placeholder="用自然语言描述你想要的文章风格、结构、长度等…"
-                    />
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={saveNewTpl}
-                        disabled={tplSaving}
-                        className="text-sm px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        {tplSaving ? "保存中…" : "保存"}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setNewTplMode(false);
-                          setNewTplName("");
-                          setNewTplContent("");
-                          setTplMsg("");
-                        }}
-                        className="text-sm text-gray-400 hover:text-gray-600"
-                      >
-                        取消
-                      </button>
-                      {tplMsg && <span className="text-xs text-red-500">{tplMsg}</span>}
+                ))}
+
+                {newTplMode && (
+                  <div className="border border-border rounded-lg overflow-hidden">
+                    <div className="px-4 py-2.5 bg-muted/30 border-b border-border">
+                      <Input
+                        type="text"
+                        value={newTplName}
+                        onChange={(e) => setNewTplName(e.target.value)}
+                        placeholder="模板名称（如：公众号推文）"
+                        autoFocus
+                        className="border-0 shadow-none focus-visible:ring-0 p-0 bg-transparent text-sm font-medium h-auto"
+                      />
+                    </div>
+                    <div className="p-3 space-y-2">
+                      <Textarea
+                        value={newTplContent}
+                        onChange={(e) => setNewTplContent(e.target.value)}
+                        rows={7}
+                        className="text-sm font-mono resize-y"
+                        placeholder="用自然语言描述你想要的文章风格、结构、长度等…"
+                      />
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={saveNewTpl} disabled={tplSaving}>
+                          {tplSaving ? "保存中…" : "保存"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground"
+                          onClick={() => {
+                            setNewTplMode(false);
+                            setNewTplName("");
+                            setNewTplContent("");
+                            setTplMsg("");
+                          }}
+                        >
+                          取消
+                        </Button>
+                        {tplMsg && <span className="text-xs text-destructive">{tplMsg}</span>}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            )}
 
-          {!newTplMode && !templatesLoading && (
-            <button
-              onClick={() => { setNewTplMode(true); setEditingTpl(null); setTplMsg(""); }}
-              className="mt-3 text-sm text-blue-600 hover:text-blue-800"
-            >
-              + 新建模板
-            </button>
-          )}
-        </Section>
+            {!newTplMode && !templatesLoading && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="mt-3 h-7 text-xs text-muted-foreground"
+                onClick={() => { setNewTplMode(true); setEditingTpl(null); setTplMsg(""); }}
+              >
+                + 新建模板
+              </Button>
+            )}
+          </CardContent>
+        </Card>
 
         {/* ③ 知识库宪法（Schema） */}
-        <Section title="知识库宪法（Schema）">
-          {/* 警告横幅 */}
-          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-4 text-xs text-amber-800">
-            <span className="shrink-0 mt-0.5">⚠️</span>
-            <span>
-              此文件定义系统如何理解和处理所有内容，修改后只影响
-              <strong>新入库</strong>内容，不影响已有节点。
-              建议保留各节标题，只修改具体描述；若内容缺失，系统将使用内置默认行为，不会崩溃。
-            </span>
-          </div>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold">知识库宪法（Schema）</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Alert className="mb-4 border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <AlertDescription className="text-xs text-amber-800 dark:text-amber-300">
+                此文件定义系统如何理解和处理所有内容，修改后只影响
+                <strong>新入库</strong>内容，不影响已有节点。
+                建议保留各节标题，只修改具体描述；若内容缺失，系统将使用内置默认行为，不会崩溃。
+              </AlertDescription>
+            </Alert>
 
-          {schemaLoading ? (
-            <div className="h-32 bg-gray-100 animate-pulse rounded-lg" />
-          ) : schemaEditing ? (
-            <div className="space-y-2">
-              <textarea
-                value={schemaDraft}
-                onChange={(e) => setSchemaDraft(e.target.value)}
-                rows={22}
-                autoFocus
-                className="w-full text-sm border border-blue-300 rounded-lg px-3 py-2 outline-none focus:border-blue-400 resize-y font-mono"
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={saveSchema}
-                  disabled={schemaSaving}
-                  className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                >
-                  {schemaSaving ? "保存中…" : "保存"}
-                </button>
-                <button
-                  onClick={() => setSchemaEditing(false)}
-                  className="text-sm text-gray-400 hover:text-gray-600"
-                >
-                  取消
-                </button>
-                {schemaSaved && <span className="text-xs text-green-600">已保存</span>}
+            {schemaLoading ? (
+              <div className="h-32 bg-muted animate-pulse rounded-lg" />
+            ) : schemaEditing ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={schemaDraft}
+                  onChange={(e) => setSchemaDraft(e.target.value)}
+                  rows={22}
+                  autoFocus
+                  className="text-sm font-mono resize-y"
+                />
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={saveSchema} disabled={schemaSaving}>
+                    {schemaSaving ? "保存中…" : "保存"}
+                  </Button>
+                  <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setSchemaEditing(false)}>
+                    取消
+                  </Button>
+                  {schemaSaved && <span className="text-xs text-green-600">已保存 ✓</span>}
+                </div>
               </div>
-            </div>
-          ) : (
-            <div>
-              <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed font-mono max-h-96 overflow-y-auto">
-                {schema || <span className="text-gray-400 italic">（未设置）</span>}
+            ) : (
+              <div>
+                <div className="bg-muted/50 rounded-lg px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed font-mono max-h-96 overflow-y-auto">
+                  {schema || <span className="text-muted-foreground italic">（未设置）</span>}
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="mt-2 h-7 text-xs text-muted-foreground"
+                  onClick={() => { setSchemaDraft(schema); setSchemaEditing(true); }}
+                >
+                  编辑
+                </Button>
               </div>
-              <button
-                onClick={() => { setSchemaDraft(schema); setSchemaEditing(true); }}
-                className="mt-2 text-xs text-blue-600 hover:text-blue-800"
-              >
-                编辑
-              </button>
-            </div>
-          )}
-        </Section>
+            )}
+          </CardContent>
+        </Card>
 
       </div>
     </main>
