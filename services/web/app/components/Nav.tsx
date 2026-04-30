@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Sun, Moon } from "lucide-react";
+import { Sun, Moon, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useChatContext } from "./ChatContext";
 
 const links = [
   { href: "/briefing", label: "简报" },
@@ -19,6 +20,7 @@ const links = [
 export default function Nav() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
+  const { isOpen, toggleChat } = useChatContext();
 
   if (pathname === "/login" || pathname === "/") return null;
 
@@ -46,7 +48,16 @@ export default function Nav() {
           </Button>
         );
       })}
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("h-8 w-8", isOpen && "bg-accent")}
+          onClick={toggleChat}
+          aria-label="打开对话"
+        >
+          <MessageSquare className="h-4 w-4" />
+        </Button>
         <Button
           variant="ghost"
           size="icon"

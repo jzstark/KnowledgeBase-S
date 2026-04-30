@@ -142,6 +142,25 @@ CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    title TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role VARCHAR NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at);
 """
 
 

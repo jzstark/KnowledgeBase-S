@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Inter, Cormorant_Garamond, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "./components/Nav";
+import { ChatProvider } from "./components/ChatContext";
+import ChatSidebar from "./components/ChatSidebar";
 import { ThemeProvider } from "@/components/theme-provider";
 import { GoogleAnalytics } from "@next/third-parties/google";
 
@@ -35,8 +37,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           enableSystem
           disableTransitionOnChange
         >
-          <Nav />
-          {children}
+          <ChatProvider>
+            <Nav />
+            <ChatSidebar />
+            {children}
+          </ChatProvider>
         </ThemeProvider>
         <GoogleAnalytics gaId="G-HR0B9YJW5B" />
       </body>
