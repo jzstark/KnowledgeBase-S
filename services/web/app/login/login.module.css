@@ -1,0 +1,208 @@
+.root {
+  --ink: #e8eaf2;
+  --ink-dim: #8a90a8;
+  --ink-faint: #4a4f63;
+  --accent: oklch(0.85 0.05 240);
+  --line: rgba(180, 195, 230, 0.18);
+  --bg-0: #05060a;
+
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 60% at 50% 40%, #0d1020 0%, #07080f 50%, #03040a 100%);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stars {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 60% 50% at 50% 50%, transparent 30%, rgba(0, 0, 0, 0.6) 100%);
+}
+
+/* ——— Card ——— */
+.card {
+  position: relative;
+  z-index: 10;
+  width: 340px;
+  background: rgba(8, 10, 18, 0.72);
+  border: 1px solid rgba(180, 195, 230, 0.14);
+  border-radius: 16px;
+  padding: 48px 40px;
+  backdrop-filter: blur(24px);
+  box-shadow:
+    0 0 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(180, 195, 230, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+/* ——— Brand area ——— */
+.brandMark {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 16px;
+}
+
+.brandMark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.pulse {
+  transform-origin: center;
+  animation: loginPulse 3.4s ease-in-out infinite;
+}
+
+@keyframes loginPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.brandName {
+  font-family: var(--font-cormorant, 'Times New Roman', serif);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.brandName em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--accent);
+  letter-spacing: 0.14em;
+}
+
+.divider {
+  width: 32px;
+  height: 1px;
+  background: var(--line);
+  margin: 28px 0;
+}
+
+/* ——— Form ——— */
+.form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.fieldLabel {
+  font-family: var(--font-jetbrains, 'JetBrains Mono', monospace);
+  font-size: 9px;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fieldLabel::before {
+  content: '';
+  display: inline-block;
+  width: 20px;
+  height: 1px;
+  background: var(--ink-faint);
+}
+
+.inputWrap {
+  position: relative;
+}
+
+.input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(180, 195, 230, 0.15);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-family: var(--font-jetbrains, 'JetBrains Mono', monospace);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.25s ease, background 0.25s ease;
+  box-sizing: border-box;
+}
+
+.input::placeholder {
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+}
+
+.input:focus {
+  border-color: rgba(180, 195, 230, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.error {
+  font-family: var(--font-jetbrains, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: oklch(0.7 0.15 25);
+  text-align: center;
+  min-height: 16px;
+}
+
+.submitBtn {
+  width: 100%;
+  margin-top: 4px;
+  padding: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(220, 230, 255, 0.6);
+  background: transparent;
+  font-family: var(--font-jetbrains, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.submitBtn:hover:not(:disabled) {
+  background: rgba(220, 230, 255, 0.08);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.submitBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ——— Back link ——— */
+.backLink {
+  margin-top: 28px;
+  font-family: var(--font-jetbrains, 'JetBrains Mono', monospace);
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.backLink:hover {
+  color: var(--ink-dim);
+}
