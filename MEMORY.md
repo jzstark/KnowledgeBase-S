@@ -1,1410 +1,740 @@
-# Memory.md — 内容创作辅助系统
+# KnowledgeBase-S 系统说明（按当前代码更新）
 
-本文档记录了该项目的完整设计决策，供 Claude Code 在开发时参考。所有架构决策均经过深思熟虑，开发时请严格遵循。
-
----
-
-## 项目概述
-
-一个面向内容创作者的个人知识管理与 AI 辅助写作系统。核心流程：
-
-1. 自动聚合多种来源的内容（公众号、RSS、用户上传文件等）
-2. 入库清洁文本、生成 **abstract**（3-5 句内嵌摘要，仅供 embedding 索引与列表速览，不对用户展示）、识别关键 entity、构建持续生长的个人知识图谱
-3. 每日基于新增原文 + 用户写作方向，由 AI 生成若干**写作选题**（角度），用户在主界面选入选题后 AI 基于知识库生成草稿
-4. 用户提交定稿反馈，系统学习写作偏好，持续改善草稿质量
-
-**关键概念区分**：
-- **知识节点**（`knowledge_nodes`）= 三类对象的统一存储表，`abstract` 字段（3-5句短摘要）仅供内部 embedding 索引，不直接展示给用户
-- **三类 wiki 对象**：`article`（清洁原文）/ `entity`（概念/人物/事件的维基百科式页面）/ `summary`（任意对象的压缩描述，可嵌套）
-- **abstract vs summary**：`abstract` = DB 内嵌短摘要字段（承担 embedding 基底）；`summary` = wiki 一等对象，是完整的摘要页面，可被 wikilink 引用
-- **选题**（`topics`）= AI 基于当日内容和用户写作方向生成的可写角度，是用户的每日决策入口；一个选题可来自多篇原文，一篇原文也可衍生多个选题（M:N 关系）
-
-**目标用户**：普通内容创作者，技术门槛尽量低。  
-**开发者**：独立开发，持续迭代，通过 GitHub Actions + Docker 部署。  
-**部署目标**：香港 VPS（中国大陆可访问），Cloudflare 子域名 + HTTPS。
+本文档描述 **当前仓库已经实现的系统**，不是纯规划稿。  
+如果本文与代码冲突，以 `services/`、`config/`、`docker-compose*.yml` 为准。  
+`multi-layer-plan.md` 记录的是目标架构，其中一部分已经落地，另一部分仍在过渡。
 
 ---
 
-## 架构总览
+## 1. 系统定位
 
-### 三层架构
+KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系统，目标不是通用问答，而是把“采集资料 → 结构化沉淀 → 生成选题 → 写草稿 → 从修改中学习偏好”做成一个闭环。
 
-```
-应用层（Web 界面 + 每日流程）
-        ↕ KB API
-知识库层（PostgreSQL + pgvector，统一数据源）
-        ↓ 单向只读同步（可选）
-Obsidian vault（本地只读前端）
-```
+当前主流程：
 
-### Microservice 拆分
+1. 用户创建 source，系统从 RSS / 微信 / URL / 文件 / 电子书导入内容。
+2. ingestion-worker 清洗文本、提取 abstract / tags / entity candidates，并写入知识库。
+3. 系统把知识内容同步为本地 Markdown wiki，供前端查看，也可作为 Obsidian vault 使用。
+4. `/api/briefing/generate` 基于近期新增的 **主要来源文章** 生成当天选题。
+5. 用户选择一个或多个选题，系统通过分层检索从知识库拼装上下文，调用 Claude 生成草稿。
+6. 用户提交定稿后，feedback-worker 从 diff 中提炼写作偏好，写回 `writing_memory`。
 
-系统由以下独立服务组成，每个服务一个 Docker image：
-
-| 服务 | 镜像 | 职责 |
-|------|------|------|
-| `nginx` | `nginx:alpine` | 反向代理 + HTTPS 终止（Cloudflare 侧） |
-| `web` | `ghcr.io/{owner}/web` | Next.js 前端，所有用户界面 |
-| `api` | `ghcr.io/{owner}/api` | 知识库统一 API，FastAPI |
-| `ingestion-worker` | `ghcr.io/{owner}/ingestion-worker` | 内容抓取 + 摘要 + embedding |
-| `summarizer-worker` | `ghcr.io/{owner}/summarizer-worker` | 每日简报生成 |
-| `feedback-worker` | `ghcr.io/{owner}/feedback-worker` | diff 分析 + 偏好学习 |
-| `scheduler` | 复用 `api` 镜像 | 定时触发各 worker |
-| `maintenance-worker` | 复用 `api` 镜像 | 每周知识库维护 |
-| `postgres` | `pgvector/pgvector:pg16` | 数据库 + 向量存储 |
-| `rsshub` | `diygod/rsshub` | 微信公众号转 RSS |
-
-需要自行构建的镜像只有：`web`、`api`、`ingestion-worker`、`summarizer-worker`、`feedback-worker`。
-
-### GitHub Actions 构建策略
-
-按路径触发，只重建有改动的服务：
-
-```yaml
-jobs:
-  build-web:
-    if: contains(github.event.paths, 'services/web/')
-  build-api:
-    if: contains(github.event.paths, 'services/api/')
-  build-ingestion:
-    if: contains(github.event.paths, 'services/ingestion-worker/')
-  # 以此类推
-```
-
-构建完成后推送到 `ghcr.io`。用户服务器上运行 Watchtower，每小时自动检测新镜像并重启对应服务。
+另外，前端带有一个持久化聊天侧栏，但它目前是 **普通 Claude 会话**，并没有接入知识图谱检索。
 
 ---
 
-## 项目目录结构
+## 2. 当前架构
 
+### 2.1 服务拆分
+
+| 服务 | 作用 | 备注 |
+| --- | --- | --- |
+| `web` | Next.js 14 前端 | 主 UI，含知识库、来源、选题、草稿、设置、聊天侧栏 |
+| `api` | FastAPI 主后端 | 认证、sources、kb、briefing、drafts、chat、settings、files |
+| `ingestion-worker` | 内容抓取与入库 | 支持 HTTP trigger 和轮询模式 |
+| `feedback-worker` | 草稿 diff 分析 | 提炼写作偏好规则 |
+| `summarizer-worker` | 定时触发简报生成 | 只负责调用 API，不承担摘要逻辑 |
+| `scheduler` | 定时调度占位 | **当前仍是 stub** |
+| `maintenance-worker` | 周期维护 | 复用 `api` 镜像执行 `maintenance.py` |
+| `postgres` | 主数据库 | `pgvector/pgvector:pg16` |
+| `rsshub` | RSSHub | 供微信等订阅源使用 |
+| `nginx` | 反向代理 | 代理前端、API，并转发 `/agent/` 到宿主机 18789 |
+| `watchtower` | 镜像自动更新 | 生产用 |
+
+### 2.2 部署形态
+
+- 生产入口是 `docker-compose.yml`
+- 开发叠加 `docker-compose.dev.yml`
+- `workers` profile 包含 `ingestion-worker`、`summarizer-worker`、`feedback-worker`
+- `maintenance` profile 包含 `maintenance-worker`
+- `scheduler` 和 `watchtower` 在 dev compose 中被禁用
+
+### 2.3 认证方式
+
+- 单用户模式，固定 `USER_ID = "default"`
+- 登录密码来自 `AUTH_PASSWORD`
+- 登录成功后写入 HttpOnly cookie `token`
+- JWT 签名密钥来自 `AUTH_SECRET`
+- Token 有效期 7 天
+- Next.js middleware 会保护除 `/`、`/login`、`/api/auth/login` 外的大部分页面
+
+### 2.4 仓库分层
+
+从代码组织上看，这个仓库可以分成 6 层：
+
+| 层 | 目录 | 职责 |
+| --- | --- | --- |
+| 入口层 | `docker-compose*.yml`、`nginx/`、`Makefile`、`deploy.sh` | 进程编排、反向代理、开发/部署入口 |
+| 共享配置层 | `config/` | 系统参数、Prompt、图片 OCR 参数 |
+| API 层 | `services/api/` | DB 初始化、认证、业务路由、维护脚本 |
+| Worker 层 | `services/ingestion-worker/`、`services/feedback-worker/`、`services/summarizer-worker/` | 异步/离线任务 |
+| Web 层 | `services/web/` | Next.js 页面、组件、知识库工作台、聊天 UI |
+| 持久化层 | `user_data/`、Postgres | 原始文件、wiki 文件、用户配置、数据库记录 |
+
+真正决定系统行为的核心代码主要集中在：
+
+- `services/api/routers/`
+- `services/ingestion-worker/pipeline.py`
+- `services/api/maintenance.py`
+- `services/web/app/`
+
+### 2.5 服务启动入口
+
+各服务的代码入口和职责边界如下：
+
+| 服务 | 代码入口 | 启动行为 |
+| --- | --- | --- |
+| `api` | `services/api/main.py` | 组装 FastAPI，lifespan 中执行 `database.init()` |
+| `web` | Next.js App Router | 由 `services/web/app/layout.tsx` 作为全局壳层 |
+| `ingestion-worker` | `services/ingestion-worker/main.py` | 同时提供 trigger server 和轮询循环 |
+| `feedback-worker` | `services/feedback-worker/main.py` | 暴露 `/analyze`，负责 diff -> 偏好规则 |
+| `summarizer-worker` | `services/summarizer-worker/main.py` | 登录 API 后触发 `/api/briefing/generate` |
+| `maintenance-worker` | `services/api/maintenance.py` | 复用 API 镜像执行维护脚本 |
+| `scheduler` | `services/api/scheduler.py` | 当前仅占位，无真实调度逻辑 |
+
+这意味着当前系统不是“每个服务都完全自治”的架构，而是：
+
+- `api` 是主系统入口
+- 其他 worker 多数通过 HTTP 调用 `api`
+- `maintenance.py` 虽然位于 API 目录，但在运行形态上更像后台脚本
+
+### 2.6 运行时调用关系
+
+当前运行时通信方式主要是 **HTTP + 共享数据库 + 共享文件目录**，而不是消息队列。
+
+关键调用链可以概括为：
+
+```text
+Browser
+  -> nginx
+    -> web
+      -> api
+        -> postgres
+        -> user_data/
+
+Browser / iPhone Shortcut
+  -> api /sources/*
+    -> ingestion-worker /trigger/*
+      -> api /kb/*
+        -> postgres
+        -> user_data/
+
+Browser
+  -> api /drafts/{id}/feedback
+    -> feedback-worker /analyze
+      -> api /kb/memory/feedback
+        -> postgres
+
+summarizer-worker
+  -> api /auth/login
+  -> api /briefing/generate
 ```
-repo-root/
-├── docker-compose.yml
-├── docker-compose.dev.yml
-├── .env.example
-├── deploy.sh                    # 一键部署脚本
-├── Makefile                     # make dev / make deploy / make backup
-├── config/
-│   ├── prompts.md               # 所有 LLM 内部提示词（开发者编辑，重启容器生效）
-│   └── image_processing.toml   # 图片处理参数（max_dim/tile_h/overlap/tile_scale）
-├── nginx/
-│   └── nginx.conf
-├── scripts/
-│   ├── backup.sh
-│   └── restore.sh
-├── services/
-│   ├── web/                     # Next.js 前端
-│   │   └── Dockerfile
-│   ├── api/                     # FastAPI 知识库 API
-│   │   ├── Dockerfile
-│   │   ├── main.py
-│   │   ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
-│   │   ├── routers/
-│   │   ├── scheduler.py         # 复用此镜像启动
-│   │   └── maintenance.py       # 复用此镜像启动
-│   ├── ingestion-worker/
-│   │   ├── Dockerfile
-│   │   ├── main.py
-│   │   ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
-│   │   └── sources/             # 各 Source 类型实现
-│   ├── summarizer-worker/
-│   │   ├── Dockerfile
-│   │   └── main.py
-│   └── feedback-worker/
-│       ├── Dockerfile
-│       ├── prompt_loader.py     # 读取 /app/shared_config/prompts.md
-│       └── main.py
-└── user_data/                   # 运行时生成，不提交 git
-    └── {user_id}/
-        ├── raw/
-        ├── wiki/
-        └── config/
-```
+
+3 种核心协作介质：
+
+1. HTTP API  
+2. Postgres  
+3. `user_data/` 共享目录
+
+### 2.7 API 内部模块结构
+
+`services/api/` 可以再分成 5 类模块：
+
+| 模块 | 文件 | 职责 |
+| --- | --- | --- |
+| 应用入口 | `main.py` | FastAPI app、router 注册、auth/health |
+| 基础设施 | `database.py`、`auth.py` | schema/init、JWT 认证 |
+| 配置加载 | `config_loader.py`、`prompt_loader.py` | 读取 `config/` 挂载内容 |
+| 业务路由 | `routers/*.py` | sources、kb、briefing、drafts、files、settings、chat |
+| 脚本模块 | `maintenance.py`、`scheduler.py` | 图谱维护、恢复/重建、调度占位 |
+
+当前 router 的业务分工是：
+
+| Router | 负责内容 |
+| --- | --- |
+| `sources.py` | source CRUD、文件上传、URL 入队、微信 push、抓取触发 |
+| `kb.py` | 节点入库、wiki 同步、图谱/节点查询、summary 创建、memory、entity candidates |
+| `briefing.py` | 今日选题生成与状态更新 |
+| `drafts.py` | 分层检索、草稿生成、草稿历史、反馈提交 |
+| `settings.py` | 用户设置、topics/schema、模板、导出 |
+| `files.py` | `user_data/wiki` 与 `user_data/config` 文件读写 |
+| `chat.py` | 聊天会话和 SSE 消息流 |
+
+两个需要特别记住的事实：
+
+- `kb.py` 是 **正式的知识节点写入口**，ingestion-worker 最终写库走 `/api/kb/ingest`
+- `drafts.py` 不只是 CRUD，它还承载了当前分层 retrieval 的主实现
+
+### 2.8 Worker 内部模块结构
+
+#### ingestion-worker
+
+`services/ingestion-worker/` 由 4 部分构成：
+
+| 模块 | 作用 |
+| --- | --- |
+| `main.py` | trigger server + 轮询控制 |
+| `pipeline.py` | 统一入库流程 |
+| `sources/*.py` | 各 source 类型的抓取与文本抽取 |
+| `config_loader.py` / `prompt_loader.py` | 读取共享配置 |
+
+它的内部设计是“source 适配层”和“知识生成层”分离：
+
+- `sources/*.py` 负责 `fetch_new_items()` / `extract_text()`
+- `pipeline.py` 负责 abstract、embedding、entity、wiki、backfill、post_ingest
+
+#### feedback-worker
+
+`feedback-worker` 很薄，只做 4 件事：
+
+1. 接收草稿和定稿
+2. 本地做 unified diff
+3. 调 Claude 提炼规则
+4. 回写 `api/kb/memory/feedback`
+
+它不直接操作数据库。
+
+#### summarizer-worker
+
+`summarizer-worker` 当前只是触发器：
+
+- 先登录拿 cookie
+- 再调用 `/api/briefing/generate`
+- 选题生成逻辑仍在 API 内部
+
+### 2.9 前端代码结构
+
+前端使用 Next.js App Router，主要代码位于 `services/web/app/`。
+
+全局框架层：
+
+| 模块 | 作用 |
+| --- | --- |
+| `layout.tsx` | 全局 layout、主题、导航、聊天侧栏、GA |
+| `middleware.ts` | 页面保护，拿 cookie 去 API 验证 |
+| `components/Nav.tsx` | 顶部导航、主题切换、聊天开关 |
+| `components/ChatContext.tsx` | 聊天侧栏状态 |
+| `components/ChatSidebar.tsx` | 会话列表、消息流式渲染 |
+
+页面层大致分 3 组：
+
+| 组 | 页面 |
+| --- | --- |
+| 内容生产 | `/briefing`、`/drafts`、`/instructions` |
+| 知识库管理 | `/sources`、`/sources/[id]`、`/knowledge` |
+| 系统壳层 | `/`、`/login`、`/settings` |
+
+其中 `/knowledge/page.tsx` 是当前前端最重的聚合页面，它同时承载：
+
+- 资源树浏览
+- wiki/detail 查看
+- 文件编辑
+- D3 图谱渲染
+- 节点列表过滤
+- maintenance 手动触发
+- 手动创建 summary
+
+这页本质上是一个小型 IDE，而不是普通详情页。
 
 ---
 
-## 数据设计
+## 3. 目录与持久化数据
 
-### 用户数据目录结构
+### 3.1 用户数据目录
 
-所有用户数据存储在宿主机 `./user_data/{user_id}/`，通过 Docker Volume 挂载，迁移服务器时直接打包此目录。
+所有持久化用户数据都落在：
 
-```
-user_data/{user_id}/
-├── raw/                          # 原始数据，系统只读不写
-│   ├── wechat/
-│   │   └── 2026-04-11-{title}.html
-│   ├── rss/
-│   │   └── 2026-04-11-{guid}.html
-│   ├── plaintext/
-│   │   └── notes.txt
-│   ├── pdf/
-│   │   └── paper.pdf
-│   ├── image/
-│   │   └── screenshot.png
-│   ├── word/
-│   │   └── doc.docx
-│   └── url/
-│       └── 2026-04-11-{domain}.html
-│
-├── wiki/                         # 知识库，可直接作为 Obsidian vault
-│   ├── index.md                  # 自动生成的知识库入口（按 type 分段）
-│   ├── articles/
-│   │   └── art_{id}.md           # 清洁原文页（object_type=article）
-│   ├── indices/
-│   │   └── idx_{id}.md           # 层级容器页（object_type=index，代表书/专题集）
-│   ├── entities/
-│   │   └── ent_{id}.md           # 概念/人物/事件页（object_type=entity）
-│   └── summaries/
-│       └── sum_{id}.md           # 摘要页（object_type=summary）
-│
-└── config/
-    ├── topics.md                 # 选题方向，用户可编辑（/instructions 页面）
-    ├── schema.md                 # 知识库宪法，用户可编辑（/instructions 页面，谨慎修改）
-    └── templates/
-        ├── 公众号推文.md          # 用户自定义模板，纯自然语言描述
-        └── 周报.md
+```text
+user_data/default/
 ```
 
-### wiki 文件格式（四类统一 frontmatter）
+核心结构：
 
-完全兼容 Obsidian，支持双链和图谱视图。**旧 `wiki/nodes/` 目录已废弃，迁移时清空重建。**
-
-**article**（`wiki/articles/art_{id}.md`）：
-```markdown
----
-id: art_abc123
-type: article
-title: "文章标题"
-tags: [AI, 推理模型]
-wikilinks: [ent_xyz456]
-source_type: rss
-raw_ref: /app/user_data/default/raw/rss/2026-04-11-item.html
-created_at: 2026-04-11T08:03:00Z
-updated_at: 2026-04-11T08:03:00Z
----
-
-# 文章标题
-
-[全量清洁后原文内容 —— extract_text() 的输出，含系统注入的 [[ent_xyz456|entity名]] wikilink]
+```text
+user_data/default/
+├─ raw/
+│  ├─ wechat/
+│  ├─ rss/
+│  ├─ url/
+│  ├─ pdf/
+│  ├─ image/
+│  ├─ plaintext/
+│  ├─ word/
+│  └─ epub/
+├─ wiki/
+│  ├─ articles/
+│  ├─ entities/
+│  ├─ summaries/
+│  ├─ indices/
+│  └─ index.md
+└─ config/
+   ├─ topics.md
+   ├─ schema.md
+   └─ templates/
 ```
 
-**entity**（`wiki/entities/ent_{id}.md`）：
-```markdown
----
-id: ent_xyz456
-type: entity
-title: "Transformer"
-tags: [AI, 深度学习]
-wikilinks: []
-canonical_name: Transformer
-aliases: ["transformer", "注意力机制"]
-sources: [art_abc123, art_def789]
-created_at: 2026-04-11T08:03:00Z
-updated_at: 2026-04-11T08:03:00Z
----
+### 3.2 raw 文件保留策略
 
-# Transformer
+- `api/routers/kb.py` 中对 `raw/` 设置了 **512 MB** 上限
+- 新内容入库后会触发 `trim_raw_files`
+- 超限时从最旧文件开始删除
 
-[Claude 生成的维基百科式正文，基于 source articles 的 abstract]
-```
+### 3.3 wiki 的当前语义
 
-**index**（`wiki/indices/idx_{id}.md`）：
-```markdown
----
-id: idx_abc123
-type: index
-title: "战争与和平"
-tags: [俄国文学, 拿破仑战争]
-wikilinks: []
-source_type: book
-author: 列夫·托尔斯泰
-year: 1869
-children: [art_def456, art_ghi789]
-abstract: 托尔斯泰通过五个贵族家庭的故事展现1812年拿破仑入侵期间...
-created_at: 2026-04-11T08:03:00Z
-updated_at: 2026-04-11T08:03:00Z
----
+wiki 是 **系统生成的 Markdown 副本**，但不是完全只读：
 
-## 章节目录
-
-- [[art_def456|第一章：彼得堡沙龙]]
-- [[art_ghi789|第二章：鲍尔孔斯基家族]]
-```
-
-**summary**（`wiki/summaries/sum_{id}.md`）：
-```markdown
----
-id: sum_uvw012
-type: summary
-title: "摘要：文章标题"
-tags: [AI, 推理模型]
-wikilinks: []
-summary_of: art_abc123
-perspective: null          # null=综合摘要；非null="人物关系"等用户命名视角
-sources: [art_abc123]
-created_at: 2026-04-11T08:03:00Z
-updated_at: 2026-04-11T08:03:00Z
----
-
-# 摘要：文章标题
-
-[Claude summary_gen 提示词生成；perspective 非 null 时为指定视角的提炼]
-```
-
-**重要原则**：
-- `abstract` 字段仅存入数据库用于 embedding，**不写入 wiki 文件**，用户不可见
-- wiki article 正文 = `extract_text()` 完整输出 + 系统注入的 `[[entity_id|原文]]` wikilink 标注
-- wikilink 注入路径：① 摄入时对当前 article 扫描注入；② entity 晋升后 `backfill_wikilinks_for_entity()` 回扫所有旧 article
-- wiki 生成完全自动，不受用户 config（schema.md、模板）控制
-- 时间戳真相来源是 DB；frontmatter 中的时间戳是便携副本，由系统重写 wiki 文件时同步
-
-### config/settings.json 结构
-
-```json
-{
-  "schedule": {
-    "briefing_time": "08:00",
-    "briefing_hours_back": 24,
-    "maintenance_frequency": "weekly"
-  },
-  "topics": "我关注AI行业动态、创业融资、产品设计",
-  "claude_api_key": "sk-ant-...",
-  "sources": [
-    {
-      "id": "src_abc123",
-      "name": "科技早报",
-      "type": "wechat",
-      "is_primary": true,
-      "api_token": "tok_..."
-    }
-  ]
-}
-```
-
-### PostgreSQL 数据库 Schema
-
-数据库存储可重新生成的结构化数据（embedding、关系、偏好规则）。如数据库损坏，可基于 `user_data/` 目录重建。共 **8 张表**（较上一版新增 `entity_candidates`，`knowledge_nodes` 扩列）。
-
-```sql
--- 知识节点（article / index / entity / summary 四类共用同一张表）
-CREATE TABLE knowledge_nodes (
-    id VARCHAR PRIMARY KEY,          -- 前缀约定：art_ / idx_ / ent_ / sum_
-    user_id VARCHAR NOT NULL,
-    title TEXT,
-    abstract TEXT,                   -- ⚠️ 原 summary 字段改名；3-5句短摘要，用于 embedding
-    embedding vector(1536),
-    source_type VARCHAR,             -- 'wechat'|'rss'|'pdf'|'image'|'plaintext'|'word'|'url'|'book'|'entity'
-    source_id VARCHAR,
-    raw_ref JSONB,                   -- {type: 'file', path: '...'} | {type: 'url', url: '...'}
-    tags TEXT[],
-    is_primary BOOLEAN DEFAULT true,
-    object_type VARCHAR(16) NOT NULL DEFAULT 'article', -- 'article'|'index'|'entity'|'summary'
-    source_node_ids TEXT[] DEFAULT '{}',  -- entity/summary：来源 article id 列表
-    summary_of VARCHAR,              -- summary 专用：指向被摘要对象的 id
-    canonical_name TEXT,             -- entity 专用：规范名
-    aliases TEXT[] DEFAULT '{}',     -- entity 专用：同义词列表
-    perspective TEXT,                -- summary 专用：视角标注（null=综合摘要，非null如"人物关系"）
-    priority_score FLOAT DEFAULT 1.0,    -- 检索优先级（预留遗忘机制）
-    last_accessed_at TIMESTAMPTZ,
-    access_count INT DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
-CREATE INDEX idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
-CREATE INDEX idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
-CREATE INDEX ON knowledge_nodes USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);
-
--- entity 候选池（三层发现机制的核心）
-CREATE TABLE entity_candidates (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    canonical_name TEXT NOT NULL,
-    aliases TEXT[] DEFAULT '{}',
-    embedding vector(1536),          -- 懒计算，初始为 NULL
-    mentions JSONB DEFAULT '[]',     -- [{article_id, salience:float, seen_at:ts}]
-    promoted_entity_id VARCHAR REFERENCES knowledge_nodes(id),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (user_id, canonical_name)
-);
-CREATE INDEX idx_entity_candidates_user ON entity_candidates(user_id);
-
--- 知识节点关系
-CREATE TABLE knowledge_edges (
-    id SERIAL PRIMARY KEY,
-    from_node_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
-    to_node_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
-    relation_type VARCHAR,
-    -- 结构性（weight=1.0）: 'part_of' | 'summarizes'
-    -- 内容引用（weight=salience）: 'mentions'
-    -- 统计相似（weight=归一化得分）: 'similar_to' | 'co_occurs_with'
-    -- （已移除：contradicts/supports/extends/background_of/wikilink）
-    weight FLOAT,           -- 0~1；结构性边固定 1.0，mentions 边 = salience
-    created_by VARCHAR,     -- 'ingestion'|'maintenance'|'backfill'|'user'
-    description TEXT        -- relation 的自然语言描述（预留）
-);
-
--- 写作偏好记忆
-CREATE TABLE writing_memory (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    template_name VARCHAR,
-    rule TEXT,
-    rule_type VARCHAR,      -- 'style'|'structure'|'content'|'tone'
-    confidence FLOAT DEFAULT 0.5,
-    count INTEGER DEFAULT 1,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 订阅源
-CREATE TABLE sources (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    name VARCHAR NOT NULL,
-    type VARCHAR NOT NULL,  -- 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'
-    fetch_mode VARCHAR,     -- 'subscription'|'manual'|'push'
-    is_primary BOOLEAN DEFAULT true,
-    config JSONB,
-    api_token VARCHAR,
-    last_fetched_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 每日选题（M:N 关联原文节点）
-CREATE TABLE topics (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    date DATE NOT NULL DEFAULT CURRENT_DATE,
-    title TEXT NOT NULL,
-    description TEXT,
-    source_node_ids TEXT[],
-    status VARCHAR DEFAULT 'pending',  -- 'pending'|'selected'|'skipped'
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 草稿记录
-CREATE TABLE drafts (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    template_name VARCHAR,
-    selected_topic_ids TEXT[],
-    selected_node_ids TEXT[],
-    draft_content TEXT,
-    final_content TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 用户设置
-CREATE TABLE user_settings (
-    user_id VARCHAR PRIMARY KEY,
-    settings JSONB NOT NULL DEFAULT '{}'
-);
-
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-**迁移注意**：`database.py` 的 `init()` 在启动时幂等执行 schema；旧库若存在 `summary` 列，自动检测并重命名为 `abstract`；若 `abstract` 已存在则直接 DROP 旧 `summary` 列。`CREATE INDEX` 必须放在 `ALTER TABLE ADD COLUMN` **之后**，否则旧表（缺新列）会报 `UndefinedColumnError`。
+- 节点入库后，API 会写入 `wiki/articles|entities|summaries|indices/`
+- 前端知识库页允许直接编辑 `wiki/` 与 `config/` 下文件
+- `write_wiki_node()` 会优先保留现有正文，只刷新 frontmatter 和关联节点区块
+- 因此，**用户手工改过的正文通常会保留**
+- 但数据库仍然是 metadata 和检索字段的主要事实来源
+- 如果数据库丢失，可以通过 `restore_from_wiki()` 从 wiki 重建一部分内容
 
 ---
 
-## Source 的主要 / 非主要属性
-
-每个 source 都有 `is_primary` 布尔字段，这是整个工作流中最重要的过滤器之一：
-
-| | 主要 source（`is_primary = true`） | 非主要 source（`is_primary = false`） |
-|--|--|--|
-| **典型用途** | 你主动关注、希望消化的内容（精选 RSS、微信、自己上传的论文/笔记） | 背景参考资料（词典、手册、百科类文档，你不需要每天读摘要） |
-| **今日简报** | ✅ 出现在首页卡片，参与选题 | ❌ 不出现，不打扰日常流程 |
-| **草稿 RAG** | ✅ 参与语义检索（既是素材也是背景知识） | ✅ 参与语义检索（仅作背景知识） |
-| **知识图谱** | ✅ 参与建边 | ✅ 参与建边 |
-
-**实现要点**：
-- `is_primary` 从 source 继承到 `knowledge_nodes.is_primary`（ingestion pipeline 负责传递）
-- `briefing.py` 查询节点时强制 `AND is_primary = true`，其他查询（search、graph、RAG）不过滤
-- source 创建时默认 `is_primary = true`，可在 source 卡片上随时切换
-- 切换 source 的 `is_primary` 不会追溯修改已入库节点（节点保留入库时的属性）
-
----
-
-## Source 抽象层
-
-所有 Source 类型实现统一接口。接口以下各类型提取逻辑不同，接口以上（摘要、embedding、入库）完全一致。
-
-### BaseSource 接口
-
-```python
-class BaseSource:
-    fetch_mode: Literal['subscription', 'manual', 'push']
-    
-    def fetch_new_items(self) -> list[RawItem]:
-        """拉取新内容。subscription 型过滤时间；manual/push 型由外部传入待处理项。"""
-        raise NotImplementedError
-    
-    def extract_text(self, raw: RawItem) -> str:
-        """从 RawItem 中提取纯文本。"""
-        raise NotImplementedError
-
-class RawItem:
-    source_id: str
-    title: str | None
-    raw_ref: dict                # {'type': 'file', 'path': '...'} | {'type': 'url', 'url': '...'}
-    content_type: str
-    raw_bytes: bytes | None
-    fetched_at: datetime
-```
-
-### Source 分类
-
-所有 source 分为两类，区别仅在于内容如何到达：
-
-**自动抓取型**（系统主动获取）：
-| 类型 | fetch_mode | 触发方式 | extract 逻辑 |
-|------|-----------|---------|-------------|
-| `rss` | `subscription` | 定时轮询，过滤 pub_date > last_fetched | trafilatura HTML 正文提取 |
-| `wechat` | `push` | 接收 iPhone 快捷指令推送 | 直接使用推送文本 |
-
-**手动管理型**（用户主动添加内容）：
-| 类型 | fetch_mode | 触发方式 | extract 逻辑 |
-|------|-----------|---------|-------------|
-| `url` | `manual` | 用户添加 URL，可随时追加 | trafilatura 提取正文 |
-| `pdf` | `manual` | 用户上传文件，支持批量、可随时追加 | PyMuPDF 提取文本 |
-| `image` | `manual` | 用户上传文件，支持批量、可随时追加 | Claude Vision OCR（两步：转录 + 清洗）|
-| `plaintext` | `manual` | 用户上传文件，支持批量、可随时追加 | 直接读取 |
-| `word` | `manual` | 用户上传文件，支持批量、可随时追加 | python-docx 提取 |
-
-**关键设计原则**：source 是持久的**内容渠道**，不是一次性触发。例如，创建一个叫"有趣的 Paper"的 PDF source 后，用户每次看到好论文都可以上传到这个 source，每次上传可以包含多个文件；系统对每个文件独立处理，生成各自的知识节点。去重逻辑（按文件哈希）在后续步骤实现。
-
-### 微信公众号（push 型）专用端点
-
-```
-POST /api/sources/wechat/ingest
-Headers: X-API-Token: {source.api_token}
-
-{
-  "source_id": "src_abc123",
-  "title": "文章标题",
-  "content": "正文全文...",
-  "url": "https://mp.weixin.qq.com/..."
-}
-```
-
-用户在 Web 界面创建微信 source 后，系统生成专属 `api_token`，用户将其填入 iPhone 快捷指令模板即可使用。
-
-### Ingestion 流水线（所有类型共用，重构后）
-
-```
-Source.fetch_new_items()
-        ↓ RawItem 列表
-Source.extract_text()                  ← 各类型自己实现
-        ↓ 纯文本（全量清洁后原文）
-save_raw()                             ← 永久存档到 raw/{source_type}/
-        ↓
-embed(text[:8000])                     ← 初始 embedding，用于后续实体上下文查询
-        ↓
-GET /api/kb/entity_candidates/analyze_context(embedding)
-        ↓ {nearby_entities: [...20条], top_candidates: [...20条]}
-analyze_article(text, nearby_entities, top_candidates)  ← Claude article_analysis 提示词
-        ↓ {abstract, tags, entities:[{name,aliases,salience,matches_existing,summary_hint}],
-           contradictions, structural_hints}
-embed(abstract)                        ← 正式 embedding（基于 abstract）
-        ↓
-POST /api/kb/ingest(object_type=article)  ← 写入 DB，id 前缀 art_
-        ↓ article_id
-POST /api/kb/ingest(object_type=summary)  ← summary body = abstract（初版简化）；id 前缀 sum_
-        ↓
-POST /api/kb/entity_candidates/process(article_id, entities)
-        ↓ {matched_existing:[...], promoted:[{candidate_id, canonical_name, ...}]}
-for each promoted:
-    generate_entity_page(canonical_name, aliases, source_abstracts)  ← Claude entity_page 提示词
-    embed(canonical_name)
-    POST /api/kb/ingest(object_type=entity)  ← id 前缀 ent_
-    write_wiki_entity()
-    POST /api/kb/entities/{entity_id}/backfill_wikilinks  ← 回扫所有旧 article 注入 [[ent_id|term]]
-        ↓
-write_wiki_article()                   ← wiki/articles/art_{id}.md，正文 = 全量原文
-write_wiki_summary()                   ← wiki/summaries/sum_{id}.md
-        ↓ 异步（ingest 后台任务）
-build_similar_edges()                  ← 建 similar_to 边（余弦 > 0.75）
-update_last_fetched()
-```
-
-**entity 候选处理逻辑**（`POST /api/kb/entity_candidates/process`）：
-- `matches_existing_entity_id` 非空 → 追加 article 到 entity 的 `source_node_ids`（DB 侧操作，不重建 entity 页）
-- 否则 → upsert `entity_candidates`（累加 mentions JSONB）
-- 晋升条件：`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`
-- 已晋升（`promoted_entity_id IS NOT NULL`）→ 跳过，不重复晋升
-
----
-
-## 知识库统一 API
-
-所有上层服务（Web、ingestion-worker、summarizer-worker、feedback-worker、Obsidian 同步）都通过此 API 访问知识库，不直接操作数据库。
-
-### 端点列表
-
-```
-# 内容入库（唯一写入入口）
-POST   /api/kb/ingest                      # object_type=article|entity|summary；返回 node_id
-
-# 语义搜索（RAG 核心调用）
-GET    /api/kb/search?q=...&limit=10&tags=AI,产品&type=article|entity|summary
-
-# 获取单个节点（含所有边 + wiki_body）
-GET    /api/kb/node/:id
-
-# 节点列表（知识库浏览）
-GET    /api/kb/nodes?q=...&tags=...&type=article|entity|summary&limit=50&offset=0
-
-# 图谱查询（Obsidian 同步 + Wiki 可视化用）
-GET    /api/kb/graph?root=:id&depth=2
-GET    /api/kb/graph/all                   # 全量节点+边，用于 D3 可视化
-
-# 删除节点（wiki 文件 + edges + DB 记录，不删 raw）
-DELETE /api/kb/nodes/:id
-
-# 偏好规则读写
-POST   /api/kb/memory/feedback
-GET    /api/kb/memory?template_name=...
-
-# 维护任务触发
-POST   /api/kb/maintenance/run
-
-# entity 候选池 API（ingestion-worker 调用）
-GET    /api/kb/entity_candidates/analyze_context?embedding=...&limit=20
-        # 返回 {nearby_entities:[{id,title,canonical_name}], top_candidates:[{canonical_name,mention_count}]}
-POST   /api/kb/entity_candidates/process   # 处理 article 分析结果：upsert 候选 + 晋升判定
-        # Body: {article_id, entities:[{name,aliases,salience,matches_existing_entity_id,summary_hint}]}
-        # 返回 {matched_existing:[...], newly_promoted:[{candidate_id,canonical_name,...}]}
-
-# entity wikilink 回灌（entity 晋升后触发，回扫所有旧 article）
-POST   /api/kb/entities/:entity_id/backfill_wikilinks
-
-# Source 管理
-GET    /api/sources                        # 列表（含每个 source 的文章数）
-POST   /api/sources                        # 创建 source（不含文件，建渠道）
-PUT    /api/sources/:id
-DELETE /api/sources/:id
-POST   /api/sources/:id/fetch              # 触发 ingestion-worker 抓取（自动型）
-POST   /api/sources/:id/upload             # 上传文件到已有 source，支持多文件（手动型）
-POST   /api/sources/:id/add-url            # 添加 URL 到已有 source（手动型）
-POST   /api/sources/wechat/ingest          # 微信 push 专用
-
-# 今日选题（简报）
-GET    /api/briefing                       # 获取今日（或指定日期）选题列表
-POST   /api/briefing/generate             # 立即生成选题
-PATCH  /api/briefing/topics/:id           # 更新选题状态（selected/skipped/pending）
-
-# 多视角 summary
-POST   /api/kb/nodes/:id/create_summary   # body: {perspective?}；生成并存储 summary 节点
-
-# 草稿
-POST   /api/drafts/generate               # 接受 selected_topic_ids，6-Phase 分层 RAG（含 HyDE）
-POST   /api/drafts/:id/feedback           # 提交定稿
-GET    /api/drafts
-```
-
----
-
-## 草稿生成
-
-### RAG 流程
-
-输入为用户选入的**选题 ID 列表**，而非直接的节点 ID。
-
-```python
-def generate_draft(selected_topic_ids, template_name, user_id):
-    # 1. 获取选题（title + description + source_node_ids）
-    topics = [get_topic(id) for id in selected_topic_ids]
-
-    # 2. 通过 source_node_ids 获取来源原文节点
-    source_node_ids = dedupe([id for t in topics for id in t.source_node_ids])
-    source_nodes = [get_node(id) for id in source_node_ids]
-
-    # 3. 以选题标题+说明为 query，语义检索更多相关知识
-    query = ' '.join([f"{t.title} {t.description}" for t in topics])
-    related = vector_search(query, exclude=source_node_ids, limit=8)
-
-    # 4. 沿边扩展一跳（获取背景知识）
-    extended = graph_expand(related, relation_types=['background_of', 'extends'], depth=1)
-
-    # 5. 截断到字符上限
-    knowledge_context = truncate_to_chars(related + extended, max_chars=6000)
-
-    # 6. 获取偏好规则（confidence >= 0.8）
-    preferences = get_high_confidence_preferences(user_id, template_name, min_confidence=0.8)
-
-    # 7. 读取模板（纯自然语言描述）
-    template = read_template(user_id, template_name)
-
-    # 8. 组合 Prompt：选题角度在前，来源原文和背景知识在后
-    prompt = f"""
-{template}
-
-本次写作的选题角度：
-{format_topics(topics)}
-
-相关来源原文摘要：
-{format_nodes(source_nodes)}
-
-知识库背景知识：
-{format_knowledge(knowledge_context)}
-
-根据用户历史反馈，额外注意：
-{format_preferences(preferences)}
-"""
-    return claude_api(prompt)
-```
-
-### 写作模板
-
-模板是纯自然语言描述，用户直接写"我想要什么样的文章"，存为 `config/templates/{名称}.md`：
-
-```markdown
-我想要一篇适合微信公众号的文章。风格轻松有观点，
-适合碎片化阅读。开头用一个有趣的现象或问题引入，
-中间分2-3个小节展开，每节有小标题，结尾给读者
-一个值得思考的问题，不要号召性语言。长度2000字左右。
-```
-
----
-
-## 轻量 RLHF：从用户修改中学习
-
-### 流程
-
-```
-用户在 Web 界面粘贴定稿（可选操作）
-        ↓
-POST /api/drafts/:id/feedback
-        ↓
-Feedback Worker：difflib 对比草稿 v1 和定稿
-        ↓
-Claude API 分析 diff，提炼偏好规则（JSON 输出）
-        ↓
-更新 WritingMemory，提升置信度
-        ↓
-置信度 > 0.8 的规则自动写入 schema.md 的写作偏好区块
-```
-
-### 偏好规则存储
-
-偏好按 `(user_id, template_name)` 存储，同一用户不同模板的偏好独立学习：
-
-```python
-# 每次定稿提交后，同一条规则出现 3 次以上置信度显著提升
-match['confidence'] = min(1.0, match['confidence'] + 0.15)
-```
-
----
-
-## Web 界面
-
-### 路由结构
-
-```
-/                    今日简报（首页，核心交互）
-/sources             Source 管理
-/knowledge           知识库浏览（列表视图 + 图谱视图）
-/drafts              草稿历史
-/instructions        指令设置（写作方向、模板、schema）
-/settings            系统设置（节奏、偏好规则）
-/login               登录页
-```
-
-所有页面顶部有持久导航栏（`app/components/Nav.tsx`），`/login` 除外。
-
-### 各页面核心内容
-
-**`/`（今日简报）**
-
-三栏布局：
-- 左栏（今日选题）：AI 基于当日新增原文和用户写作方向生成的写作角度列表，平铺展示，每张卡片显示选题标题、说明、来源篇数，支持"选入"和"跳过"。**注意：这里展示的是选题角度，不是文章摘要。**
-- 中栏（已选选题）：用户选入的选题，可拖拽排序（顺序即叙事权重），可移除
-- 右栏（生成草稿）：选择模板 + "生成草稿"按钮；生成后变为草稿预览 + 复制按钮 + 可选的定稿反馈入口
-
-顶部状态栏显示上次生成时间，提供"立即生成选题"手动触发按钮。
-
-**`/sources`**
-
-两个 Tab：自动抓取型（RSS/微信）和手动管理型（URL/PDF/图片/文本/Word）。
-
-**Source 是持久渠道，不是一次性触发。** 同一个 source 可以在任意时间追加新内容。
-
-添加 Source 流程：选类型 → 填名称 → 创建（不含文件）：
-- 微信公众号：创建后展示快捷指令配置（接收地址 + API Token）
-- RSS：填写 Feed URL
-- URL/文件类型：先创建渠道，后续通过 source 卡片上传
-
-Source 卡片操作：
-- 所有类型：显示 `is_primary` 状态徽章（"主要"/"参考"）+ 切换按钮；显示文章数
-- 自动型（RSS）：显示最后抓取时间 + "立即抓取"按钮
-- 手动型（URL）：显示文章数 + "添加 URL"按钮（可一次添加多条）
-- 手动型（文件）：显示文章数 + "上传文件"按钮（支持多文件批量上传）
-- 所有类型：删除按钮
-
-**`/knowledge`**
-
-四面板 IDE 式布局（三个视图同时可见，始终保持同步），顶部仅保留"立即运行维护"按钮：
-
-```
-┌── header（知识库 + 立即运行维护）──────────────────────────────────┐
-├─────────────┬──────────────────────────┬──────────────────────────┤
-│  资源管理器  │   Wiki 查看器 / 文件编辑   │   搜索 + 卡片列表         │
-│  (默认 208px)│   (flex-1, 上半部分)      │   (默认 288px)            │
-│             ├──────────────────────────│                          │
-│             │   交互式图谱               │                          │
-│             │   (默认 256px, 下半部分)   │                          │
-└─────────────┴──────────────────────────┴──────────────────────────┘
-```
-
-**面板可拖拽调整大小**：三条分隔线（左竖/中横/右竖）均可鼠标拖拽，调整时光标变为 col-resize/row-resize，防止文字选中。
-
-**中央同步状态 `selectedNodeId`**：任意面板触发选择均通过同一状态驱动所有面板同步：
-- 点击图谱节点 → 列表卡片高亮+滚动到位，资源管理器 Wiki 树高亮对应文件，Wiki 查看器显示 wiki_body
-- 点击列表卡片 → 同上
-- 点击资源管理器 Wiki 文件 → 从文件名提取 node_id，同步图谱+列表+Wiki 查看器
-- 按 `Esc` → 清除选中（`selectedNodeId = null`，图谱/列表/查看器全部重置）
-
-**图谱交互**：
-- **节点默认颜色按 `object_type` 区分**：article=`#3b82f6`（蓝），entity=`#10b981`（绿），summary=`#f59e0b`（琥珀）
-- 选中节点：红色填充（`#ef4444`），半径 +6px，相关边高亮（opacity 0.9），非相关边淡出（opacity 0.08）
-- 邻居节点：保持原 type 颜色但加亮，完全不透明
-- 非相关节点：原 type 颜色但透明度降至 18%（避免干扰）
-- 选中后图谱自动平移缩放（600ms 过渡）将所选节点居中，缩放比 2×
-
-**资源管理器**（左侧，可折叠树）：
-- 原始文件（按 source type 分组）：只读展示，**无删除按钮**（raw 数据独立管理，由 512MB 上限自动淘汰）
-- Wiki 节点文件：三段树（`wiki/articles/` / `wiki/entities/` / `wiki/summaries/`）+ 配置模板（`config/templates/`）；✕ 删除按钮（hover 显示），调用 `DELETE /api/kb/nodes/{id}` → 删除 wiki 文件 + DB 记录 + 边（**不删除**对应的 raw 原始文件）；点击打开文件同时同步选中对应节点
-- 配置模板：✕ 删除按钮（hover 显示），调用 `DELETE /api/files/content?rel_path=...` → 仅删除文件
-- 删除 wiki 节点后：图谱重新拉取（`loadGraph()`）、卡片列表原地刷新（保留当前搜索条件）、选中状态清空
-
-**Wiki 查看器**（中央上半部分）：
-- 有 `openFile`（通过资源管理器点击或"在编辑器中打开"按钮触发）→ 显示 `FilePanel`（查看/编辑 md 文件）
-- 有 `selectedNodeId`（通过图谱/列表点击触发）→ 显示节点元数据头（标题/`object_type` 徽章/标签/来源/日期）+ wiki_body 全文 + 关联边列表 + "在编辑器中打开"按钮；注意元数据中显示的是 `abstract`（DB 字段），不是 wiki body 正文
-- 两者都没有 → 占位提示
-
-**卡片列表**（右侧）：
-- 单列卡片，搜索栏 + 标签过滤，分页（50条/页）
-- 选中卡片蓝色高亮，`selectedNodeId` 变化时自动 `scrollIntoView`（via `data-node-id` 属性）
-- 外部删除触发后原地 reload（保留当前 q / tagFilter / offset）
-
-顶部有"立即运行维护"按钮（无视图切换 Tab）。
-
-**`/settings`**
-
-四个区块：
-- 流程节奏：简报时间、覆盖小时数、维护频率
-- 选题方向：自然语言编辑框 + "立即重新分类今日简报"按钮
-- 模板管理：名称 + 大文本框（纯自然语言）+ "立即测试"按钮
-- Schema.md：代码编辑器 + "用新 schema 重新处理最近一篇文章"按钮
-- 偏好规则：显示系统学到的规则和置信度，支持手动删除
-- 数据导出：两个按钮 —— "下载数据包（不含原始文件）"（主按钮，`/api/settings/export/no-raw`）和"下载数据包（含原始文件）"（次按钮，`/api/settings/export`）
-
-### 前端设计原则
-
-1. **所有自动流程都有"立即执行"按钮**，用户不需要等定时任务
-2. **所有配置改动后都有即时验证路径**，改完可以立刻看到效果
-3. **所有异步操作显示流式进度**，不用 loading spinner，用户能看到系统在做什么：
-   ```
-   [立即生成简报] → ⏳ 正在抓取 (3/5 个源)... → ⏳ Claude 正在分类... → ✅ 完成，共 12 条
-   ```
-4. **草稿定稿反馈是可选的**，用正向激励而非流程强制，提交后显示"学到了 X 条偏好规则"
-
----
-
-## Authentication
-
-单用户模式，密码存在 `.env` 里，不需要数据库用户表：
-
-```env
-AUTH_PASSWORD=your_password_here
-AUTH_SECRET=random_secret_for_jwt_signing
-```
-
-登录逻辑：用户输入密码 → 与 `AUTH_PASSWORD` 比对 → 签发 JWT 存 cookie → 所有页面和 API 请求验证 cookie。
-
-在 Next.js 中间件里拦截所有路由，未登录重定向到 `/login`。
-
----
-
-## Obsidian 同步（可选，只读）
-
-知识库层到 Obsidian 的同步是**单向的**，系统只写不读，用户在 Obsidian 里的任何修改不会回流。
-
-每当有新节点入库或节点更新时，异步生成/更新对应的 wiki 文件：
-- article → `wiki/articles/art_{id}.md`
-- entity → `wiki/entities/ent_{id}.md`
-- summary → `wiki/summaries/sum_{id}.md`
-
-`wiki/` 目录通过 iCloud 或 Dropbox 同步到用户本地，用户将此目录作为 Obsidian vault 打开即可使用双链（`[[ent_id|显示名]]` 格式）和图谱视图。**注意**：`wiki/nodes/` 旧目录已废弃，迁移时清空重建（不提供兼容层）。
-
----
-
-## 基础设施
-
-### docker-compose.yml 关键部分
-
-```yaml
-services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    environment:
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: app
-
-  api:
-    image: ghcr.io/{owner}/api:latest
-    volumes:
-      - ./user_data:/app/user_data
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
-      AUTH_SECRET: ${AUTH_SECRET}
-    depends_on: [postgres]
-
-  ingestion-worker:
-    image: ghcr.io/{owner}/ingestion-worker:latest
-    volumes:
-      - ./user_data:/app/user_data
-    depends_on: [api, rsshub]
-
-  maintenance-worker:
-    image: ghcr.io/{owner}/api:latest
-    command: python maintenance.py
-    profiles: ["maintenance"]    # 不默认启动，手动或定时触发
-
-  scheduler:
-    image: ghcr.io/{owner}/api:latest
-    command: python scheduler.py
-    depends_on: [api]
-
-  rsshub:
-    image: diygod/rsshub:latest
-
-  watchtower:
-    image: containrrr/watchtower
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 3600
-
-  nginx:
-    image: nginx:alpine
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-    ports:
-      - "80:80"
-    depends_on: [web, api]
-```
-
-### Nginx 配置
-
-Cloudflare 侧终止 HTTPS，Nginx 只监听 80 端口：
-
-```nginx
-server {
-    listen 80;
-    server_name kb.yourdomain.com;
-
-    location / {
-        proxy_pass http://web:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /api {
-        proxy_pass http://api:8000;
-        proxy_set_header Host $host;
-    }
-}
-```
-
-### Cloudflare 配置
-
-DNS 添加 A 记录指向 VPS IP，代理状态开启（橙色云朵）。SSL/TLS 加密模式设为"完全"。
-
-### .env.example
-
-```env
-# 数据库
-DB_PASSWORD=change_me
-DATABASE_URL=postgresql://postgres:change_me@postgres:5432/app
-
-# Claude API
-CLAUDE_API_KEY=sk-ant-...
-
-# 认证
-AUTH_PASSWORD=change_me
-AUTH_SECRET=random_32_char_string
-
-# 应用
-NEXTAUTH_URL=https://kb.yourdomain.com
-```
-
-### 备份
-
-```bash
-# scripts/backup.sh（每天 cron 触发）
-DATE=$(date +%Y%m%d)
-tar -czf backup-${DATE}.tar.gz ./user_data/
-docker exec postgres pg_dump -U postgres app > db-${DATE}.sql
-rclone copy backup-${DATE}.tar.gz r2:bucket/backups/
-rclone copy db-${DATE}.sql r2:bucket/backups/
-rclone delete --min-age 30d r2:bucket/backups/
-```
-
----
-
-## 数据可移植性
-
-用户数据完全属于用户。Web 界面提供两种导出方式：
-
-| 按钮 | 端点 | 内容 |
-|------|------|------|
-| 下载数据包（不含原始文件）| `GET /api/settings/export/no-raw` | wiki/ + config/，不含 raw/ |
-| 下载数据包（含原始文件）| `GET /api/settings/export` | user_data/{user_id}/ 完整打包 |
-
-解压后：
-- `wiki/` 目录直接作为 Obsidian vault 打开
-- `raw/` 是所有原始文章和文件（**最多保留 512 MB**，超限后系统从最旧文件开始自动清理）
-- `config/` 是所有配置，可在新服务器导入恢复
-
-数据库（embedding、关系图）从 `user_data/` 派生，损坏后可重建，不是唯一真相来源。
-
-### raw 数据管理原则
-
-- raw 文件与知识节点**逻辑解耦**：删除节点（wiki 文件 + DB 记录）**不会**删除对应的 raw 原始文件
-- raw 文件仅受 512 MB 容量上限约束，超出时按 mtime 从最旧开始删除（`trim_raw_files()`，每次 ingest 后后台执行）
-- 知识库的核心价值在 wiki + DB（可重建），raw 仅作归档，复用率低，可随时清理
-
----
-
-## Claude API 调用清单
-
-系统中所有 Claude API 调用均为单次无状态调用，无多轮对话，无工具调用链，context 完全可控。模型选择和 token 上限均在 `config/system.yaml` 的 `models` / `llm_output_tokens` 节中配置。
-
-| 调用 | 触发时机 | 输入上限 | 输出格式 |
-|------|---------|---------|---------|
-| `article_analysis` | 每篇文章入库时 | 原文（截断）+ 40条 entity 标题（近邻+候选池） | JSON `{abstract, tags, entities:[{name,aliases,salience,matches_existing_entity_id,summary_hint}], contradictions, structural_hints}` |
-| `entity_page` | entity 候选首次晋升时 | source articles 的 abstract 列表 + summary_hint | markdown entity 正文（维基百科式） |
-| `entity_update` | entity 增量更新（maintenance） | 现有 entity 正文 + 新增 source 的 abstract | markdown entity 正文（增量保留，不从头重写） |
-| `index_summary` | index 节点 abstract 聚合（maintenance） | 子节点 abstract 列表 | 3-5 句聚合摘要（写入 index 节点的 abstract 字段） |
-| `summary_gen` | 按需生成多视角 summary | article/index 正文 + perspective（可选） | markdown summary 正文 |
-| `hyde_abstract` | HyDE 查询扩展（草稿 RAG） | 选题文字 | ~100 字假设性文章摘要，用于 embed 后做向量检索 |
-| `briefing_topics` | 每日简报生成 | abstract 列表 + 选题方向描述 | JSON 选题列表 |
-| 草稿生成 | 用户触发 | 模板 + 选题 + 知识库（≤100k tokens）+ 偏好规则 | 文章正文 |
-| diff 分析 | 用户提交定稿 | 草稿 v1 + 定稿 | JSON 偏好规则列表 |
-| 图片 OCR + 清洗 | 图片类型 source 入库 | 图片 base64（含分片） | OCR 文本 → 清洗后正文（两步调用） |
-| PDF 清洗 | PDF source 入库 | PyMuPDF 提取的原始文本 | 清洗后正文 |
-
----
-
-## 开发优先级
-
-按以下顺序实现，每步完成后可独立验证：
-
-1. ✅ **基础骨架**：docker-compose + PostgreSQL + pgvector + 登录页
-2. ✅ **Ingestion Worker**：RSS 抓取 + Claude 摘要 + embedding 入库
-3. ✅ **KB API**：search、node、graph、memory、ingest 端点
-4. ✅ **今日简报**：summarizer-worker + 首页三栏布局
-5. ✅ **草稿生成**：RAG 检索 + 模板 + 生成端点
-6. ✅ **Source 管理**：Source 是持久渠道；自动型（RSS/微信）+ 手动管理型（URL/文件，支持随时追加 + 批量上传）
-7. ✅ **微信快捷指令**：push 端点 + 快捷指令模板生成
-8. ✅ **反馈学习**：feedback-worker + 偏好规则 + settings 页展示
-9. ✅ **知识库浏览**：列表视图 + D3 图谱视图
-10. ✅ **Obsidian 同步**：单向 md 文件生成
-11. ✅ **指令设置页 + 数据导出**：/instructions 页面（选题方向/模板/Schema）+ 导出 zip
-12. ✅ **Maintenance Worker**：孤岛检测 + 矛盾发现 + 补边
-13. ✅ **Explorer 资源管理器**：左侧文件树（raw/wiki/config）+ FilePanel 查看/编辑
-14. ✅ **四面板 IDE 式布局**：资源管理器（左）+ Wiki 查看器（中上）+ D3 图谱（中下）+ 卡片列表（右），三条可拖拽分隔线
-15. ✅ **Article/Entity/Summary 三类对象架构**：知识库层重构为三等公民；entity 三层发现机制；wikilink 回灌
-16. ✅ **多层记忆架构（multi-layer-plan.md 全部步骤，2026-04-24~28）**：
-    - **Config 外部化**：新增 `config/system.yaml`（挂载到所有容器 `/app/shared_config/system.yaml`）；新增 `config_loader.py`（点分路径读取，`get('retrieval.entity_top_k', 10)`）；所有硬编码阈值、top_k、token 上限迁移到 yaml；新增 prompts section：`index_summary` / `summary_gen` / `hyde_abstract`
-    - **`index` 第四对象类型**：`knowledge_nodes.object_type` 扩展为 `'article'|'index'|'entity'|'summary'`；新增 `wiki/indices/idx_{id}.md`；schema 新增 `perspective TEXT`（summary 视角）、`priority_score FLOAT`、`last_accessed_at`、`access_count`；`knowledge_edges` 新增 `description TEXT`
-    - **关系体系简化**：移除 LLM 语义边（contradicts/supports/extends/background_of/wikilink），保留 8 种语义明确的边：`part_of`/`summarizes`（结构性，weight=1.0）、`mentions`（salience）、`similar_to`/`co_occurs_with`（统计）；`mentions` 边 weight 从硬编码 1.0 改为真实 salience；新增 `co_occurs_with`（entity 共现，归一化 log 公式）
-    - **确定性 ID**：文件型 article/index 的 ID 改为 `sha256(raw_path)[:16]`（`art_`/`idx_` 前缀）；entity ID 改为 `sha256(user_id:canonical_name)[:16]`；手动创建节点（`source_type='manual'`）保留随机 ID；确保 `rebuild_from_raw` 可幂等执行
-    - **EPUB/MOBI 解析**：`sources/book.py`；按 spine 顺序提取章节；词数 > `chunk_trigger_words`（5000）且章节数 > 1 时建 `index` 节点 + 多个 `article` 子节点；否则整体建单一 article；`source_type='book'`
-    - **`rebuild_from_raw` 命令**：`maintenance.py rebuild_from_raw`；Step1 清空自动生成内容 → Step2 扫描 raw 目录 → Step3 逐文件重跑 ingestion → Step4 entity 候选积累+晋升 → Step5 生成 default summary → Step6 聚合 index abstract（自底向上）→ Step7 计算统计边 → Step8 输出报告
-    - **HyDE + 分层检索算法**：`use_hyde: true` 时先用 Haiku 生成假设摘要再 embed，提升检索精度；6-Phase 算法（见 multi-layer-plan.md §五）替换旧 `semantic_search_related`：Phase1 三路并行向量检索→Phase2 沿图传播分数→Phase3 一跳 article→entity→article 扩展→Phase4 Index 展开→Phase5 兜底填充→Phase6 排序
-    - **Index abstract 聚合**：`maintenance.py` 新增 `aggregate_index_abstracts()`；从叶 article 向上逐层聚合父 index 的 abstract（LLM `index_summary` prompt）
-    - **多视角 summary API**：`POST /api/kb/nodes/{id}/create_summary`，body `{"perspective": "人物关系"}`（perspective 可选）；summary 节点新增 `perspective` 字段
-    - **D3 图谱更新**：`index` 节点颜色 `#8b5cf6`（紫）；`part_of` 边粗实线；`summarizes` 边黄色虚线；`co_occurs_with` 边绿点线；新增边类型过滤复选框；ExplorerPanel 新增 `indices/` 段
-    - **Bug 修复**：书籍章节 `wiki_body` 为空 → `write_wiki_article` 加 `title_override`/`source_type_override`；D3 `TypeError: d.object_type` → `!d ||` 空守卫
-    - **灾难恢复工具**：`maintenance.py` 新增 `restore_from_wiki()`，从 wiki 文件重建 DB（CLI: `python maintenance.py restore_from_wiki`）
-
----
-
-## 当前项目状态（2026-04-28）
-
-### 已完成：第一步 ~ 第十五步 + 若干 Bug 修复与灾难恢复
-
-- **第一步**：`make dev` → 登录页 → pg + pgvector 就绪 ✅
-- **第二步**：RSS 抓取 → Claude 摘要 → OpenAI embedding → 入库 → wiki md 生成 ✅
-- **第三步**：KB API（search/node/graph/memory/ingest）全部通过 ✅
-- **第四步**：简报生成 → 首页三栏布局（选入/跳过/拖拽排序）✅
-- **第五步**：草稿生成（RAG + 模板 + Claude）→ 草稿历史页 ✅
-- **第六步**：Source 管理完整实现 ✅
-  - Source 是持久渠道；手动型支持随时批量追加（`/{id}/upload` 多文件、`/{id}/add-url`）
-  - `is_primary` 概念明确：主要型出现在简报，参考型仅参与 RAG；卡片上可切换
-  - ingestion-worker 新增 HTTP trigger server（端口 8001）+ URLSource
-  - fetch_mode: `subscription` / `manual` / `push`（原 `one_shot` 已废弃）
-  - 文件型 source 处理 ✅：image/pdf/plaintext/word Source 类已实现，上传后 worker 可正常处理
-- **第七步**：微信快捷指令 ✅
-  - `POST /api/sources/wechat/ingest`：`X-API-Token` 鉴权，保存正文到 `raw/wechat/`，追加到 `config.pending_items`，触发 worker
-  - WechatSource：从 `pending_items` 读取推送条目，按 `pushed_at` 精确过滤，`extract_text` 直接解码纯文本
-  - 微信 source 卡片新增"查看配置"入口 → `/sources/[id]` 详情页（连接配置 + 快捷指令指南 + 扩展占位）
-  - `GET /api/sources/{id}` 单条查询端点
-  - **待改进（最后处理）**：快捷指令的分发体验还有很大改进空间——例如生成可一键导入的 `.shortcut` 文件、展示 QR Code 供扫码、提供分步骤截图安装说明等。当前仅提供文字配置指南，功能可用但不够友好。
-- **第八步**：反馈学习 ✅
-  - `services/feedback-worker/`：独立 FastAPI 服务（端口 8002），`POST /analyze` 接收 draft diff，difflib 计算差异，Claude Haiku 提炼偏好规则（JSON），逐条写入 `writing_memory`
-  - `POST /api/drafts/:id/feedback`：保存 `final_content`，同步调用 feedback-worker，返回 `{rules_extracted: N}`
-  - `POST /api/kb/memory/feedback` 移除 `require_auth`（内部 worker 调用无 cookie）
-  - `/settings` 页完整实现：流程节奏 / 选题方向 / 模板管理（GET/PUT/DELETE `/api/settings/templates/:name`）/ 偏好规则展示（按置信度排序 + 进度条 + 删除）
-  - 草稿历史页新增"提交定稿"折叠区：粘贴定稿 → 提交 → 显示"已学习 N 条偏好规则"
-  - **⚠️ 已知疑点**：当用户提交的定稿与草稿差异极大（几乎全文替换）时，`rules_extracted` 可能为 0。两种可能原因：① feedback-worker 未运行（连接失败被 `except Exception: pass` 静默吞掉，API 仍返回 `{ok:true, rules_extracted:0}`，无法区分）；② diff 全为增删行、Claude 无法归纳出具体可复用的偏好规则，返回 `[]`。**待改进方向**：当 diff 超过阈值（如 >70% 不同）时切换为"直接风格分析"模式，让 Claude 分析定稿本身的风格特征而非 diff；同时在 API 层区分"worker 不可达"与"worker 返回 0 条"，给前端不同的提示。
-- **第九步**：知识库浏览 ✅
-  - `GET /api/kb/nodes`：分页列表（LIMIT/OFFSET），支持文本搜索（ILIKE）和标签过滤（`tags && ARRAY[...]::text[]`），返回 `{nodes, total}`
-  - `GET /api/kb/graph/all`：全量节点 + 边，节点含 `degree`（关联边数），用于 D3 力导向图
-  - `/knowledge` 页：列表视图（2列卡片网格，搜索/标签过滤，分页）+ 图谱视图（D3 force-directed，节点大小=degree，边颜色=relation_type，支持拖拽+缩放）+ 点击节点展示右侧详情侧边栏
-  - 首页 header 新增"知识库/草稿/设置"导航链接
-  - d3 + @types/d3 已加入 `services/web/package.json`
-  - "立即运行维护"按钮调用 `POST /api/kb/maintenance/run`，后台触发三项维护任务
-- **第十步**：Obsidian 同步 ✅
-  - `write_wiki_node(node_id, user_id)`：每次节点入库后异步写入 wiki 文件（Obsidian 兼容 frontmatter + 双链格式）。**⚠️ 第十五步后已拆分为 `write_wiki_article/entity/summary()`，路径改为 `wiki/articles/`、`wiki/entities/`、`wiki/summaries/`（旧 `wiki/nodes/` 废弃）**
-  - `write_wiki_index(user_id)`：重建 `wiki/index.md`，按 type 分段列出所有节点
-  - `POST /api/kb/wiki/rebuild`（需认证）：后台重建全量 wiki 文件
-  - `GET /api/kb/wiki/status`（无需认证）：返回 `{synced_count, index_exists}`
-  - `/settings` 页新增 "Obsidian 同步" Section：显示同步状态 + "全量重建"按钮
-  - 用户可将 `user_data/default/wiki/` 目录设为 Obsidian vault 直接使用
-- **第十一步**：指令设置页 + 数据导出 ✅
-  - 新建 `/instructions` 页面，集中管理三类内容文档：选题方向 / 写作模板 / 知识库宪法（Schema）
-  - **选题方向**：改为文件存储 `config/topics.md`；`get_settings_dict()` 优先读文件，向后兼容 DB；`GET/PUT /api/settings/topics`
-  - **Schema.md**：全新实现，`GET/PUT /api/settings/schema`；默认内容包含分类体系/摘要规范/关系规则/准入标准/词汇表；文件不存在时返回默认内容（系统不中断）
-  - **数据导出**：`GET /api/settings/export`（需认证）→ `shutil.make_archive` 打包 `user_data/default/` → 返回 `knowledgebase-export.zip`
-  - `/settings` 页重构为"系统设置"：只保留流程节奏/偏好规则/Obsidian 同步/数据导出；选题方向和模板已迁出
-  - 首页导航新增"指令设置"链接
-  - 三类文档统一落在 `user_data/default/config/`，打包导出时一并包含：
-    ```
-    config/
-      topics.md       ← 选题方向
-      schema.md       ← 知识库宪法
-      templates/      ← 写作模板
-    ```
-- **第十三步**：Explorer 资源管理器视图 + 文件管理 API ✅
-  - `/knowledge` 页新增第三视图"资源管理器"，左侧树 + 右侧内容面板布局
-  - `services/api/routers/files.py`（新文件）：
-    - `GET /api/files/tree`：扫描 `user_data/{user_id}/`，返回 raw（按 source type 分组，关联 node_id）/ wiki / config 三区树结构
-    - `GET /api/files/content?rel_path=...`：读取 wiki/ 或 config/ 下的 md 文件（路径遍历保护）
-    - `PUT /api/files/content`：写入 wiki/ 或 config/ 下的 md 文件
-  - `DELETE /api/kb/nodes/{node_id}`（新端点，需认证）：删除 wiki node md + knowledge_edges + knowledge_nodes 记录（**不删 raw 原始文件**，raw 独立管理）
-  - `ExplorerPanel` 组件：可折叠树，原始文件支持删除（✕ 按钮），md 文件点击后在右侧 `FilePanel` 查看/编辑
-  - `FilePanel` 组件：查看（`<pre>` 展示）/ 编辑（textarea + 保存）两种模式，占据资源管理器右侧全部剩余空间
-
-- **第十四步**：`/knowledge` 页重构为四面板 IDE 式布局 ✅
-  - 移除三视图 Tab 切换器，改为四面板同时常驻：资源管理器（左）/ Wiki 查看器（中上）/ 图谱（中下）/ 卡片列表（右）
-  - **面板尺寸可拖拽**：`ResizeHandle` 组件 + `startDrag()` 辅助函数，拖动时设置 `document.body.style.cursor/userSelect`，三条分隔线分别控制左宽/右宽/图谱高
-  - **中央同步**：`selectedNodeId: string | null` 为唯一同步状态；`selectNode(id)` 统一入口（异步加载 `NodeDetail`，同时清除 `openFile`）；`clearSelection()` 重置所有面板
-  - **图谱增强**：
-    - `zoomRef`（D3 zoom behavior）+ `simNodesRef`（SimNode 数组）跨 effect 共享
-    - 独立 `useEffect([selectedNodeId, graphData])`：更新节点颜色（选中红/邻居保持原 type 色加亮/其余按 object_type 着色+暗化）、边透明度、自动平移居中（`zoomIdentity.translate().scale(2)` + 600ms 过渡）
-    - `Esc` 键全局监听 → `clearSelection()`
-  - **卡片列表**：`data-node-id` 属性 + `containerRef.current.querySelector()` + `scrollIntoView`，`refreshToken` prop 触发原地刷新（保留搜索条件）
-  - **资源管理器**：Wiki 文件 ✕ 删除按钮 → `DELETE /api/kb/nodes/{id}`（联动删 wiki 文件+DB+边，**不删 raw**）；Config 文件 ✕ → `DELETE /api/files/content`（仅删文件）；删除后调用 `loadGraph()` + 列表刷新
-  - `DELETE /api/files/content?rel_path=...`（新后端端点）：限定 `wiki/` 或 `config/` 前缀，路径遍历保护，供 config 模板文件删除使用
-
-- **第十五步**：Article/Entity/Summary 三类对象架构重构 ✅
-  - `knowledge_nodes` 表扩列：`abstract`（原 `summary` 改名）、`object_type`（'article'|'entity'|'summary'）、`source_node_ids`、`summary_of`、`canonical_name`、`aliases`、`updated_at`
-  - 新增 `entity_candidates` 表（JSONB `mentions` 字段，记录每个候选在哪些 article 里出现过及显著度）
-  - wiki 目录结构：`wiki/nodes/` → `wiki/articles/` + `wiki/entities/` + `wiki/summaries/`（id 前缀 `art_`/`ent_`/`sum_`）
-  - ingestion pipeline 全面重写为两步流程：① `analyze_article`（Claude 输出 abstract + tags + entity 候选列表）→ ② `process_entity_candidates`（upsert 候选池 + 晋升判定 + 生成 entity 页 + wikilink 回灌）
-  - entity 三层发现机制：LLM 识别 → 候选池积累 → 阈值晋升（`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`）
-  - `backfill_wikilinks_for_entity(entity_id)`：晋升时回扫所有旧 article wiki 文件，在正文第一次出现处注入 `[[ent_id|原文字面]]`，同步写入 `knowledge_edges(relation_type='wikilink')`
-  - 新 API 端点：`GET /api/kb/entity_candidates/analyze_context`、`POST /api/kb/entity_candidates/process`、`POST /api/kb/entities/{id}/backfill_wikilinks`
-  - `maintenance.py` 新增：`promote_entity_candidates`、`backfill_wikilinks_for_entity`、`cleanup_orphan_entities`；`run_maintenance` 新增 wikilink 全量回灌循环
-  - 前端 /knowledge ExplorerPanel 改为三段树（articles/entities/summaries）；D3 图谱节点按 `object_type` 着色（article=#3b82f6, entity=#10b981, summary=#f59e0b）；WikiPanel 显示 `object_type` 徽章
-  - **已知坑**：`databases` 库不支持 `:param::type` 语法，JSONB/数组参数必须用 `CAST(:param AS type)`；`ALTER TABLE ADD COLUMN` 必须在 `CREATE INDEX` 之前；重命名迁移需检测两列均存在时改为 DROP 旧列
-  - dev 环境维护任务：`docker compose exec api python maintenance.py`（api 容器挂载了源码 volume）
-
-- **raw 数据解耦 + 容量管理** ✅
-  - `DELETE /api/kb/nodes/{id}` 不再删除 raw 原始文件，raw 与节点生命周期彻底解耦
-  - `trim_raw_files(user_id)`：每次 ingest 后以后台任务运行，扫描 `raw/` 目录按 mtime 升序，总大小超过 512 MB 时从最旧文件开始删除
-  - `GET /api/settings/export/no-raw`：新增导出端点，使用 `zipfile` 逐文件打包，跳过 `rel.parts[0] == "raw"` 的条目
-  - `/settings` 页数据导出区块改为两个按钮：主按钮"不含原始文件"，次按钮"含原始文件"
-  - 首页简报卡片支持点击展开/收起完整描述（`TopicCard` 组件，`expanded` 本地状态，▼/▲ 指示）
-  - 草稿生成模板下拉从硬编码 `TEMPLATES` 改为动态读取 `GET /api/files/tree` 的 `config` 数组
-
-- **修正：Wiki 正文改为全量原文** ✅
-  - `pipeline.py` `write_wiki_node()` 正文由 150 字 summary 改为 `extract_text()` 完整输出（`text`）
-  - `kb.py` `write_wiki_node()`（相似边建立后重写 wiki）改为读取已有文件保留正文，只更新 YAML 头和关联节点区块；若文件不存在则兜底用 summary
-  - summary 继续存入 DB 用于 embedding，完全不写入 wiki，用户不可见
-  - wiki 生成不受用户 config（schema.md、模板）控制，完全自动
-
-- **部署修复（AWS VPS）** ✅
-  - `docker-compose.yml` 新增 api 服务 healthcheck（Python urllib 探针 `GET /api/health`，interval 5s / retries 12 / start_period 10s）
-  - `ingestion-worker`、`summarizer-worker`、`feedback-worker` 的 `depends_on: api` 从 `service_started` 升级为 `condition: service_healthy`，解决 uvicorn 启动竞态导致的 `ConnectError`
-  - **VPS 首次部署须知**：必须先 `make build-dev` 再 `make dev`；跳过 build 直接 up 会拉取 GHCR 生产镜像（无 `next` 二进制），导致 web 容器 restart loop（`sh: next: not found`）
-
-- **标题提取优化** ✅
-  - `pipeline.py` 新增 `_infer_title_from_text(text)`：优先提取第一个 Markdown 标题（`# ...`），其次取首个短行（≤80字，不以句末标点结尾），兜底截断首行至80字
-  - 文件型 source（image/plaintext）：pipeline 在 `extract_text()` 后检测标题仍为文件名 stem 时，自动调用上述函数推断更好的标题
-  - `pdf.py`：`extract_text()` 内优先读 `doc.metadata["title"]`（PyMuPDF），有值则直接更新 `raw.title`，再进行 LLM 清洗
-  - `word.py`：`extract_text()` 内优先读 `doc.core_properties.title`，为空则找第一个 Heading 样式段落，更新 `raw.title`
-  - RSS / URL / WeChat 标题来源不变（已有完整 metadata）
-
-- **选题重新生成** ✅
-  - `POST /api/briefing/generate?force=true`：删除今日已有选题，从最近 `hours_back` 小时完整窗口重新生成（不走增量逻辑）
-  - 默认 `force=false` 行为不变（首次全量，再次增量）
-  - `/instructions` 页「选题方向」保存成功后出现橙色按钮「用新方向重新生成今日选题」，调用 `force=true`，完成后显示「✓ 已生成 N 条新选题」
-
-- **第十二步**：Maintenance Worker ✅
-  - `services/api/maintenance.py` 实现三项维护任务：
-    - **孤岛检测** `fix_islands()`：查找无任何边的节点（最多 20 个），找 top-3 相似节点（similarity > 0.55），调用 Claude Haiku 分析关系，confidence ≥ 0.70 则建边（created_by = 'auto_llm'）
-    - **补边** `supplement_edges()`：找仅有 similar_to 边且无 auto_llm 边的节点对（最多 20 对，按 weight DESC），LLM 分析是否存在更精确关系（excludes none/similar_to），confidence ≥ 0.70 则新增边
-    - **矛盾发现** `detect_contradictions()`：找 similar_to 边 weight 0.75~0.92 的节点对（最多 10 对），LLM 判断是否矛盾，confidence ≥ 0.75 则建 contradicts 边
-  - `analyze_relation()`：Claude Haiku 单次调用，返回 `{relation, direction, confidence}`，方向 a_to_b/b_to_a/symmetric
-  - `upsert_llm_edge()`：插入前检查 (from, to, type) 是否已存在，避免重复
-  - `run_maintenance(user_id)`：顺序执行三任务，返回汇总 dict；不调用 `database.init()`（API 模式已连接）
-  - `__main__` 入口：`database.init()` + `asyncio.run(run_maintenance())`，支持 Docker 独立运行
-  - `POST /api/kb/maintenance/run`（需认证）：从 stub 改为实际触发，`background_tasks.add_task(run_maintenance, USER_ID)`
-  - `/knowledge` 页"立即运行维护"按钮：从 stub 改为调用 API，显示"维护中…" → "维护已触发，后台运行中"
-  - LLM 模型：`claude-haiku-4-5-20251001`（低成本，每次维护最多调用 ~50 次）
-
-### 现有目录结构
-
-```
-KnowledgeBase-S/
-├── docker-compose.yml          # API 含 INGESTION_WORKER_URL + FEEDBACK_WORKER_URL; workers expose 8001/8002
-│                               # api/ingestion-worker/feedback-worker 均挂载 ./config:/app/shared_config:ro
-│                               # api 服务含 healthcheck（Python urllib 探针）；三个 worker depends_on api: service_healthy
-├── docker-compose.dev.yml      # dev 覆盖（同上挂载）
-├── .env.example                # 含 OPENAI_API_KEY
-├── Makefile / deploy.sh
-├── config/
-│   ├── prompts.md              # 所有内部 LLM 提示词（开发者编辑，重启容器生效）
-│   │                           # 8个 section：image_ocr / image_cleanup / pdf_cleanup /
-│   │                           # abstract（原 summarize，改名）/ article_analysis / entity_page /
-│   │                           # feedback_analysis / briefing_topics
-│   │                           # 动态占位符用 <<<key>>> 语法，由 prompt_loader.fill() 替换
-│   │                           # abstract section 规定摘要风格（"3-5句完整中文句子"）；代码侧 max_tokens=1024
-│   └── image_processing.toml  # 图片处理参数（开发者编辑，重启容器生效）：
-│                               # max_dim=7800（宽度安全上限）
-│                               # tile_h=7000（切片高度）、overlap=200（切片重叠）
-│                               # tile_scale=0.5（发送前等比缩放，控制 token 消耗）
-├── nginx/nginx.conf
-├── scripts/backup.sh, restore.sh
-└── services/
-    ├── api/                    # FastAPI + Python 3.12
-    │   ├── requirements.txt    # fastapi, uvicorn, asyncpg, databases, python-jose,
-    │   │                       # httpx, openai, anthropic, python-multipart
-    │   ├── main.py             # auth 端点 + 注册所有 routers
-    │   ├── auth.py             # JWT（python-jose），单用户密码比对
-    │   ├── database.py         # 建表（8张）+ entity_candidates 表 + jsonb() 辅助
-    │   │                       # init() 幂等执行 schema；自动检测 summary/abstract 列状态：
-    │   │                       #   只有 summary → RENAME TO abstract
-    │   │                       #   两列都有 → DROP summary（重命名中途失败的恢复路径）
-    │   │                       #   只有 abstract → no-op
-    │   │                       # ⚠️ ALTER TABLE ADD COLUMN 必须先于 CREATE INDEX，否则旧表报 UndefinedColumnError
-    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md；get(name) / fill(name, **kw)
-    │   ├── scheduler.py        # 空壳
-    │   ├── config_loader.py    # 读 /app/shared_config/system.yaml；get('section.key', default)
-    │   ├── maintenance.py      # 维护任务：
-    │   │                       # fix_islands / supplement_edges / detect_contradictions（保留，LLM分析）
-    │   │                       # promote_entity_candidates()：扫 entity_candidates，晋升达标候选
-    │   │                       # backfill_wikilinks_for_entity(entity_id, user_id)：
-    │   │                       #   回扫所有 wiki/articles/ 正文，注入 [[ent_id|原文]] 并写 edges
-    │   │                       # cleanup_orphan_entities()：source_node_ids=[] 的 entity 标记清理
-    │   │                       # aggregate_index_abstracts(user_id)：
-    │   │                       #   自底向上聚合 index 节点 abstract（index_summary prompt）
-    │   │                       # rebuild_from_raw(user_id)：8步全量重建
-    │   │                       # restore_from_wiki(user_id)：postgres 丢失时从 wiki 文件重建 DB
-    │   │                       # run_maintenance(user_id)：顺序执行所有任务
-    │   │                       # standalone: docker compose exec api python maintenance.py [cmd]
-    │   │                       #   cmds: rebuild_from_raw | restore_from_wiki | aggregate_index_abstracts
-    │   └── routers/
-    │       ├── sources.py      # CRUD + GET /{id} + /wechat/ingest(push) + /{id}/fetch
-    │       │                   # /{id}/upload + /{id}/add-url；is_primary 可 PUT 切换
-    │       ├── kb.py           # /api/kb/ingest（支持 object_type=article|index|entity|summary）
-    │       │                   # search（支持 ?type= 过滤）, node（含 wiki_body 字段）
-    │       │                   # nodes（支持 ?type= 过滤）, graph, graph/all
-    │       │                   # memory, wiki/rebuild, wiki/status
-    │       │                   # /maintenance/run（触发 run_maintenance 后台任务）
-    │       │                   # DELETE /api/kb/nodes/{id}（删 wiki文件+边+DB，不删 raw 原始文件）
-    │       │                   # GET /api/kb/entity_candidates/analyze_context（查近邻 entity + top 候选）
-    │       │                   # POST /api/kb/entity_candidates/process（upsert 候选 + 晋升判定）
-    │       │                   # POST /api/kb/entities/{id}/backfill_wikilinks（回灌 wikilink）
-    │       │                   # POST /api/kb/nodes/{id}/create_summary（多视角 summary，body: {perspective?}）
-    │       │                   # trim_raw_files(user_id)：ingest 后台任务，raw/ 超 512MB 从旧删
-    │       ├── files.py        # GET /api/files/tree（四段树：raw/wiki/config；wiki 段返回 articles/indices/entities/summaries）
-    │       │                   # GET/PUT /api/files/content（wiki/config md 读写）
-    │       │                   # DELETE /api/files/content?rel_path=...（删除 wiki/config 文件）
-    │       │                   # 注：wiki 节点优先通过 DELETE /api/kb/nodes/{id} 删除（联动 DB）
-    │       ├── briefing.py     # GET /api/briefing, POST /api/briefing/generate（仅 is_primary 节点）
-    │       │                   # ?force=true：删今日选题后从完整 hours_back 窗口重新生成（写作方向变更时用）
-    │       │                   # 提示词从 prompt_loader.fill("briefing_topics", ...) 读取
-    │       ├── settings.py     # GET/PUT /api/settings（流程节奏）
-    │       │                   # GET/PUT /api/settings/topics（选题方向，文件存储）
-    │       │                   # GET/PUT /api/settings/schema（知识库宪法，文件存储）
-    │       │                   # GET/PUT/DELETE /api/settings/templates/:name
-    │       │                   # GET /api/settings/export（完整打包 user_data zip，含 raw/）
-    │       │                   # GET /api/settings/export/no-raw（打包 zip，排除 raw/ 目录）
-    │       └── drafts.py       # POST /api/drafts/generate, GET /api/drafts, GET /api/drafts/{id}
-    │                           # POST /api/drafts/:id/feedback（定稿提交 → feedback-worker）
-    ├── feedback-worker/        # FastAPI + uvicorn（端口 8002）
-    │   ├── Dockerfile
-    │   ├── requirements.txt    # anthropic, httpx, fastapi, uvicorn
-    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
-    │   └── main.py             # POST /analyze：difflib diff + Claude Haiku → 规则提炼 → writing_memory
-    │                           # 提示词从 prompt_loader.fill("feedback_analysis", ...) 读取
-    ├── ingestion-worker/       # fastapi + uvicorn（端口 8001）用于 HTTP trigger server
-    │   ├── requirements.txt    # fastapi, uvicorn[standard], anthropic, openai, Pillow, pymupdf,
-    │   │                       # ebooklib>=0.18（EPUB 解析）, mobi>=0.3.3（MOBI 解析）, beautifulsoup4 等
-    │   ├── main.py             # 循环模式（subscription only）+ HTTP trigger server + --once
-    │   ├── pipeline.py         # 两步流程：① analyze_article（Claude）→ ② process_entity_candidates
-    │   │                       # analyze_article(): 调用 article_analysis 提示词；输出 abstract+tags+entities 候选列表
-    │   │                       # generate_entity_page(): 晋升候选 → Claude entity_page 提示词 → ent_{id}.md
-    │   │                       # run_book_pipeline(): EPUB/MOBI 入库；建 index 节点 + 多 article 子节点；
-    │   │                       #   对每章调用 write_wiki_article(title_override=ch.title, source_type_override='book_chapter')
-    │   │                       # write_wiki_article(): title_override/source_type_override 可选参数（书籍章节用）
-    │   │                       # newly_promoted_entity_ids: 摄入中晋升的 entity id 列表，摄入末尾触发 backfill_wikilinks
-    │   │                       # wikilink 回灌必须在 write_wiki_article() 之后（文件需先存在）
-    │   │                       # 确定性 ID：make_article_id(raw_path) / make_entity_id(user_id, name) / make_index_id(raw_path)
-    │   │                       # _infer_title_from_text()：文件型 source 标题仍为 stem 时，从正文提取（# 标题 > 短首行 > 首行截断）
-    │   ├── prompt_loader.py    # 读 /app/shared_config/prompts.md
-    │   └── sources/
-    │       ├── base.py         # BaseSource + RawItem
-    │       ├── rss.py          # RSSSource（subscription）✅
-    │       ├── url.py          # URLSource（manual，trafilatura）✅
-    │       ├── file_base.py    # FileSourceMixin（文件型共用 fetch 逻辑）✅
-    │       ├── plaintext.py    # PlaintextSource（直接读取 UTF-8）✅
-    │       ├── pdf.py          # PDFSource（PyMuPDF + Claude Haiku 清洗）✅
-    │       │                   # 两步：① PyMuPDF 提取 ② Claude 清洗噪音（pdf_cleanup 提示词）
-    │       │                   # extract_text() 内优先读 doc.metadata["title"] 更新 raw.title
-    │       ├── image.py        # ImageSource（Claude Vision OCR + AI 清洗）✅
-    │       │                   # 尺寸处理（参数从 config/image_processing.toml 读取）：
-    │       │                   #   宽>MAX_DIM(7800) → 等比缩小（安全兜底）
-    │       │                   #   高>MAX_DIM(7800) → 按 TILE_H(7000)/OVERLAP(200) 切片分段识别
-    │       │                   #   每片/整图发送前按 TILE_SCALE(0.5) 等比缩放降低 token 消耗
-    │       │                   # 两步：① OCR 转录（image_ocr 提示词）② Claude 清洗（image_cleanup 提示词）
-    │       │                   # 异常用 logger.exception() 记录，不静默吞掉
-    │       ├── word.py         # WordSource（python-docx）✅
-    │       │                   # extract_text() 内优先读 core_properties.title，其次找首个 Heading 样式段落
-    │       ├── book.py         # BookSource（EPUB/MOBI）✅；ebooklib/mobi 解析；
-    │       │                   # 词数>chunk_trigger_words 且章节数>1 → index+article 切分
-    │       │                   # 否则整体建单一 article；source_type='book'
-    │       └── wechat.py       # WechatSource（push 型，读 pending_items）✅
-    ├── summarizer-worker/
-    │   └── main.py             # 调用 POST /api/briefing/generate，定时或 --once
-    └── web/                    # Next.js 14 + Tailwind + dnd-kit + d3
-        ├── middleware.ts       # cookie 鉴权
-        └── app/
-            ├── login/page.tsx  # 登录页
-            ├── page.tsx        # 首页三栏：文章列表/已选选题(可拖拽)/草稿生成面板
-            ├── drafts/page.tsx # 草稿历史列表 + 点击查看/编辑/复制 + 提交定稿反馈
-            ├── sources/page.tsx      # Source 管理（自动抓取/手动管理 Tab，is_primary 切换）
-            ├── sources/[id]/page.tsx # Source 详情页（微信：连接配置 + 快捷指令指南）
-            ├── knowledge/page.tsx    # 四面板 IDE 式布局（单文件，无子路由）：
-            │                         # ExplorerPanel（左，可折叠树+删除）
-            │                         #   wiki 段四节：articles/ indices/ entities/ summaries/；config/templates/
-            │                         # WikiPanel（中上，节点详情+object_type徽章+abstract+wiki全文+文件编辑）
-            │                         # D3 图谱（中下，力导向图+节点按 object_type 着色+高亮+自动居中）
-            │                         #   article=#3b82f6, index=#8b5cf6, entity=#10b981, summary=#f59e0b
-            │                         #   part_of 边：粗实线；summarizes：黄虚线；co_occurs_with：绿点线；similar_to：细灰虚线
-            │                         #   顶部边类型过滤复选框
-            │                         # ListPanel（右，搜索/过滤/分页/自动滚动，支持 type 过滤）
-            │                         # 三条分隔线支持鼠标拖拽调整面板大小
-            │                         # selectedNodeId 为中央同步状态；Esc 取消选中
-            │                         # wiki/config 文件可从资源管理器删除；
-            │                         # 删除 wiki 节点后图谱+列表同步刷新
-            ├── instructions/page.tsx # 指令设置：选题方向 + 写作模板卡片列表 + Schema 编辑（含警告）
-            │                         # 选题方向保存后出现「用新方向重新生成今日选题」按钮（调用 force=true）
-            └── settings/page.tsx     # 系统设置：流程节奏 + 偏好规则 + Obsidian 同步 + 数据导出
-```
-
-### 数据库表（8张）
+## 4. 知识模型
+
+### 4.1 一等对象
+
+当前系统中已经落地的 `object_type` 有 4 种：
+
+| object_type | 含义 | 典型来源 |
+| --- | --- | --- |
+| `article` | 原始内容对应的知识条目 | RSS、微信、URL、PDF、图片、文本、Word、书籍章节 |
+| `entity` | 被多篇文章反复提及的重要概念/人物/组织/事件 | 从文章分析结果晋升得到 |
+| `summary` | 对 article 或 index 的摘要节点 | 摄入时自动生成，或手动按视角生成 |
+| `index` | 层级容器节点 | 主要用于书籍/章节结构 |
+
+### 4.2 `knowledge_nodes`
+
+核心表是 `knowledge_nodes`，重要字段如下：
+
+- `id`
+- `user_id`
+- `title`
+- `abstract`
+- `embedding`
+- `source_type`
+- `source_id`
+- `raw_ref`
+- `tags`
+- `is_primary`
+- `object_type`
+- `source_node_ids`
+- `summary_of`
+- `canonical_name`
+- `aliases`
+- `perspective`
+- `priority_score`
+- `last_accessed_at`
+- `access_count`
+- `created_at`
+- `updated_at`
+
+注意：
+
+- 系统已经把旧字段 `summary` 迁移为 `abstract`
+- `abstract` 是检索主字段，绝大多数向量都基于它生成
+- `summary_of` 只对 `summary` 节点有意义
+- `canonical_name` / `aliases` 只对 `entity` 节点有意义
+- `perspective` 已经加到 schema，但当前主要用于手动多视角摘要
+
+### 4.3 当前边类型
+
+代码里真正使用到的边类型包括：
+
+| relation_type | 来源 |
+| --- | --- |
+| `similar_to` | 入库后基于 embedding 自动建立 |
+| `mentions` | entity 回灌 / wikilink 迁移 / restore_from_wiki |
+| `summarizes` | summary 指向 article 或 index |
+| `part_of` | 书籍章节挂到 index |
+| `extends` | maintenance 的 LLM 补边 |
+| `background_of` | maintenance 的 LLM 补边 |
+| `supports` | maintenance 的 LLM 补边 |
+| `contradicts` | maintenance 的 LLM 补边 |
+
+重要说明：
+
+- `multi-layer-plan.md` 里“移除 LLM 语义边”的目标 **尚未完全落实**
+- `maintenance.py` 仍然会生成 `extends/background_of/supports/contradicts`
+- `co_occurs_with` 在配置和前端颜色里预留了位置，但 **后端尚未实现**
+- 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
+
+### 4.4 其他表
+
+当前 schema 里还包含：
 
 | 表 | 用途 |
-|----|------|
-| `knowledge_nodes` | article/index/entity/summary 四类对象共用；含 `object_type`、`abstract`、`canonical_name`、`aliases`、`source_node_ids`、`summary_of`、`perspective`、`priority_score` 字段 |
-| `entity_candidates` | entity 候选池；`mentions` JSONB 记录每篇 article 的显著度；晋升后 `promoted_entity_id` 置位 |
-| `knowledge_edges` | 节点关系图；8 种 relation_type（part_of/summarizes/mentions/similar_to/co_occurs_with）；含 `description TEXT` 字段 |
-| `writing_memory` | 写作偏好规则 |
-| `sources` | 订阅源配置 |
-| `drafts` | 草稿记录 |
-| `briefings` | 每日简报（按 user_id+date 唯一） |
-| `user_settings` | 用户设置（briefing_hours_back, briefing_time 等；topics 已迁到 config/topics.md） |
+| --- | --- |
+| `entity_candidates` | entity 候选池，累计 mentions / salience |
+| `knowledge_edges` | 节点关系 |
+| `writing_memory` | 从草稿修改中学到的写作偏好 |
+| `sources` | 渠道配置 |
+| `topics` | 每日选题 |
+| `drafts` | 生成草稿与用户定稿 |
+| `user_settings` | 简报窗口、简报时间等设置 |
+| `briefings` | 已建表，但 **当前基本未被业务使用** |
+| `chat_sessions` | 聊天会话 |
+| `chat_messages` | 聊天消息 |
 
-### 关键约定
+---
 
-- **四类对象**：`object_type` 取值 `'article'|'index'|'entity'|'summary'`，id 前缀分别 `art_`/`idx_`/`ent_`/`sum_`。Index 是层级容器（代表书、专题集），通过 `part_of` 边聚合子 article/index。
+## 5. Source 体系
 
-- **确定性 ID**：文件型 article/index 用 `sha256(raw_path)[:16]` 生成（`art_`/`idx_` 前缀）；entity 用 `sha256(user_id:canonical_name)[:16]`（`ent_` 前缀）。手动创建节点（`source_type='manual'`）保留随机 ID，`rebuild_from_raw` 不触碰。
+### 5.1 已支持的 source 类型
 
-- **Config 外部化**：所有数值参数（阈值、top_k、token 上限、模型名）均在 `config/system.yaml` 中配置，挂载到所有容器 `/app/shared_config/system.yaml`；由 `config_loader.py` 的 `get('section.key', default)` 读取。修改参数后重启容器生效；若要影响历史内容需执行 `rebuild_from_raw`。
+| 类型 | fetch_mode | 当前实现 |
+| --- | --- | --- |
+| `rss` | `subscription` | `feedparser` 拉 feed，`trafilatura` 抽正文 |
+| `wechat` | `push` | iPhone 快捷指令 POST 到 `/api/sources/wechat/ingest` |
+| `url` | `manual` | 当前实际抓取 `config.url` 指向的单个 URL |
+| `pdf` | `manual` | 上传文件，PyMuPDF 提取文本后再用 Claude 清洗 |
+| `image` | `manual` | 上传图片，Claude Vision OCR + 清洗 |
+| `plaintext` | `manual` | 上传 `.txt/.md` |
+| `word` | `manual` | 上传 `.doc/.docx`，用 `python-docx` 提取 |
+| `epub` | `manual` | 上传 `.epub/.mobi/.azw3`，走 BookSource |
 
-- **HyDE 检索**：`retrieval.use_hyde: true` 时，RAG 阶段先用 `hyde_abstract` prompt（Haiku）生成假设摘要，embed 后检索，精度优于直接 embed 选题文字。通过 system.yaml 开关。
+### 5.2 `is_primary` 的当前语义
 
-- **8 种边类型**（移除了原有 LLM 语义边）：
-  - 结构性（weight=1.0）：`part_of`（article/index→index）、`summarizes`（summary→article/index）
-  - 内容引用（weight=salience）：`mentions`（article/summary→entity，weight = `article_analysis` 返回的 salience，**非硬编码 1.0**）
-  - 统计相似：`similar_to`（cosine≥0.75）、`co_occurs_with`（entity 共现，weight=`log(1+n)/log(1+max_n)`）
-  - 已彻底移除：`contradicts`/`supports`/`extends`/`background_of`/`wikilink`
+`is_primary` 很重要，但当前只在部分流程中生效：
 
-- **`rebuild_from_raw` 命令**：`docker compose exec api python maintenance.py rebuild_from_raw`。幂等（确定性 ID 保证多次结果一致）；Step1 清空自动内容→Step2 扫描 raw→Step3 逐文件 ingestion→Step4 entity 候选→Step5 default summary→Step6 index abstract rollup→Step7 统计边→Step8 报告。
+- **简报/选题生成**：只看 `is_primary = true` 的 `article`
+- **知识入库**：source 的 `is_primary` 会继承到 node
+- **草稿检索**：当前 `layered_retrieval()` **不会过滤** `is_primary`
 
-- **Index abstract 聚合**：`maintenance.py aggregate_index_abstracts()`；从叶 article 向上逐层用 `index_summary` prompt 聚合；聚合后 abstract 存 DB 并更新 wiki 文件，参与 embedding 检索。
+因此现状是：
 
-- **databases 库的类型转换问题（两种场景）**：
-  - 向量/日期等标量：`::vector`、`::date`、`::timestamptz` 仍用 f-string 内联，不走 `:param` 绑定；`<=>` 向量运算符用 asyncpg 原生接口（`conn.raw_connection.fetch`）。
-  - **JSONB / 数组参数（新增坑）**：`:param::jsonb` 或 `:param::text[]` 在 `databases` 库中会报 `ArgumentError`（SQLAlchemy text() 无法解析 `::` 语法）。**必须改用 `CAST(:param AS jsonb)` / `CAST(:param AS text[])`**。影响所有含 `mentions`、`entry`、`aliases` 等 JSONB/数组列的 UPDATE/INSERT 语句。
-- **schema 迁移顺序**：`ALTER TABLE ADD COLUMN` 必须出现在 `CREATE INDEX ON ... (new_col)` **之前**；否则对已存在旧表（缺新列）执行时报 `UndefinedColumnError`。
-- **列重命名幂等**：检测 `summary`/`abstract` 两列是否存在，三条路径：① 只有 `summary` → `RENAME`；② 两列都存在 → `DROP summary`；③ 只有 `abstract` → no-op。
-- **entity 晋升阈值**：`max_salience >= 0.9` OR `(salience >= 0.7 AND mentions >= 2)` OR `mentions >= 3`。`promoted_entity_id IS NOT NULL` 则跳过，不重复晋升。
-- **wikilink 回灌时机**：`backfill_wikilinks_for_entity()` 必须在 `write_wiki_article()` 完成后调用（文件须先存在），否则找不到 article 文件注入链接。
-- **maintenance 任务 dev 运行方式**：`docker compose exec api python maintenance.py`（api 容器在 dev 模式下挂载了 `./services/api:/app`，直接用源码）。生产镜像无 volume mount，不能直接 exec。
-- **数据库密码**：`.env` 中 `DB_PASSWORD` 与 `DATABASE_URL` 里密码必须一致；重置时删除 `./data/postgres/`。
-- **nginx**：挂载到 `/etc/nginx/conf.d/default.conf`。
-- **Auth**：HttpOnly cookie `token`，JWT 7天，`AUTH_SECRET` 签名。
-- **Embedding**：OpenAI text-embedding-3-small，1536 维，对 `abstract` 字段做 embedding（非原文，非 wiki body）。
-- **USER_ID**：固定 `"default"`，单用户。
-- **手动触发方式**：
-  ```bash
-  # ingestion
-  docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-    run --rm ingestion-worker python main.py --once
-  # 简报生成
-  curl -X POST http://localhost/api/briefing/generate -b /tmp/kb_cookies.txt
-  ```
-- **本地开发（Docker Desktop，无需 sudo）**：
-  - 首次或修改 Dockerfile 后：`make build-dev`（用 dev compose 覆盖构建，包含 `target: dev`）
-  - 日常启动：`make dev`
-  - Postgres 数据：使用 named volume `postgres_dev`（非 bind mount），避免 Docker Desktop 权限问题
-  - web node_modules：dev Dockerfile 将 `node_modules` 移至 `/node_modules`（容器根目录），不受 `./services/web:/app` bind mount 覆盖影响
-  - `.next` 构建缓存：named volume `web_next`，不污染宿主机目录
-  - 若 `next: not found`：说明用了旧缓存镜像，执行 `docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache web`
+- 主要来源会进入“今日选题”
+- 参考来源不会生成今日选题
+- 但两者都可能参与后续 RAG 写作检索
 
-- **web 新增 npm 包后**：
-  1. 在宿主机 `services/web/` 下运行 `npm install --package-lock-only` 更新 `package-lock.json`，并提交到 git
-  2. 重建时加 `--no-cache`：`make build-dev` 或 `docker compose ... build --no-cache web`
-  3. 直接在运行中容器内安装也可：`docker compose ... exec web npm install`
+### 5.3 已知实现偏差
 
-- **VPS 部署**：已迁移至 AWS VPS（原 Aliyun HK AS45102 对 Anthropic API 返回 403，已废弃）。AWS VPS 首次部署必须先 `make build-dev` 再 `make dev`，否则 web 容器因使用生产镜像（无 `next` 二进制）进入 restart loop。
+- 前端和 API 提供了 “给 URL source 批量追加 URL” 的能力（`pending_urls`）
+- 但 `ingestion-worker/sources/url.py` 当前只读取 `config.url`
+- 也就是说，**URL 队列接口目前未完整打通**
 
-- **文件去重**：`file_base.py` 用文件 mtime 与 `last_fetched_at` 比较（`mtime <= last_fetched_at` 则跳过），精确到秒，避免同日重复处理；`kb.py/ingest` 在写入前按 `raw_ref->>'path'` 去重，避免同一文件重复入库。
+---
 
-- **⚠️ Docker volume 风险**：运行 `docker compose up -d <单个服务>` 时，如果没有带 dev overlay（`-f docker-compose.yml -f docker-compose.dev.yml`），可能导致 `postgres_dev` named volume 被重建（数据全丢）。**始终使用完整命令**：`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`。如需单独重启某服务，指定服务名附在末尾即可：`... up -d api`。
+## 6. 摄入与知识生成
 
-- **postgres 数据丢失恢复**：`maintenance.py` 新增 `restore_from_wiki(user_id)` 函数，从 `wiki/{articles,entities,summaries,indices}/` 目录扫描 `.md` 文件重建 `knowledge_nodes` + `knowledge_edges`。恢复内容：
-  - 节点：解析 YAML frontmatter + body，生成 embedding，写入 DB（跳过已有 id）
-  - 为每种 `source_type` 创建占位 `sources` 行（避免外键约束失败）
-  - 边（三类）：`summarizes`（from `summary_of` frontmatter）、`part_of`（from `relations` frontmatter）、`mentions`（正则扫描 body 中 `[[ent_*/nod_*|...]]` wikilink）
-  - **不能恢复**：`similar_to`/`extends`/`background_of`/`contradicts` 语义边（需重跑 maintenance LLM 分析）
-  - 运行：`docker compose exec api python maintenance.py restore_from_wiki`
-  - YAML 解析注意：frontmatter title 含 Unicode 弯引号（`"` `"`）时 `yaml.safe_load` 报错，`restore_from_wiki` 内用 `re.sub(r'["""]', '"', fm_raw)` 预处理
+### 6.1 普通 source 的入库流水线
 
-- **书籍章节 wiki_body 修复**（`pipeline.py`）：`run_book_pipeline` 原先从未调用 `write_wiki_article`，导致 EPUB 章节节点 `wiki_body` 为空，前端只显示 LLM 摘要。修复方式：`write_wiki_article` 新增 `title_override` / `source_type_override` 可选参数；在 `run_book_pipeline` 的每章 article 创建后以 `ch.text` 为正文调用，`source_type_override="book_chapter"`。已有旧章节节点（入库时无 wiki 文件）因去重机制不会自动补写，需删除后重新上传或手动 backfill。
+`ingestion-worker/pipeline.py::run_pipeline()` 当前流程：
 
-- **D3 图谱 TypeError 防御**（`knowledge/page.tsx`）：`svgSel.selectAll("path")` / `selectAll("text")` 返回的 SVG 元素可能无 datum（`d === undefined`），直接访问 `d.object_type` 崩溃。style 回调改为 `!d || visibleNodeTypes.has(d.object_type || "article") ? null : "none"` 加空守卫。
+1. `fetch_new_items()`
+2. `extract_text()`
+3. 对文件型内容必要时从正文推断标题
+4. 保存 raw 文件
+5. 先对正文做一次 embedding，用于拿 entity 分析上下文
+6. 调 API `/api/kb/entity_candidates/analyze_context`
+7. 用 `article_analysis` prompt 生成：
+   - `abstract`
+   - `tags`
+   - `entities`
+   - `contradictions`
+   - `structural_hints`
+8. 对 `abstract` 生成 embedding
+9. 入库 `article`
+10. 再入库一个初始 `summary`
+11. 把 entity candidates 发给 API 处理
+12. 对新晋升的 entity 生成 entity page，并入库 `entity`
+13. 回灌历史 wikilinks / mentions
+14. 更新 source 的 `last_fetched_at`
+
+### 6.2 entity 候选与晋升
+
+候选逻辑已经落地，阈值来自 `config/system.yaml`：
+
+- `max_salience >= 0.9`
+- 或 `salience >= 0.7` 且 `mentions >= 2`
+- 或 `mentions >= 3`
+
+晋升后的动作：
+
+1. 拉来源文章的 abstract
+2. 调 `entity_page` prompt 生成实体页正文
+3. 入库 `entity`
+4. 写 `wiki/entities/{id}.md`
+5. 标记 `entity_candidates.promoted_entity_id`
+6. 回扫所有 article，给首次出现的实体名注入 `[[entity_id|term]]`
+7. 为 article → entity 建 `mentions` 边
+
+### 6.3 当前 summary 的两种来源
+
+代码里实际上存在两类 summary：
+
+1. **摄入时自动生成的 summary 节点**
+   - 本质上只是把 article 的 `abstract` 再存成一个 `summary`
+   - 主要是为了后续分层检索
+
+2. **手动创建的多视角 summary**
+   - API：`POST /api/kb/nodes/{id}/create_summary`
+   - 支持 `perspective`
+   - 可对 `article` 或 `index` 生成新的摘要节点
+
+### 6.4 书籍入库（index + chapter articles）
+
+`BookSource` 与 `run_book_pipeline()` 已落地：
+
+- 支持 `.epub`
+- `.mobi/.azw3` 为 best-effort
+- 每本书先创建一个 `index`
+- 每个有效章节创建一个 `article`
+- article 通过 `part_of` 边挂到 index
+- 每章也会生成一个 `summary`
+- 书籍 index 的 `abstract` 初始为空，后续由 maintenance 聚合补齐
+
+当前 book pipeline 的取舍：
+
+- 为了速度，章节分析时 **不做 entity 上下文查询**
+- 章节依然会走 entity candidate 流程
+
+---
+
+## 7. 检索与草稿生成
+
+### 7.1 分层检索已实现
+
+`services/api/routers/drafts.py::layered_retrieval()` 已经实现了多层检索，而不只是简单 top-k 向量搜索。
+
+当前阶段：
+
+1. Query embedding：支持 HyDE
+2. 三路并行向量检索：
+   - `summary`
+   - `entity`
+   - `article/index`
+3. 图上传播：
+   - entity → summary
+   - entity → article/index
+   - summary → article/index
+4. 单跳扩展：
+   - article → entity → article
+5. index 展开：
+   - 高分 index 展开其 article 子节点
+6. fallback：
+   - 若结果太少，回退到 article/index 直接向量命中
+
+### 7.2 HyDE
+
+当 `retrieval.use_hyde = true` 时：
+
+- 先用 `hyde_abstract` prompt 让 Claude 生成一段假想摘要
+- 再 embed 这段摘要而不是直接 embed 用户选题文本
+
+### 7.3 上下文装配
+
+草稿生成时：
+
+- 会排除选题直接绑定的 source articles，避免重复
+- 优先加入相关文章的 wiki 正文
+- 长度受 `retrieval.draft_knowledge_chars` 控制，当前默认 6000 字符
+- 再追加 top entities
+- 再追加 `writing_memory` 中 `confidence >= 0.8` 的规则
+- 最后把用户模板、选题、知识上下文、偏好规则一起发给 Claude Sonnet
+
+---
+
+## 8. 今日选题与写作闭环
+
+### 8.1 简报/选题生成
+
+当前负责“每日选题”的不是独立 summarizer 逻辑，而是：
+
+- API：`/api/briefing/generate`
+- Worker：`summarizer-worker` 只负责触发这个 API
+
+生成策略：
+
+- 默认模式：增量生成，只处理上次生成后新增的 primary articles
+- `force=true`：清空今日选题并按时间窗口重算
+- 时间窗口由 `briefing_hours_back` 控制
+- prompt 为 `briefing_topics`
+- 分批调用 Claude，遇到 `max_tokens` 会自动拆批重试
+
+### 8.2 草稿与反馈
+
+- 草稿保存在 `drafts`
+- 用户提交定稿后，feedback-worker 用 `difflib.unified_diff`
+- Claude 读取 diff，生成 `style/structure/content/tone` 规则
+- 规则写入 `writing_memory`
+- 相同规则重复出现时会提高 `confidence`
+
+---
+
+## 9. 前端页面
+
+当前前端不是单一首页，而是一整套工作台：
+
+| 页面 | 作用 |
+| --- | --- |
+| `/` | 视觉化 landing page |
+| `/login` | 单密码登录 |
+| `/briefing` | 今日选题、拖拽排序、直接生成草稿 |
+| `/drafts` | 草稿历史、查看、复制、提交定稿反馈 |
+| `/sources` | source 管理、主要/参考切换、上传文件、添加 URL |
+| `/sources/[id]` | 单个 source 详情，尤其是微信推送配置 |
+| `/knowledge` | 四面板知识库 IDE：资源树、wiki/detail、图谱、列表 |
+| `/instructions` | 选题方向、模板、schema 文本编辑 |
+| `/settings` | 系统节奏、偏好规则、wiki 重建、数据导出 |
+
+全局还有一个 `ChatSidebar`：
+
+- 会话持久化到 `chat_sessions` / `chat_messages`
+- SSE 流式返回 Claude
+- 目前 **不做知识库 RAG**
+
+---
+
+## 10. 维护、恢复与重建
+
+### 10.1 `run_maintenance()`
+
+当前维护任务包括：
+
+1. `migrate_wikilink_edges()`
+2. `fix_islands()`
+3. `supplement_edges()`
+4. `detect_contradictions()`
+5. `promote_entity_candidates()`
+6. `backfill_wikilinks_for_entity()` for all entities
+7. `cleanup_orphan_entities()`
+8. `backfill_summarizes_edges()`
+9. `aggregate_index_abstracts()`
+
+这说明当前系统仍然保留了较强的 LLM 图谱维护逻辑，不是纯统计图。
+
+### 10.2 `restore_from_wiki()`
+
+已实现从 `wiki/` 重建数据库：
+
+- 扫描 `articles/entities/summaries/indices`
+- 解析 frontmatter
+- 生成 embedding
+- 补建 `knowledge_nodes`
+- 尝试恢复 `summarizes` / `part_of` / `mentions`
+
+可恢复的主要是结构和可见正文，无法完整恢复所有历史推导边。
+
+### 10.3 `rebuild_from_raw()`
+
+此命令已经存在，但 **当前是部分重建，不是全源全量重建**。
+
+目前它主要重建：
+
+- `pdf`
+- `plaintext`
+- `word`
+- `image`
+- `wechat`
+
+它不会完整覆盖：
+
+- RSS
+- URL
+- 书籍 index/chapters
+
+因此它比 `multi-layer-plan.md` 里的“全 raw material 重建”目标更窄。
+
+### 10.4 scheduler 现状
+
+`services/api/scheduler.py` 当前只是一个无限 sleep 的占位脚本，**没有真正调度 ingestion / briefing / maintenance**。  
+现阶段的自动化主要依赖：
+
+- ingestion-worker 自己的轮询
+- 手动 trigger
+- 部署环境自行安排
+
+---
+
+## 11. 配置文件
+
+### 11.1 `config/system.yaml`
+
+这里是当前系统的数值配置中心，已经被 API / ingestion-worker 使用。  
+主要分区：
+
+- `ingestion`
+- `models`
+- `embedding`
+- `entity`
+- `retrieval`
+- `maintenance`
+- `briefing`
+- `llm_output_tokens`
+
+### 11.2 `config/prompts.md`
+
+当前所有主要 prompt 都集中在这里，按 `## key` 组织。  
+已被代码实际使用的 section 包括：
+
+- `image_ocr`
+- `image_cleanup`
+- `pdf_cleanup`
+- `article_analysis`
+- `entity_page`
+- `entity_update`
+- `summary_gen`
+- `feedback_analysis`
+- `briefing_topics`
+- `hyde_abstract`
+- `index_summary`
+
+### 11.3 `config/image_processing.toml`
+
+图片 OCR 专用配置：
+
+- `max_dim`
+- `tile_h`
+- `overlap`
+- `tile_scale`
+
+---
+
+## 12. 与 `multi-layer-plan.md` 的对照
+
+### 已落地
+
+- `article / entity / summary / index` 四类对象
+- 书籍 `index + article` 结构
+- `perspective` 字段
+- HyDE 检索
+- 分层 retrieval
+- index abstract 聚合
+- 确定性 ID（文件型节点和 entity）
+- `restore_from_wiki()`
+- `rebuild_from_raw()` 的部分版本
+
+### 只部分落地
+
+- 多视角 summary：API 已有，但不是所有流程都自动使用
+- rebuild：存在，但未覆盖所有 source 类型
+- wiki 作为长期可编辑知识库：正文可编辑，但 DB 与文件不是双向实时同步
+
+### 尚未完成或与计划不一致
+
+- `co_occurs_with` 没有真正实现
+- “移除 LLM 语义边” 尚未完成，maintenance 仍会生成 `extends/background_of/supports/contradicts`
+- scheduler 仍是 stub
+- URL 批量队列接口与 worker 实现未完全对齐
+- `briefings` 表已建但目前未承担核心业务
+- chat 还没有接入知识库检索
+
+---
+
+## 13. 当前最重要的事实
+
+1. 这是一个 **单用户** 系统，不是多租户 SaaS。
+2. 当前“知识库”的事实来源是 **Postgres + pgvector**，wiki 是可编辑副本与导出形态。
+3. 多层记忆架构已经实现了相当一部分，但仍处于 **计划与旧实现并存** 的状态。
+4. 若要继续演进，应优先区分：
+   - 已经是线上行为的代码
+   - 仅存在于 `multi-layer-plan.md` 的目标设计
+5. 后续修改 `MEMORY.md` 时，应优先核对：
+   - `services/api/routers/*.py`
+   - `services/ingestion-worker/pipeline.py`
+   - `services/api/maintenance.py`
+   - `config/system.yaml`
+   - `docker-compose*.yml`
