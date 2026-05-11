@@ -16,6 +16,7 @@ import anthropic
 sys.path.insert(0, os.path.dirname(__file__))
 import config_loader
 import database
+import object_nodes
 
 USER_ID = "default"
 CLAUDE_MODEL = config_loader.get("models.entity_page", "claude-haiku-4-5-20251001")
@@ -714,6 +715,11 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
             """,
             {"abstract": new_abstract, "id": idx_id},
         )
+        await object_nodes.upsert_object_node(
+            idx_id,
+            "index",
+            {"description": new_abstract, "abstract_stale": False},
+        )
 
         # 8. 刷新 wiki 文件 frontmatter（write_wiki_node 保留已有 body；
         #    首次写入时以新 abstract 作为 body）
@@ -932,6 +938,25 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "aliases": aliases,
                     "perspective": perspective,
                     "created_at": created_at,
+                },
+            )
+            await object_nodes.upsert_object_node(
+                node_id,
+                object_type,
+                {
+                    "source_item_id": None,
+                    "raw_ref": raw_ref_dict,
+                    "source_type": source_type,
+                    "tags": tags,
+                    "summary_of": summary_of,
+                    "perspective_label": perspective or "default",
+                    "perspective_instruction": perspective or "默认摘要",
+                    "body": body or abstract,
+                    "is_default": not bool(perspective),
+                    "source": {"source_node_ids": source_node_ids, "restored_from_wiki": True},
+                    "canonical_name": canonical_name,
+                    "aliases": aliases,
+                    "description": abstract,
                 },
             )
             nodes_inserted += 1

@@ -159,21 +159,24 @@ async def layered_retrieval(
         types_str = ", ".join(f"'{t}'" for t in object_types)
         if object_types == ["summary"]:
             score_sql = (
-                "0.75 * (1-(COALESCE(body_embedding, embedding)<=>'"
+                "0.75 * (1-(COALESCE(sn.body_embedding, body_embedding, embedding)<=>'"
                 + emb_lit
-                + "'::vector)) + 0.25 * (1-(COALESCE(perspective_embedding, body_embedding, embedding)<=>'"
+                + "'::vector)) + 0.25 * (1-(COALESCE(sn.perspective_embedding, perspective_embedding, sn.body_embedding, body_embedding, embedding)<=>'"
                 + emb_lit
                 + "'::vector))"
             )
-            vector_filter = "(embedding IS NOT NULL OR body_embedding IS NOT NULL)"
+            vector_filter = "(embedding IS NOT NULL OR body_embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)"
+            summary_join = "LEFT JOIN summary_nodes sn ON sn.node_id = knowledge_nodes.id"
         else:
             score_sql = f"1-(embedding<=>'{emb_lit}'::vector)"
             vector_filter = "embedding IS NOT NULL"
+            summary_join = ""
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
                 SELECT id, {score_sql} AS sim
                 FROM knowledge_nodes
+                {summary_join}
                 WHERE user_id = '{user_id}'
                   AND {vector_filter}
                   AND object_type IN ({types_str})
@@ -329,13 +332,14 @@ async def layered_retrieval(
                 async with database.database.connection() as conn:
                     child_summary_sims = await conn.raw_connection.fetch(
                         f"""
-                        SELECT summary_of AS child_id,
-                               0.75 * (1-(COALESCE(body_embedding, embedding)<=>'{emb_lit}'::vector))
-                               + 0.25 * (1-(COALESCE(perspective_embedding, body_embedding, embedding)<=>'{emb_lit}'::vector)) AS sim
-                        FROM knowledge_nodes
-                        WHERE summary_of IN ({child_ids_str})
-                          AND object_type = 'summary'
-                          AND (embedding IS NOT NULL OR body_embedding IS NOT NULL)
+                        SELECT COALESCE(sn.summary_of, kn.summary_of) AS child_id,
+                               0.75 * (1-(COALESCE(sn.body_embedding, kn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector))
+                               + 0.25 * (1-(COALESCE(sn.perspective_embedding, kn.perspective_embedding, sn.body_embedding, kn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector)) AS sim
+                        FROM knowledge_nodes kn
+                        LEFT JOIN summary_nodes sn ON sn.node_id = kn.id
+                        WHERE COALESCE(sn.summary_of, kn.summary_of) IN ({child_ids_str})
+                          AND kn.object_type = 'summary'
+                          AND (kn.embedding IS NOT NULL OR kn.body_embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)
                         ORDER BY sim DESC
                         LIMIT {len(child_ids)}
                         """

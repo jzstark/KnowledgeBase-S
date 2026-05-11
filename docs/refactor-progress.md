@@ -426,3 +426,66 @@ Not run:
   configured Claude/OpenAI providers. The live worker path was verified with a
   controlled failing URL item and a short upload item that stops before LLM
   analysis.
+
+## 2026-05-11 - Phase 4.5 Object-specific Tables
+
+Status: implemented.
+
+Assumptions:
+
+- `knowledge_nodes` remains the graph/node registry and compatibility surface
+  for current API/UI code; object-specific fields are now also stored in
+  dedicated tables and will be removed from `knowledge_nodes` in a later phase.
+- Phase 4.5 should migrate the primary write/read paths without forcing a full
+  rewrite of every maintenance query in the same change.
+- `entity_nodes` only stores stable identity fields. Entity facts/profiles remain
+  a later phase.
+
+Implemented:
+
+- Added `article_nodes`, `summary_nodes`, `entity_nodes`, and `index_nodes` to
+  the API schema.
+- Added idempotent startup backfill from existing `knowledge_nodes` into the
+  object-specific tables.
+- Added repeatable migration script:
+  `scripts/backfill_object_tables.sql`.
+- Added `services/api/object_nodes.py` as a small service layer for cross-table
+  upserts and merged node reads.
+- Changed `/api/kb/ingest` to write `knowledge_nodes` plus the matching object
+  table for article, summary, entity, and index objects.
+- Changed manual summary creation and summary revision to update
+  `summary_nodes` including body and perspective metadata.
+- Changed `restore_from_wiki()` and index abstract aggregation to sync the
+  relevant object table after writing `knowledge_nodes`.
+- Changed `/api/kb/node/{id}` and wiki export to merge object-specific fields
+  from the dedicated table.
+- Changed semantic search and draft layered retrieval for summaries to prefer
+  `summary_nodes.body_embedding` and `summary_nodes.perspective_embedding`, with
+  legacy `knowledge_nodes` fields as fallback.
+- Updated `MEMORY.md` with the new object table model.
+
+Verification:
+
+- Local AST parsing passed for `object_nodes.py`, `database.py`,
+  `routers/kb.py`, `routers/drafts.py`, and `maintenance.py`.
+- Local `py_compile` was not usable because the existing container-owned
+  `services/api/__pycache__` directory denies writes from the host user; this is
+  the same environment constraint seen in earlier phases.
+- `docker compose restart api` ran the schema migration successfully.
+- API container `py_compile` passed for `object_nodes.py`, `database.py`,
+  `routers/kb.py`, `routers/drafts.py`, and `maintenance.py`.
+- Postgres shows all four object-specific tables and expected indexes.
+- Object-table row counts match `knowledge_nodes` counts by object type:
+  article 92, summary 94, entity 104, index 2.
+- `/api/kb/node/{id}` probes for article, summary, entity, and index returned
+  200. The summary probe returned `summary_of`, `perspective_label`, and wiki
+  body from the merged object-table read path.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- `git diff --check` passed.
+
+Not run:
+
+- Live summary create/revise and full ingestion success paths were not forced
+  because they can invoke configured Claude/OpenAI providers. The code paths are
+  wired to the new `object_nodes` service and container compilation passed.

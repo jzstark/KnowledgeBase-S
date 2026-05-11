@@ -116,6 +116,54 @@ CREATE TABLE IF NOT EXISTS source_items (
     UNIQUE (user_id, source_id, origin_ref_type, origin_ref)
 );
 
+CREATE TABLE IF NOT EXISTS article_nodes (
+    node_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    source_item_id VARCHAR,
+    raw_ref JSONB,
+    source_type VARCHAR,
+    source_published_at TIMESTAMPTZ,
+    source_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ,
+    effective_at TIMESTAMPTZ,
+    tags TEXT[] DEFAULT '{}',
+    status VARCHAR DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS summary_nodes (
+    node_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    summary_of VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    perspective_label TEXT,
+    perspective_instruction TEXT,
+    perspective_embedding vector(1536),
+    body TEXT,
+    body_embedding vector(1536),
+    is_default BOOLEAN DEFAULT false,
+    source JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS entity_nodes (
+    node_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    canonical_name TEXT,
+    aliases TEXT[] DEFAULT '{}',
+    entity_type VARCHAR,
+    merged_into VARCHAR REFERENCES knowledge_nodes(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS index_nodes (
+    node_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    description TEXT,
+    rollup_instruction TEXT,
+    abstract_stale BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS drafts (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
@@ -191,6 +239,34 @@ ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS status VARCHAR NOT N
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS error TEXT;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS source_item_id VARCHAR;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS raw_ref JSONB;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS source_type VARCHAR;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'active';
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS summary_of VARCHAR;
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS perspective_label TEXT;
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS perspective_instruction TEXT;
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS perspective_embedding vector(1536);
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS body TEXT;
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS body_embedding vector(1536);
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false;
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS source JSONB DEFAULT '{}';
+ALTER TABLE IF EXISTS summary_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS canonical_name TEXT;
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS entity_type VARCHAR;
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS merged_into VARCHAR;
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS rollup_instruction TEXT;
+ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS abstract_stale BOOLEAN DEFAULT false;
+ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
 UPDATE knowledge_nodes
 SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
@@ -204,6 +280,65 @@ SET perspective_label = COALESCE(NULLIF(perspective_label, ''), NULLIF(perspecti
     body_embedding = COALESCE(body_embedding, embedding),
     perspective_embedding = COALESCE(perspective_embedding, body_embedding, embedding)
 WHERE object_type = 'summary';
+
+INSERT INTO article_nodes
+  (node_id, source_item_id, raw_ref, source_type, source_published_at,
+   source_updated_at, captured_at, effective_at, tags, status, created_at, updated_at)
+SELECT id, source_item_id, raw_ref, source_type, source_published_at,
+       source_updated_at, captured_at, effective_at, COALESCE(tags, '{}'),
+       'active', created_at, updated_at
+FROM knowledge_nodes
+WHERE object_type = 'article'
+ON CONFLICT (node_id) DO UPDATE SET
+  source_item_id = EXCLUDED.source_item_id,
+  raw_ref = EXCLUDED.raw_ref,
+  source_type = EXCLUDED.source_type,
+  source_published_at = EXCLUDED.source_published_at,
+  source_updated_at = EXCLUDED.source_updated_at,
+  captured_at = EXCLUDED.captured_at,
+  effective_at = EXCLUDED.effective_at,
+  tags = EXCLUDED.tags,
+  updated_at = NOW();
+
+INSERT INTO summary_nodes
+  (node_id, summary_of, perspective_label, perspective_instruction,
+   perspective_embedding, body, body_embedding, is_default, source, created_at, updated_at)
+SELECT id, summary_of, perspective_label, perspective_instruction,
+       perspective_embedding, abstract, COALESCE(body_embedding, embedding),
+       COALESCE(is_default, false),
+       jsonb_build_object('source_node_ids', COALESCE(source_node_ids, '{}'), 'legacy_perspective', perspective),
+       created_at, updated_at
+FROM knowledge_nodes
+WHERE object_type = 'summary'
+ON CONFLICT (node_id) DO UPDATE SET
+  summary_of = EXCLUDED.summary_of,
+  perspective_label = EXCLUDED.perspective_label,
+  perspective_instruction = EXCLUDED.perspective_instruction,
+  perspective_embedding = EXCLUDED.perspective_embedding,
+  body = EXCLUDED.body,
+  body_embedding = EXCLUDED.body_embedding,
+  is_default = EXCLUDED.is_default,
+  source = EXCLUDED.source,
+  updated_at = NOW();
+
+INSERT INTO entity_nodes
+  (node_id, canonical_name, aliases, created_at, updated_at)
+SELECT id, canonical_name, COALESCE(aliases, '{}'), created_at, updated_at
+FROM knowledge_nodes
+WHERE object_type = 'entity'
+ON CONFLICT (node_id) DO UPDATE SET
+  canonical_name = EXCLUDED.canonical_name,
+  aliases = EXCLUDED.aliases,
+  updated_at = NOW();
+
+INSERT INTO index_nodes
+  (node_id, description, abstract_stale, created_at, updated_at)
+SELECT id, abstract, false, created_at, updated_at
+FROM knowledge_nodes
+WHERE object_type = 'index'
+ON CONFLICT (node_id) DO UPDATE SET
+  description = EXCLUDED.description,
+  updated_at = NOW();
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
@@ -225,6 +360,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_source_items_user_source_origin
 CREATE INDEX IF NOT EXISTS idx_source_items_source_status ON source_items(source_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_source_items_user_status ON source_items(user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_source_item_id ON knowledge_nodes(source_item_id);
+CREATE INDEX IF NOT EXISTS idx_article_nodes_source_item_id ON article_nodes(source_item_id);
+CREATE INDEX IF NOT EXISTS idx_article_nodes_knowledge_time ON article_nodes(
+    COALESCE(effective_at, source_published_at, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_summary_nodes_summary_of ON summary_nodes(summary_of);
+CREATE INDEX IF NOT EXISTS idx_summary_nodes_body_embedding ON summary_nodes
+    USING ivfflat (body_embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_summary_nodes_perspective_embedding ON summary_nodes
+    USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_entity_nodes_canonical_name ON entity_nodes(canonical_name);
+CREATE INDEX IF NOT EXISTS idx_entity_nodes_merged_into ON entity_nodes(merged_into);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 import config_loader
 import database
+import object_nodes
 import prompt_loader
 from auth import require_auth
 
@@ -176,6 +177,31 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "source_item_id": body.source_item_id,
         },
     )
+    await object_nodes.upsert_object_node(
+        node_id,
+        body.object_type,
+        {
+            "source_item_id": body.source_item_id,
+            "raw_ref": body.raw_ref,
+            "source_type": body.source_type,
+            "source_published_at": body.source_published_at,
+            "source_updated_at": body.source_updated_at,
+            "captured_at": body.captured_at or datetime.now(timezone.utc),
+            "effective_at": body.effective_at,
+            "tags": body.tags,
+            "summary_of": body.summary_of,
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+            "body": body.abstract,
+            "body_embedding_literal": body_embedding_literal,
+            "perspective_embedding_literal": perspective_embedding_literal,
+            "is_default": is_default,
+            "source": {"source_node_ids": body.source_node_ids},
+            "canonical_name": body.canonical_name,
+            "aliases": body.aliases,
+            "description": body.abstract,
+        },
+    )
     if body.parent_index_id:
         await database.database.execute(
             """
@@ -262,21 +288,10 @@ def _wiki_file_path(user_id: str, node_id: str, object_type: str) -> pathlib.Pat
 
 async def write_wiki_node(node_id: str, user_id: str) -> None:
     """将单个知识节点写入对应 wiki 子目录（articles/entities/summaries）。"""
-    row = await database.database.fetch_one(
-        """
-        SELECT id, title, abstract, source_type, raw_ref, tags, object_type,
-               source_node_ids, summary_of, canonical_name, aliases, perspective,
-               perspective_label, perspective_instruction, is_default,
-               ingested_at, source_published_at, source_updated_at, captured_at, effective_at,
-               created_at, updated_at
-        FROM knowledge_nodes WHERE id = :id
-        """,
-        {"id": node_id},
-    )
-    if not row:
+    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    if not node:
         return
 
-    node = dict(row)
     object_type = node.get("object_type") or "article"
 
     edges = await database.database.fetch_all(
@@ -491,17 +506,17 @@ async def search(
 
     tag_list: list[str] = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    conditions = ["(embedding IS NOT NULL OR body_embedding IS NOT NULL)"]
+    conditions = ["(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL OR n.body_embedding IS NOT NULL)"]
     extra_params: list = []
 
     if tag_list:
         placeholders = ", ".join(f"${len(extra_params) + i + 1}" for i in range(len(tag_list)))
-        conditions.append(f"tags && ARRAY[{placeholders}]::text[]")
+        conditions.append(f"n.tags && ARRAY[{placeholders}]::text[]")
         extra_params.extend(tag_list)
 
     if type:
         ti = len(extra_params) + 1
-        conditions.append(f"object_type = ${ti}")
+        conditions.append(f"n.object_type = ${ti}")
         extra_params.append(type)
 
     where = " AND ".join(conditions)
@@ -509,16 +524,20 @@ async def search(
 
     async with database.database.connection() as conn:
         sql = f"""
-            SELECT id, user_id, title, abstract, source_type, tags, object_type, created_at,
-                   perspective_label, perspective_instruction, is_default,
+            SELECT n.id, n.user_id, n.title, COALESCE(s.body, n.abstract) AS abstract,
+                   n.source_type, n.tags, n.object_type, n.created_at,
+                   COALESCE(s.perspective_label, n.perspective_label) AS perspective_label,
+                   COALESCE(s.perspective_instruction, n.perspective_instruction) AS perspective_instruction,
+                   COALESCE(s.is_default, n.is_default) AS is_default,
                    CASE
-                     WHEN object_type = 'summary' THEN
-                       0.75 * (1 - (COALESCE(body_embedding, embedding) <=> '{embedding_literal}'::vector))
-                       + 0.25 * (1 - (COALESCE(perspective_embedding, body_embedding, embedding) <=> '{embedding_literal}'::vector))
+                     WHEN n.object_type = 'summary' THEN
+                       0.75 * (1 - (COALESCE(s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, n.perspective_embedding, s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
                      ELSE
-                       1 - (embedding <=> '{embedding_literal}'::vector)
+                       1 - (n.embedding <=> '{embedding_literal}'::vector)
                    END AS score
-            FROM knowledge_nodes
+            FROM knowledge_nodes n
+            LEFT JOIN summary_nodes s ON s.node_id = n.id
             WHERE {where}
             ORDER BY score DESC
             LIMIT ${limit_idx}
@@ -548,10 +567,8 @@ async def search(
 @router.get("/node/{node_id}")
 async def get_node(node_id: str):
     """获取单个节点及其所有边，无需认证。"""
-    row = await database.database.fetch_one(
-        "SELECT * FROM knowledge_nodes WHERE id = :id", {"id": node_id}
-    )
-    if not row:
+    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    if not node:
         raise HTTPException(404, "节点不存在")
 
     edges = await database.database.fetch_all(
@@ -559,7 +576,6 @@ async def get_node(node_id: str):
         {"id": node_id},
     )
 
-    node = dict(row)
     node.pop("embedding", None)
     node.pop("body_embedding", None)
     node.pop("perspective_embedding", None)
@@ -711,6 +727,20 @@ async def create_summary(
             "is_default": is_default,
         },
     )
+    await object_nodes.upsert_object_node(
+        summary_id,
+        "summary",
+        {
+            "summary_of": node_id,
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+            "body": summary_content,
+            "body_embedding_literal": body_embedding_literal,
+            "perspective_embedding_literal": perspective_embedding_literal,
+            "is_default": is_default,
+            "source": {"source_node_ids": [node_id], "created_by": "user"},
+        },
+    )
 
     # Create summarizes edge (summary → source)
     await database.database.execute(
@@ -839,6 +869,22 @@ async def revise_summary(
         WHERE id = :id
         """,
         params,
+    )
+    await object_nodes.upsert_object_node(
+        node_id,
+        "summary",
+        {
+            "summary_of": summary["summary_of"],
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+            "body": revised_content,
+            "body_embedding_literal": body_embedding_literal,
+            "perspective_embedding_literal": (
+                perspective_embedding_literal if perspective_changed else None
+            ),
+            "is_default": is_default,
+            "source": {"source_node_ids": [summary["summary_of"]] if summary["summary_of"] else []},
+        },
     )
 
     await database.database.execute(

@@ -305,7 +305,11 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 
 ### 4.2 `knowledge_nodes`
 
-核心表是 `knowledge_nodes`，重要字段如下：
+Phase 4.5 后，`knowledge_nodes` 是图节点注册表和通用检索字段表。
+为兼容现有 API，它仍保留部分旧的对象专属字段，但新写入路径会同步写入
+object-specific tables。
+
+重要字段如下：
 
 - `id`
 - `user_id`
@@ -352,7 +356,29 @@ wiki 是 **系统生成的只读 Markdown 导出**：
   `effective_at ?? source_published_at ?? captured_at ?? ingested_at` 选择；
   `created_at` 继续表示 DB 创建时间，不再作为素材事实时间使用
 
-### 4.3 当前边类型
+### 4.3 Object-specific Tables
+
+Phase 4.5 新增并启用四张专属表：
+
+| 表 | 负责字段 |
+| --- | --- |
+| `article_nodes` | `source_item_id`、`raw_ref`、`source_type`、素材时间、`tags`、`status` |
+| `summary_nodes` | `summary_of`、视角字段、正文、body/perspective embeddings、默认视角标记、source metadata |
+| `entity_nodes` | `canonical_name`、`aliases`、`entity_type`、`merged_into` |
+| `index_nodes` | `description`、`rollup_instruction`、`abstract_stale` |
+
+当前状态：
+
+- schema 初始化会回填现有 `knowledge_nodes` 到四张专属表。
+- `scripts/backfill_object_tables.sql` 是可重复执行的手动回填脚本。
+- `/api/kb/ingest`、手动创建/修订 summary、`restore_from_wiki()`、index
+  abstract 聚合会同步写对应 object table。
+- `/api/kb/node/{id}` 和 wiki 导出会从 object table 合并对象专属字段。
+- summary 检索和 draft layered retrieval 优先使用 `summary_nodes` 的正文和
+  视角向量，旧 `knowledge_nodes` 字段作为 fallback。
+- 旧字段尚未从 `knowledge_nodes` 删除；这是后续清理阶段。
+
+### 4.4 当前边类型
 
 代码里真正使用到的边类型包括：
 
@@ -374,7 +400,7 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - `co_occurs_with` 尚未实现；Phase 1 已移除前端旧过滤提示
 - 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
 
-### 4.4 其他表
+### 4.5 其他表
 
 当前 schema 里还包含：
 
@@ -385,6 +411,10 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 | `writing_memory` | 从草稿修改中学到的写作偏好 |
 | `sources` | 渠道配置 |
 | `source_items` | 统一 ingestion 队列与 rebuild manifest |
+| `article_nodes` | article 对象专属字段 |
+| `summary_nodes` | summary 对象专属字段 |
+| `entity_nodes` | entity 对象专属字段 |
+| `index_nodes` | index 对象专属字段 |
 | `topics` | 每日选题 |
 | `drafts` | 生成草稿与用户定稿 |
 | `user_settings` | 简报窗口、简报时间等设置 |
