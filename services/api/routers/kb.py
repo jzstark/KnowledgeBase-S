@@ -89,6 +89,7 @@ class IngestRequest(BaseModel):
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None
     effective_at: datetime | None = None
+    source_item_id: str | None = None
     parent_index_id: str | None = None   # if set, creates part_of edge to this index node
 
 
@@ -138,7 +139,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
            tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
            perspective, perspective_label, perspective_instruction, perspective_embedding,
            body_embedding, is_default, source_published_at, source_updated_at, captured_at,
-           effective_at)
+           effective_at, source_item_id)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
@@ -147,7 +148,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
            {f"'{perspective_embedding_literal}'::vector" if perspective_embedding_literal else "NULL"},
            {f"'{body_embedding_literal}'::vector" if body_embedding_literal else "NULL"},
            :is_default, :source_published_at, :source_updated_at, :captured_at,
-           :effective_at)
+           :effective_at, :source_item_id)
         """,
         {
             "id": node_id,
@@ -172,6 +173,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "source_updated_at": body.source_updated_at,
             "captured_at": body.captured_at or datetime.now(timezone.utc),
             "effective_at": body.effective_at,
+            "source_item_id": body.source_item_id,
         },
     )
     if body.parent_index_id:

@@ -16,6 +16,7 @@ class RawItem:
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None
     effective_at: datetime | None = None
+    source_item_id: str | None = None
 
 
 class BaseSource(ABC):

@@ -344,3 +344,85 @@ Not run:
   invoke configured Claude and OpenAI providers. Validation covered schema,
   import/runtime compilation, backfill, API health, and the mixed-scoring SQL
   path without creating new LLM-generated summaries.
+
+## 2026-05-11 - Phase 4 Source Items
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 4 should introduce `source_items` as the ingestion queue/manifest while
+  keeping the current `knowledge_nodes` model until Phase 4.5.
+- Existing source config shapes are kept for compatibility, but new URL,
+  upload, and WeChat writes create `source_items`.
+- RSS is materialized by the ingestion worker: fetched feed entries are first
+  inserted as pending `source_items`, then consumed by the same worker run.
+- Full successful ingestion was not forced during verification because it can
+  call Claude/OpenAI; status transitions were verified with short/failing probe
+  items.
+
+Implemented:
+
+- Added `source_items` with origin/raw/extracted refs, content hash, source
+  times, retention policy, status, error, attempts, and timestamps.
+- Added `knowledge_nodes.source_item_id` so newly generated article, book index,
+  and chapter article nodes can trace back to a source item.
+- Added source item API support:
+  - `GET /api/sources/{source_id}/source-items`
+  - `POST /api/sources/{source_id}/source-items`
+  - `POST /api/sources/source-items/{item_id}/status`
+  - `POST /api/sources/source-items/{item_id}/retry`
+- Changed URL batch append to create one pending source item per URL instead of
+  writing `sources.config.pending_urls`.
+- Changed file upload to create one pending source item per uploaded file with
+  `raw_snapshot_ref`.
+- Changed WeChat push ingestion to create a source item after saving the raw
+  text file.
+- Changed ingestion-worker pipeline to consume pending source items, mark
+  `processing` / `succeeded` / `failed`, write `extracted_text_ref`, and pass
+  `source_item_id` to `/api/kb/ingest`.
+- Changed book pipeline to consume source items and attach the same source item
+  to the book index and chapter article nodes.
+- Updated `MEMORY.md` to describe the new manifest and worker flow.
+
+Verification:
+
+- Local AST parsing passed for `database.py`, `routers/sources.py`,
+  `routers/kb.py`, `pipeline.py`, and `sources/base.py`.
+- `docker compose restart api` ran the migration successfully.
+- API container `py_compile` passed for `database.py`, `routers/sources.py`,
+  and `routers/kb.py`.
+- Ingestion-worker container `py_compile` passed for `pipeline.py`, `main.py`,
+  and `sources/base.py`.
+- Postgres shows `source_items` exists with the Phase 4 columns.
+- Postgres shows source item indexes and `knowledge_nodes.source_item_id`.
+- Direct source item probe verified create, list, processing, failed, and retry
+  transitions; probe row was removed afterwards.
+- URL add probe verified `/add-url` creates a pending source item and no longer
+  writes `sources.config.pending_urls`.
+- After restarting ingestion-worker, a failing URL probe verified the worker
+  consumes pending source items and marks failures with attempts/error; probe
+  row was removed afterwards.
+- Upload probe verified `/upload` creates a pending `origin_ref_type=upload`
+  source item; probe row was removed afterwards.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+
+Implementation fixes:
+
+- Symptom: the first status-transition probe returned a 500 when setting a
+  source item to `processing`.
+- Root cause: `update_source_item_status()` passed unused bind parameters to
+  `databases`/SQLAlchemy; this library rejects parameters that are not present
+  in the SQL text.
+- Fix: build the SQL parameter dict only with fields used by the selected
+  update branch.
+- Verification: repeated the status-transition probe through create, list,
+  processing, failed, authenticated retry, and cleanup.
+
+Not run:
+
+- A full successful article/book/RSS ingestion was not run because it can invoke
+  configured Claude/OpenAI providers. The live worker path was verified with a
+  controlled failing URL item and a short upload item that stops before LLM
+  analysis.

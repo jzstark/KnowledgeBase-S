@@ -92,6 +92,30 @@ CREATE TABLE IF NOT EXISTS sources (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS source_items (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    source_id VARCHAR REFERENCES sources(id) ON DELETE CASCADE,
+    source_type VARCHAR NOT NULL,
+    origin_ref TEXT NOT NULL,
+    origin_ref_type VARCHAR NOT NULL,
+    raw_snapshot_ref TEXT,
+    extracted_text_ref TEXT,
+    content_hash VARCHAR,
+    title TEXT,
+    source_published_at TIMESTAMPTZ,
+    source_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ,
+    effective_at TIMESTAMPTZ,
+    raw_retention_policy VARCHAR DEFAULT 'keep_extracted_only',
+    status VARCHAR NOT NULL DEFAULT 'pending',
+    error TEXT,
+    attempts INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, source_id, origin_ref_type, origin_ref)
+);
+
 CREATE TABLE IF NOT EXISTS drafts (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
@@ -149,7 +173,24 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_instr
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_embedding vector(1536);
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS body_embedding vector(1536);
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_item_id VARCHAR;
 ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS source_type VARCHAR;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref_type VARCHAR;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS raw_snapshot_ref TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS extracted_text_ref TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS content_hash VARCHAR;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS raw_retention_policy VARCHAR DEFAULT 'keep_extracted_only';
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'pending';
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS error TEXT;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
 UPDATE knowledge_nodes
 SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
@@ -179,6 +220,11 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_perspective_embedding ON knowledg
     USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_source_items_user_source_origin
+    ON source_items(user_id, source_id, origin_ref_type, origin_ref);
+CREATE INDEX IF NOT EXISTS idx_source_items_source_status ON source_items(source_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_source_items_user_status ON source_items(user_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_source_item_id ON knowledge_nodes(source_item_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);

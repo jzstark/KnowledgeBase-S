@@ -384,6 +384,7 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 | `knowledge_edges` | 节点关系 |
 | `writing_memory` | 从草稿修改中学到的写作偏好 |
 | `sources` | 渠道配置 |
+| `source_items` | 统一 ingestion 队列与 rebuild manifest |
 | `topics` | 每日选题 |
 | `drafts` | 生成草稿与用户定稿 |
 | `user_settings` | 简报窗口、简报时间等设置 |
@@ -422,11 +423,31 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - 参考来源不会生成今日选题
 - 但两者都可能参与后续 RAG 写作检索
 
-### 5.3 已知实现偏差
+### 5.3 Source Items
 
-- 前端和 API 提供了 “给 URL source 批量追加 URL” 的能力（`pending_urls`）
-- 但 `ingestion-worker/sources/url.py` 当前只读取 `config.url`
-- 也就是说，**URL 队列接口目前未完整打通**
+Phase 4 后，新增素材统一先进入 `source_items`：
+
+- URL 批量追加不再写 `sources.config.pending_urls`，而是每个 URL 一条
+  `source_items`。
+- 文件上传不再只追加到 `sources.config.uploads`，而是每个文件一条
+  `source_items`，并记录 `raw_snapshot_ref`。
+- 微信 push 写 raw 文件后创建 `source_items`。
+- RSS/旧配置来源由 ingestion-worker 抓取后先 materialize 为
+  `source_items`，再消费 pending item。
+- worker 会把 item 状态从 `pending` 改为 `processing`，完成后改为
+  `succeeded`，失败改为 `failed` 并记录 error；失败 item 可以通过
+  retry 端点回到 `pending`。
+- `extracted_text_ref` 指向规范抽取文本，`raw_snapshot_ref` 指向原始快照
+  或上传文件。
+- 新 article/index/chapter 节点通过 `knowledge_nodes.source_item_id` 回溯
+  到来源 item。
+
+### 5.4 已知实现偏差
+
+- `source_items` 已作为新写入路径启用，但旧 `sources.config.uploads` /
+  `pending_items` 数据结构仍保留兼容读取。
+- Source Items 尚未配套独立前端管理页。
+- Rebuild 还没有完全改为以 `source_items` 为唯一入口，这是后续 Phase。
 
 ---
 
@@ -436,25 +457,29 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 
 `ingestion-worker/pipeline.py::run_pipeline()` 当前流程：
 
-1. `fetch_new_items()`
-2. `extract_text()`
-3. 对文件型内容必要时从正文推断标题
-4. 保存 raw 文件
-5. 先对正文做一次 embedding，用于拿 entity 分析上下文
-6. 调 API `/api/kb/entity_candidates/analyze_context`
-7. 用 `article_analysis` prompt 生成：
+1. 拉取 `source_items.status = pending` 的条目
+2. 如果没有 pending item，则从 source 抓取新内容并先 materialize 为
+   `source_items`
+3. 将 item 标记为 `processing`
+4. `extract_text()` 并保存 `extracted_text_ref`
+5. 对文件型内容必要时从正文推断标题
+6. 保存 raw 文件
+7. 先对正文做一次 embedding，用于拿 entity 分析上下文
+8. 调 API `/api/kb/entity_candidates/analyze_context`
+9. 用 `article_analysis` prompt 生成：
    - `abstract`
    - `tags`
    - `entities`
    - `contradictions`
    - `structural_hints`
-8. 对 `abstract` 生成 embedding
-9. 入库 `article`
-10. 再入库一个初始 `summary`
-11. 把 entity candidates 发给 API 处理
-12. 对新晋升的 entity 生成 entity page，并入库 `entity`
-13. 回灌历史 wikilinks / mentions
-14. 更新 source 的 `last_fetched_at`
+10. 对 `abstract` 生成 embedding
+11. 入库 `article`，写入 `source_item_id`
+12. 再入库一个初始 `summary`
+13. 把 entity candidates 发给 API 处理
+14. 对新晋升的 entity 生成 entity page，并入库 `entity`
+15. 回灌历史 wikilinks / mentions
+16. 成功则将 source item 标记为 `succeeded`，失败标记为 `failed`
+17. 更新 source 的 `last_fetched_at`
 
 ### 6.2 entity 候选与晋升
 
@@ -746,7 +771,7 @@ Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 ## 13. 当前最重要的事实
 
 1. 这是一个 **单用户** 系统，不是多租户 SaaS。
-2. 当前“知识库”的事实来源是 **Postgres + pgvector**，wiki 是可编辑副本与导出形态。
+2. 当前“知识库”的事实来源是 **Postgres + pgvector**，wiki 是只读导出形态。
 3. 多层记忆架构已经实现了相当一部分，但仍处于 **计划与旧实现并存** 的状态。
 4. 若要继续演进，应优先区分：
    - 已经是线上行为的代码

@@ -14,11 +14,13 @@ import json
 import logging
 import os
 import re
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
 import httpx
+import trafilatura
 from openai import AsyncOpenAI
 
 import config_loader
@@ -78,6 +80,158 @@ def _time_payload(item: RawItem) -> dict[str, str]:
         if value:
             payload[key] = value.isoformat()
     return payload
+
+
+def _parse_item_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+async def fetch_pending_source_items(source_id: str, limit: int = 100) -> list[dict]:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{API_BASE_URL}/api/sources/{source_id}/source-items",
+            params={"status": "pending", "limit": limit},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def create_source_items(source_id: str, items: list[dict]) -> list[dict]:
+    if not items:
+        return []
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{API_BASE_URL}/api/sources/{source_id}/source-items",
+            json={"items": items},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("items", [])
+
+
+async def update_source_item_status(
+    item_id: str,
+    status: str,
+    *,
+    raw_snapshot_ref: str | None = None,
+    extracted_text_ref: str | None = None,
+    error: str | None = None,
+    title: str | None = None,
+) -> None:
+    payload = {
+        "status": status,
+        "raw_snapshot_ref": raw_snapshot_ref,
+        "extracted_text_ref": extracted_text_ref,
+        "error": error,
+        "title": title,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{API_BASE_URL}/api/sources/source-items/{item_id}/status",
+            json=payload,
+            timeout=10,
+        )
+        resp.raise_for_status()
+
+
+def save_extracted_text(source_type: str, source_item_id: str, text: str) -> str:
+    extracted_dir = USER_DATA_DIR / USER_ID / "extracted" / source_type
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+    path = extracted_dir / f"{source_item_id}.txt"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def _source_item_payload_from_raw(item: RawItem, source_type: str) -> dict:
+    origin_ref = item.raw_ref.get("url") or item.raw_ref.get("path") or item.title or item.source_id
+    origin_ref_type = "feed_entry" if source_type == "rss" else item.raw_ref.get("type", "external")
+    raw_snapshot_ref = None
+    content_hash = None
+    if item.raw_bytes:
+        raw_snapshot_ref = save_raw(item, source_type)
+        content_hash = hashlib.sha256(item.raw_bytes).hexdigest()
+    elif item.raw_ref.get("path"):
+        raw_snapshot_ref = item.raw_ref["path"]
+        try:
+            content_hash = hashlib.sha256(Path(raw_snapshot_ref).read_bytes()).hexdigest()
+        except OSError:
+            content_hash = None
+    return {
+        "origin_ref": origin_ref,
+        "origin_ref_type": origin_ref_type,
+        "raw_snapshot_ref": raw_snapshot_ref,
+        "content_hash": content_hash,
+        "title": item.title,
+        "source_published_at": item.source_published_at.isoformat() if item.source_published_at else None,
+        "source_updated_at": item.source_updated_at.isoformat() if item.source_updated_at else None,
+        "captured_at": item.captured_at.isoformat() if item.captured_at else None,
+        "effective_at": item.effective_at.isoformat() if item.effective_at else None,
+        "raw_retention_policy": "keep_extracted_only" if source_type in ("rss", "url", "wechat") else "keep_raw",
+    }
+
+
+def _raw_item_from_source_item(row: dict, source_type: str) -> RawItem:
+    raw_snapshot_ref = row.get("raw_snapshot_ref")
+    origin_ref = row.get("origin_ref") or ""
+    origin_ref_type = row.get("origin_ref_type") or "external"
+    raw_bytes = None
+    raw_ref: dict
+
+    if raw_snapshot_ref:
+        p = Path(raw_snapshot_ref)
+        if origin_ref_type == "upload" or source_type in ("pdf", "image", "plaintext", "word", "epub", "book"):
+            raw_ref = {"type": "file", "path": raw_snapshot_ref}
+        else:
+            raw_ref = {"type": "url", "url": origin_ref}
+            if p.exists():
+                raw_bytes = p.read_bytes()
+        file_name = p.name
+    elif origin_ref_type in ("url", "feed_entry") or source_type in ("url", "rss"):
+        downloaded = trafilatura.fetch_url(origin_ref)
+        if not downloaded:
+            raise RuntimeError(f"failed to fetch URL: {origin_ref}")
+        raw_bytes = downloaded.encode("utf-8")
+        raw_ref = {"type": "url", "url": origin_ref}
+        file_name = f"{datetime.utcnow().strftime('%Y-%m-%d')}-{hashlib.md5(origin_ref.encode()).hexdigest()[:8]}.html"
+    else:
+        raise RuntimeError("source item has no usable raw snapshot")
+
+    item = RawItem(
+        source_id=row["source_id"],
+        title=row.get("title"),
+        raw_ref=raw_ref,
+        content_type="text/html" if raw_ref.get("type") == "url" else "application/octet-stream",
+        raw_bytes=raw_bytes,
+        fetched_at=_parse_item_time(row.get("effective_at"))
+        or _parse_item_time(row.get("source_published_at"))
+        or _parse_item_time(row.get("captured_at"))
+        or datetime.now(timezone.utc),
+        source_published_at=_parse_item_time(row.get("source_published_at")),
+        source_updated_at=_parse_item_time(row.get("source_updated_at")),
+        captured_at=_parse_item_time(row.get("captured_at")),
+        effective_at=_parse_item_time(row.get("effective_at")),
+        source_item_id=row["id"],
+    )
+    item._file_name = file_name
+    return item
+
+
+async def materialize_fetched_source_items(source: BaseSource, source_config: dict, last_fetched_at: datetime | None) -> list[dict]:
+    source_id = source_config["id"]
+    source_type = source_config["type"]
+    items: list[RawItem] = source.fetch_new_items(last_fetched_at)
+    logger.info(f"[{source_id}] 获取到 {len(items)} 条新内容")
+    payloads = [_source_item_payload_from_raw(item, source_type) for item in items]
+    return await create_source_items(source_id, payloads)
 
 
 def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list[dict]) -> dict:
@@ -338,16 +492,30 @@ async def run_pipeline(source: BaseSource, source_config: dict):
             last_fetched_at = datetime.fromisoformat(last_fetched_at.replace("Z", "+00:00"))
 
     logger.info(f"[{source_id}] 开始抓取，last_fetched_at={last_fetched_at}")
-    items: list[RawItem] = source.fetch_new_items(last_fetched_at)
-    logger.info(f"[{source_id}] 获取到 {len(items)} 条新内容")
+    pending_items = await fetch_pending_source_items(source_id)
+    if not pending_items:
+        await materialize_fetched_source_items(source, source_config, last_fetched_at)
+        pending_items = await fetch_pending_source_items(source_id)
+    logger.info(f"[{source_id}] 待处理 source item: {len(pending_items)}")
 
-    for item in items:
+    for source_item in pending_items:
+        item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
+            await update_source_item_status(source_item["id"], "processing")
+            item = _raw_item_from_source_item(source_item, source_type)
+
             # 1. Extract text
             text = source.extract_text(item)
             if not text or len(text) < 50:
                 logger.warning(f"[{source_id}] 跳过，正文过短: {item.title}")
+                await update_source_item_status(
+                    source_item["id"],
+                    "failed",
+                    error="extracted text is shorter than 50 characters",
+                    title=item.title,
+                )
                 continue
+            extracted_text_ref = save_extracted_text(source_type, source_item["id"], text)
 
             if item.raw_ref.get("type") == "file":
                 stem = Path(item.raw_ref["path"]).stem
@@ -393,6 +561,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                 "tags": tags,
                 "is_primary": source_config.get("is_primary", True),
                 "object_type": "article",
+                "source_item_id": source_item["id"],
                 **_time_payload(item),
             })
             logger.info(f"[{source_id}] article 入库: {article_id} — {item.title}")
@@ -477,6 +646,13 @@ async def run_pipeline(source: BaseSource, source_config: dict):
             created_str = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
             write_wiki_article(article_id, item, text, tags, raw_ref)
             write_wiki_summary(summary_id, article_id, item.title or article_id, abstract, tags, created_str)
+            await update_source_item_status(
+                source_item["id"],
+                "succeeded",
+                raw_snapshot_ref=raw_ref.get("path") or raw_ref.get("cached"),
+                extracted_text_ref=extracted_text_ref,
+                title=item.title,
+            )
 
             # 12. Backfill wikilinks for each newly promoted entity into all articles
             for eid in newly_promoted_entity_ids:
@@ -490,7 +666,11 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     logger.warning(f"[{source_id}] wikilink backfill failed for {eid}: {e}")
 
         except Exception as e:
-            logger.error(f"[{source_id}] 处理失败: {item.title} — {e}", exc_info=True)
+            logger.error(f"[{source_id}] 处理失败: {item_title} — {e}", exc_info=True)
+            try:
+                await update_source_item_status(source_item["id"], "failed", error=str(e)[:2000])
+            except Exception:
+                logger.warning(f"[{source_id}] source item 状态更新失败: {source_item['id']}")
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
@@ -513,17 +693,35 @@ async def run_book_pipeline(source, source_config: dict):
     if last_fetched_at and isinstance(last_fetched_at, str):
         last_fetched_at = datetime.fromisoformat(last_fetched_at.replace("Z", "+00:00"))
 
-    items: list[RawItem] = source.fetch_new_items(last_fetched_at)
-    logger.info(f"[{source_id}] book pipeline: {len(items)} file(s) to process")
+    pending_items = await fetch_pending_source_items(source_id)
+    if not pending_items:
+        await materialize_fetched_source_items(source, source_config, last_fetched_at)
+        pending_items = await fetch_pending_source_items(source_id)
+    logger.info(f"[{source_id}] book pipeline source items: {len(pending_items)}")
 
-    for item in items:
+    for source_item in pending_items:
+        item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
+            await update_source_item_status(source_item["id"], "processing")
+            item = _raw_item_from_source_item(source_item, source_type)
+
             # 1. Parse chapters
             chapters = source.extract_chapters(item)
             valid_chapters = [ch for ch in chapters if len(ch.text) >= 300]
             if not valid_chapters:
                 logger.warning(f"[{source_id}] no valid chapters in: {item.title}")
+                await update_source_item_status(
+                    source_item["id"],
+                    "failed",
+                    error="no valid chapters found",
+                    title=item.title,
+                )
                 continue
+            extracted_text_ref = save_extracted_text(
+                source_type,
+                source_item["id"],
+                "\n\n".join(ch.text for ch in valid_chapters),
+            )
 
             logger.info(f"[{source_id}] {item.title}: {len(valid_chapters)} chapters")
 
@@ -544,11 +742,19 @@ async def run_book_pipeline(source, source_config: dict):
                 "raw_ref": raw_ref,
                 "tags": [],
                 "object_type": "index",
+                "source_item_id": source_item["id"],
                 **_time_payload(item),
             })
 
             if index_resp.get("duplicate"):
                 logger.info(f"[{source_id}] book already ingested (index exists): {book_title}")
+                await update_source_item_status(
+                    source_item["id"],
+                    "succeeded",
+                    raw_snapshot_ref=file_path,
+                    extracted_text_ref=extracted_text_ref,
+                    title=book_title,
+                )
                 continue
 
             index_id = index_resp["id"]
@@ -584,6 +790,7 @@ async def run_book_pipeline(source, source_config: dict):
                         "tags": tags,
                         "object_type": "article",
                         "parent_index_id": index_id,
+                        "source_item_id": source_item["id"],
                         **_time_payload(item),
                     })
                     logger.info(f"[{source_id}] chapter: {article_id} — {ch.title}")
@@ -678,8 +885,20 @@ async def run_book_pipeline(source, source_config: dict):
                 except Exception as e:
                     logger.error(f"[{source_id}] chapter failed: {ch.title} — {e}", exc_info=True)
 
+            await update_source_item_status(
+                source_item["id"],
+                "succeeded",
+                raw_snapshot_ref=file_path,
+                extracted_text_ref=extracted_text_ref,
+                title=book_title,
+            )
+
         except Exception as e:
-            logger.error(f"[{source_id}] book failed: {item.title} — {e}", exc_info=True)
+            logger.error(f"[{source_id}] book failed: {item_title} — {e}", exc_info=True)
+            try:
+                await update_source_item_status(source_item["id"], "failed", error=str(e)[:2000])
+            except Exception:
+                logger.warning(f"[{source_id}] source item 状态更新失败: {source_item['id']}")
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] book pipeline done")

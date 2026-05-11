@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 import secrets
 from datetime import date, datetime
@@ -62,6 +61,33 @@ class WechatIngestBody(BaseModel):
     url: str = ""
 
 
+class SourceItemCreate(BaseModel):
+    origin_ref: str
+    origin_ref_type: str
+    raw_snapshot_ref: str | None = None
+    extracted_text_ref: str | None = None
+    content_hash: str | None = None
+    title: str | None = None
+    source_published_at: datetime | None = None
+    source_updated_at: datetime | None = None
+    captured_at: datetime | None = None
+    effective_at: datetime | None = None
+    raw_retention_policy: str = "keep_extracted_only"
+    status: str = "pending"
+
+
+class SourceItemsCreate(BaseModel):
+    items: list[SourceItemCreate]
+
+
+class SourceItemStatusUpdate(BaseModel):
+    status: str
+    raw_snapshot_ref: str | None = None
+    extracted_text_ref: str | None = None
+    error: str | None = None
+    title: str | None = None
+
+
 def _validate_optional_time(value: str | None, field_name: str) -> str | None:
     if not value:
         return None
@@ -72,6 +98,78 @@ def _validate_optional_time(value: str | None, field_name: str) -> str | None:
     return value
 
 
+def _serialize_source_item(row) -> dict[str, Any]:
+    d = dict(row)
+    for key in (
+        "source_published_at",
+        "source_updated_at",
+        "captured_at",
+        "effective_at",
+        "created_at",
+        "updated_at",
+    ):
+        if d.get(key):
+            d[key] = d[key].isoformat()
+    return d
+
+
+async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, Any]:
+    if not item.origin_ref:
+        raise HTTPException(400, "origin_ref 不能为空")
+    item_id = f"si_{secrets.token_hex(8)}"
+    row = await database.database.fetch_one(
+        """
+        INSERT INTO source_items
+          (id, user_id, source_id, source_type, origin_ref, origin_ref_type,
+           raw_snapshot_ref, extracted_text_ref, content_hash, title,
+           source_published_at, source_updated_at, captured_at, effective_at,
+           raw_retention_policy, status)
+        VALUES
+          (:id, :user_id, :source_id, :source_type, :origin_ref, :origin_ref_type,
+           :raw_snapshot_ref, :extracted_text_ref, :content_hash, :title,
+           :source_published_at, :source_updated_at, :captured_at, :effective_at,
+           :raw_retention_policy, :status)
+        ON CONFLICT (user_id, source_id, origin_ref_type, origin_ref)
+        DO UPDATE SET
+          raw_snapshot_ref = COALESCE(EXCLUDED.raw_snapshot_ref, source_items.raw_snapshot_ref),
+          extracted_text_ref = COALESCE(EXCLUDED.extracted_text_ref, source_items.extracted_text_ref),
+          content_hash = COALESCE(EXCLUDED.content_hash, source_items.content_hash),
+          title = COALESCE(EXCLUDED.title, source_items.title),
+          source_published_at = COALESCE(EXCLUDED.source_published_at, source_items.source_published_at),
+          source_updated_at = COALESCE(EXCLUDED.source_updated_at, source_items.source_updated_at),
+          captured_at = COALESCE(EXCLUDED.captured_at, source_items.captured_at),
+          effective_at = COALESCE(EXCLUDED.effective_at, source_items.effective_at),
+          raw_retention_policy = COALESCE(EXCLUDED.raw_retention_policy, source_items.raw_retention_policy),
+          status = CASE
+            WHEN source_items.status = 'succeeded' THEN source_items.status
+            ELSE EXCLUDED.status
+          END,
+          error = NULL,
+          updated_at = NOW()
+        RETURNING *
+        """,
+        {
+            "id": item_id,
+            "user_id": source_row["user_id"],
+            "source_id": source_row["id"],
+            "source_type": source_row["type"],
+            "origin_ref": item.origin_ref,
+            "origin_ref_type": item.origin_ref_type,
+            "raw_snapshot_ref": item.raw_snapshot_ref,
+            "extracted_text_ref": item.extracted_text_ref,
+            "content_hash": item.content_hash,
+            "title": item.title,
+            "source_published_at": item.source_published_at,
+            "source_updated_at": item.source_updated_at,
+            "captured_at": item.captured_at,
+            "effective_at": item.effective_at,
+            "raw_retention_policy": item.raw_retention_policy,
+            "status": item.status,
+        },
+    )
+    return _serialize_source_item(row)
+
+
 # ── 微信 push 端点（无需登录 cookie，靠 X-API-Token 鉴权）────────────────────
 
 @router.post("/wechat/ingest")
@@ -80,7 +178,7 @@ async def wechat_ingest(request: Request, body: WechatIngestBody):
     token = request.headers.get("X-API-Token", "")
 
     row = await database.database.fetch_one(
-        "SELECT id, type, api_token, config, is_primary FROM sources WHERE id = :id",
+        "SELECT id, user_id, type, api_token, config, is_primary FROM sources WHERE id = :id",
         {"id": body.source_id},
     )
     if not row or row["type"] != "wechat":
@@ -95,19 +193,18 @@ async def wechat_ingest(request: Request, body: WechatIngestBody):
     file_name = f"{date.today()}-{content_hash}.txt"
     (raw_dir / file_name).write_text(body.content, encoding="utf-8")
 
-    # 追加到 source.config.pending_items
-    cfg = row["config"] or {}
-    if isinstance(cfg, str):
-        cfg = json.loads(cfg)
-    cfg.setdefault("pending_items", []).append({
-        "title": body.title,
-        "url": body.url,
-        "file_path": str(raw_dir / file_name),
-        "pushed_at": datetime.utcnow().isoformat() + "Z",
-    })
-    await database.database.execute(
-        "UPDATE sources SET config = :config WHERE id = :id",
-        {"id": body.source_id, "config": database.jsonb(cfg)},
+    pushed_at = datetime.utcnow()
+    await _create_source_item(
+        row,
+        SourceItemCreate(
+            origin_ref=body.url or f"wechat://{file_name}",
+            origin_ref_type="external",
+            raw_snapshot_ref=str(raw_dir / file_name),
+            content_hash=content_hash,
+            title=body.title,
+            captured_at=pushed_at,
+            raw_retention_policy="keep_raw",
+        ),
     )
 
     # 触发 ingestion-worker（fire-and-forget）
@@ -120,6 +217,102 @@ async def wechat_ingest(request: Request, body: WechatIngestBody):
         pass
 
     return {"ok": True}
+
+
+@router.get("/{source_id}/source-items")
+async def list_source_items(source_id: str, status: str | None = None, limit: int = 100):
+    row = await database.database.fetch_one(
+        "SELECT id FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    limit = max(1, min(limit, 500))
+    params: dict[str, Any] = {"source_id": source_id}
+    where = "source_id = :source_id"
+    if status:
+        where += " AND status = :status"
+        params["status"] = status
+    rows = await database.database.fetch_all(
+        f"""
+        SELECT * FROM source_items
+        WHERE {where}
+        ORDER BY created_at ASC
+        LIMIT {limit}
+        """,
+        params,
+    )
+    return [_serialize_source_item(r) for r in rows]
+
+
+@router.post("/{source_id}/source-items", status_code=status.HTTP_201_CREATED)
+async def create_source_items(source_id: str, body: SourceItemsCreate):
+    row = await database.database.fetch_one(
+        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
+    )
+    if not row:
+        raise HTTPException(404, "source 不存在")
+    if not body.items:
+        raise HTTPException(400, "items 不能为空")
+    created = [await _create_source_item(row, item) for item in body.items]
+    return {"ok": True, "items": created}
+
+
+@router.post("/source-items/{item_id}/status")
+async def update_source_item_status(item_id: str, body: SourceItemStatusUpdate):
+    if body.status not in {"pending", "processing", "succeeded", "failed", "ignored"}:
+        raise HTTPException(400, "不支持的 source item 状态")
+
+    updates = ["status = :status", "updated_at = NOW()"]
+    params: dict[str, Any] = {
+        "id": item_id,
+        "status": body.status,
+    }
+    if body.status == "processing":
+        updates.append("attempts = attempts + 1")
+        updates.append("error = NULL")
+    elif body.status == "failed":
+        updates.append("error = :error")
+        params["error"] = body.error
+    elif body.status == "succeeded":
+        updates.append("error = NULL")
+    if body.raw_snapshot_ref is not None:
+        updates.append("raw_snapshot_ref = :raw_snapshot_ref")
+        params["raw_snapshot_ref"] = body.raw_snapshot_ref
+    if body.extracted_text_ref is not None:
+        updates.append("extracted_text_ref = :extracted_text_ref")
+        params["extracted_text_ref"] = body.extracted_text_ref
+    if body.title is not None:
+        updates.append("title = :title")
+        params["title"] = body.title
+
+    row = await database.database.fetch_one(
+        f"""
+        UPDATE source_items
+        SET {', '.join(updates)}
+        WHERE id = :id
+        RETURNING *
+        """,
+        params,
+    )
+    if not row:
+        raise HTTPException(404, "source item 不存在")
+    return _serialize_source_item(row)
+
+
+@router.post("/source-items/{item_id}/retry")
+async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
+    row = await database.database.fetch_one(
+        """
+        UPDATE source_items
+        SET status = 'pending', error = NULL, updated_at = NOW()
+        WHERE id = :id AND status = 'failed'
+        RETURNING *
+        """,
+        {"id": item_id},
+    )
+    if not row:
+        raise HTTPException(404, "failed source item 不存在")
+    return _serialize_source_item(row)
 
 
 @router.get("/{source_id}")
@@ -211,7 +404,7 @@ async def upload_to_source(
     """向已有 source 上传一批文件（支持多文件），存储并触发 ingestion-worker 处理。
     Source 是持久渠道，可随时追加内容。"""
     row = await database.database.fetch_one(
-        "SELECT id, type FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -222,36 +415,31 @@ async def upload_to_source(
     raw_dir = USER_DATA_DIR / USER_ID / "raw" / src_type
     raw_dir.mkdir(parents=True, exist_ok=True)
 
+    captured_at = _validate_optional_time(captured_at, "captured_at")
+    effective_at = _validate_optional_time(effective_at, "effective_at")
+
     saved: list[str] = []
+    source_items: list[dict[str, Any]] = []
     for file in files:
         safe_name = f"{date.today()}-{secrets.token_hex(4)}-{file.filename or 'upload'}"
         file_path = raw_dir / safe_name
         content = await file.read()
         file_path.write_bytes(content)
         saved.append(str(file_path))
-
-    # 将文件路径列表写入 source config（追加方式，保留历史）
-    existing = await database.database.fetch_one(
-        "SELECT config FROM sources WHERE id = :id", {"id": source_id}
-    )
-    import json as _json
-    cfg = existing["config"] or {}
-    if isinstance(cfg, str):
-        cfg = _json.loads(cfg)
-    uploads: list[dict] = cfg.get("uploads", [])
-    batch: dict[str, Any] = {"date": str(date.today()), "files": saved}
-    captured_at = _validate_optional_time(captured_at, "captured_at")
-    effective_at = _validate_optional_time(effective_at, "effective_at")
-    if captured_at:
-        batch["captured_at"] = captured_at
-    if effective_at:
-        batch["effective_at"] = effective_at
-    uploads.append(batch)
-    cfg["uploads"] = uploads
-    await database.database.execute(
-        "UPDATE sources SET config = :config WHERE id = :id",
-        {"id": source_id, "config": database.jsonb(cfg)},
-    )
+        item = await _create_source_item(
+            row,
+            SourceItemCreate(
+                origin_ref=f"upload://{safe_name}",
+                origin_ref_type="upload",
+                raw_snapshot_ref=str(file_path),
+                content_hash=hashlib.sha256(content).hexdigest(),
+                title=Path(file.filename or safe_name).stem,
+                captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else None,
+                effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else None,
+                raw_retention_policy="keep_raw",
+            ),
+        )
+        source_items.append(item)
 
     # 触发 ingestion-worker（fire-and-forget）
     try:
@@ -262,7 +450,7 @@ async def upload_to_source(
     except Exception:
         pass
 
-    return {"ok": True, "files_saved": len(saved)}
+    return {"ok": True, "files_saved": len(saved), "source_items": source_items}
 
 
 @router.post("/{source_id}/add-url")
@@ -273,29 +461,30 @@ async def add_url_to_source(
 ):
     """向已有 URL source 追加一条或多条 URL，触发 ingestion-worker 处理。"""
     row = await database.database.fetch_one(
-        "SELECT id, type, config FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
     )
     if not row:
         raise HTTPException(404, "source 不存在")
     if row["type"] != "url":
         raise HTTPException(400, "仅 url 类型 source 支持此操作")
 
-    import json as _json
-    cfg = row["config"] or {}
-    if isinstance(cfg, str):
-        cfg = _json.loads(cfg)
-
     urls: list[str] = body.get("urls", [])
     if not urls:
         raise HTTPException(400, "至少提供一个 URL")
 
-    pending: list[str] = cfg.get("pending_urls", [])
-    pending.extend(urls)
-    cfg["pending_urls"] = pending
-    await database.database.execute(
-        "UPDATE sources SET config = :config WHERE id = :id",
-        {"id": source_id, "config": database.jsonb(cfg)},
-    )
+    source_items = [
+        await _create_source_item(
+            row,
+            SourceItemCreate(
+                origin_ref=url,
+                origin_ref_type="url",
+                content_hash=hashlib.sha256(url.encode("utf-8")).hexdigest(),
+                captured_at=datetime.utcnow(),
+                raw_retention_policy="keep_extracted_only",
+            ),
+        )
+        for url in urls
+    ]
 
     try:
         async with httpx.AsyncClient() as client:
@@ -305,7 +494,7 @@ async def add_url_to_source(
     except Exception:
         pass
 
-    return {"ok": True, "urls_queued": len(urls)}
+    return {"ok": True, "urls_queued": len(urls), "source_items": source_items}
 
 
 @router.post("/{source_id}/fetch")
