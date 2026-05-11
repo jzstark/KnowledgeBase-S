@@ -62,6 +62,16 @@ class WechatIngestBody(BaseModel):
     url: str = ""
 
 
+def _validate_optional_time(value: str | None, field_name: str) -> str | None:
+    if not value:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, f"{field_name} 必须是 ISO8601 时间")
+    return value
+
+
 # ── 微信 push 端点（无需登录 cookie，靠 X-API-Token 鉴权）────────────────────
 
 @router.post("/wechat/ingest")
@@ -194,6 +204,8 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
 async def upload_to_source(
     source_id: str,
     files: list[UploadFile] = File(...),
+    captured_at: str | None = Form(None),
+    effective_at: str | None = Form(None),
     _: dict = Depends(require_auth),
 ):
     """向已有 source 上传一批文件（支持多文件），存储并触发 ingestion-worker 处理。
@@ -227,7 +239,14 @@ async def upload_to_source(
     if isinstance(cfg, str):
         cfg = _json.loads(cfg)
     uploads: list[dict] = cfg.get("uploads", [])
-    uploads.append({"date": str(date.today()), "files": saved})
+    batch: dict[str, Any] = {"date": str(date.today()), "files": saved}
+    captured_at = _validate_optional_time(captured_at, "captured_at")
+    effective_at = _validate_optional_time(effective_at, "effective_at")
+    if captured_at:
+        batch["captured_at"] = captured_at
+    if effective_at:
+        batch["effective_at"] = effective_at
+    uploads.append(batch)
     cfg["uploads"] = uploads
     await database.database.execute(
         "UPDATE sources SET config = :config WHERE id = :id",

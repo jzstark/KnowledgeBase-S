@@ -71,6 +71,15 @@ def save_raw(item: RawItem, source_type: str) -> str:
     return str(file_path)
 
 
+def _time_payload(item: RawItem) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for key in ("source_published_at", "source_updated_at", "captured_at", "effective_at"):
+        value = getattr(item, key, None)
+        if value:
+            payload[key] = value.isoformat()
+    return payload
+
+
 def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list[dict]) -> dict:
     """
     Call Claude to analyze an article.
@@ -233,6 +242,10 @@ def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], 
     raw_ref_path = raw_ref.get("path") or raw_ref.get("url", "")
     tags_yaml = "[" + ", ".join(tags) + "]"
     created = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    source_published_at = item.source_published_at.isoformat() if item.source_published_at else ""
+    source_updated_at = item.source_updated_at.isoformat() if item.source_updated_at else ""
+    captured_at = item.captured_at.isoformat() if item.captured_at else ""
+    effective_at = item.effective_at.isoformat() if item.effective_at else ""
 
     content = f"""---
 id: {node_id}
@@ -243,6 +256,10 @@ wikilinks: []
 source_type: {source_type}
 raw_ref: {raw_ref_path}
 created_at: {created}
+source_published_at: {source_published_at}
+source_updated_at: {source_updated_at}
+captured_at: {captured_at}
+effective_at: {effective_at}
 updated_at: {created}
 ---
 
@@ -376,6 +393,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                 "tags": tags,
                 "is_primary": source_config.get("is_primary", True),
                 "object_type": "article",
+                **_time_payload(item),
             })
             logger.info(f"[{source_id}] article 入库: {article_id} — {item.title}")
 
@@ -526,6 +544,7 @@ async def run_book_pipeline(source, source_config: dict):
                 "raw_ref": raw_ref,
                 "tags": [],
                 "object_type": "index",
+                **_time_payload(item),
             })
 
             if index_resp.get("duplicate"):
@@ -565,6 +584,7 @@ async def run_book_pipeline(source, source_config: dict):
                         "tags": tags,
                         "object_type": "article",
                         "parent_index_id": index_id,
+                        **_time_payload(item),
                     })
                     logger.info(f"[{source_id}] chapter: {article_id} — {ch.title}")
 

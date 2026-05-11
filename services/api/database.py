@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     summary_of VARCHAR,
     canonical_name TEXT,
     aliases TEXT[] DEFAULT '{}',
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    source_published_at TIMESTAMPTZ,
+    source_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ,
+    effective_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -129,7 +134,17 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective TEXT;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS priority_score FLOAT DEFAULT 1.0;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 0;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
+
+UPDATE knowledge_nodes
+SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
+    captured_at = COALESCE(captured_at, created_at, ingested_at, NOW())
+WHERE ingested_at IS NULL OR captured_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
@@ -137,6 +152,9 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_priority ON knowledge_nodes(priority_score);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_knowledge_time ON knowledge_nodes(
+    COALESCE(effective_at, source_published_at, captured_at, ingested_at)
+);
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);

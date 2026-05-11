@@ -12,6 +12,18 @@ from pathlib import Path
 from sources.base import BaseSource, RawItem
 
 
+def _parse_optional_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 class FileSourceMixin(BaseSource):
     """
     子类需在 __init__ 中设置：
@@ -26,6 +38,8 @@ class FileSourceMixin(BaseSource):
         items: list[RawItem] = []
 
         for batch in self.uploads:
+            captured_at = _parse_optional_time(batch.get("captured_at"))
+            effective_at = _parse_optional_time(batch.get("effective_at"))
             for abs_path in batch.get("files", []):
                 p = Path(abs_path)
                 if not p.exists():
@@ -43,7 +57,9 @@ class FileSourceMixin(BaseSource):
                     raw_ref={"type": "file", "path": abs_path},
                     content_type=self.content_type,
                     raw_bytes=None,  # 文件已在磁盘，save_raw 因此跳过写入（no-op）
-                    fetched_at=datetime.now(timezone.utc),
+                    fetched_at=effective_at or captured_at or datetime.now(timezone.utc),
+                    captured_at=captured_at,
+                    effective_at=effective_at,
                 )
                 item._file_name = p.name  # save_raw 用此拼接路径，返回正确绝对路径
                 items.append(item)

@@ -205,3 +205,73 @@ Implementation fixes:
 - Fix: used AST parsing locally and ran `py_compile` inside the API container,
   where runtime permissions match the deployed app.
 - Verification: both AST parsing and container `py_compile` passed.
+
+## 2026-05-11 - Phase 3 Time Fields
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 3 stores time metadata on `knowledge_nodes` until Phase 4 introduces
+  `source_items` and later object-specific tables.
+- `knowledge_time` is an expression, not a stored column:
+  `COALESCE(effective_at, source_published_at, captured_at, ingested_at)`.
+- Non-force briefing increments still use DB-created topic time to find newly
+  ingested articles; force and first daily generation use `knowledge_time`.
+
+Implemented:
+
+- Added `ingested_at`, `source_published_at`, `source_updated_at`,
+  `captured_at`, and `effective_at` to `knowledge_nodes`.
+- Backfilled existing rows so `ingested_at` and `captured_at` default to the
+  existing DB creation time.
+- Added an expression index for `knowledge_time`.
+- Extended `/api/kb/ingest` to accept the new time fields and return them from
+  node detail responses.
+- Exported the time metadata into generated wiki frontmatter.
+- Extended ingestion `RawItem` with time metadata.
+- RSS ingestion now maps feed `published_parsed` and `updated_parsed` to
+  `source_published_at` and `source_updated_at`.
+- URL ingestion now attempts to use page metadata date as `source_published_at`
+  and otherwise falls back to captured time.
+- File uploads accept optional `captured_at` and `effective_at`, store them in
+  source upload batches, and pass them through file ingestion.
+- WeChat push ingestion maps `pushed_at` to `captured_at`.
+- Briefing force/first generation now filters and orders articles by
+  `knowledge_time`.
+- Updated source upload UI to expose optional save/content time fields.
+- Updated `MEMORY.md` with the new time-field semantics.
+
+Verification:
+
+- Local AST parsing passed for changed API and ingestion Python files.
+- `docker compose restart api` ran schema migration successfully.
+- API container `py_compile` passed for `database.py`, `routers/kb.py`,
+  `routers/sources.py`, and `routers/briefing.py`.
+- Ingestion-worker container `py_compile` passed for `pipeline.py` and changed
+  source adapters.
+- Postgres shows all five new timestamp columns on `knowledge_nodes`.
+- Postgres shows `idx_knowledge_nodes_knowledge_time` exists.
+- Existing nodes have no missing `ingested_at` or `captured_at` defaults.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- A temporary `/api/kb/ingest` probe with non-zero embedding wrote and read
+  `source_published_at`, `source_updated_at`, `captured_at`, and `effective_at`.
+- Simulated RSS entry in the ingestion-worker container produced populated
+  `source_published_at` and `source_updated_at`.
+- Simulated file upload batch in the ingestion-worker container produced
+  populated `captured_at` and `effective_at`.
+- Temporary probe nodes were deleted after verification.
+- `git diff --check` passed.
+
+Implementation fixes:
+
+- Symptom: the first temporary `/api/kb/ingest` probe used an all-zero embedding;
+  background similarity generation could produce `NaN`, and node detail JSON
+  serialization returned 500.
+- Root cause: cosine similarity is undefined for a zero vector, so an all-zero
+  test embedding is invalid for this pgvector path.
+- Fix: deleted the invalid probe node and reran the ingest verification with a
+  non-zero 1536-dimension vector.
+- Verification: the second probe returned the expected time fields and was then
+  deleted.

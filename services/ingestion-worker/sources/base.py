@@ -12,6 +12,10 @@ class RawItem:
     content_type: str                # 'text/html' | 'text/plain' | ...
     raw_bytes: bytes | None
     fetched_at: datetime = field(default_factory=datetime.utcnow)
+    source_published_at: datetime | None = None
+    source_updated_at: datetime | None = None
+    captured_at: datetime | None = None
+    effective_at: datetime | None = None
 
 
 class BaseSource(ABC):

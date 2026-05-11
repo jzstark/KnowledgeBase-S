@@ -323,6 +323,11 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - `canonical_name`
 - `aliases`
 - `perspective`
+- `ingested_at`
+- `source_published_at`
+- `source_updated_at`
+- `captured_at`
+- `effective_at`
 - `priority_score`
 - `last_accessed_at`
 - `access_count`
@@ -336,6 +341,9 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - `summary_of` 只对 `summary` 节点有意义
 - `canonical_name` / `aliases` 只对 `entity` 节点有意义
 - `perspective` 已经加到 schema，但当前主要用于手动多视角摘要
+- Phase 3 后，知识时间按
+  `effective_at ?? source_published_at ?? captured_at ?? ingested_at` 选择；
+  `created_at` 继续表示 DB 创建时间，不再作为素材事实时间使用
 
 ### 4.3 当前边类型
 
@@ -547,7 +555,7 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 生成策略：
 
 - 默认模式：增量生成，只处理上次生成后新增的 primary articles
-- `force=true`：清空今日选题并按时间窗口重算
+- `force=true`：清空今日选题并按知识时间窗口重算
 - 时间窗口由 `briefing_hours_back` 控制
 - prompt 为 `briefing_topics`
 - 分批调用 Claude，遇到 `max_tokens` 会自动拆批重试

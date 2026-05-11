@@ -7,8 +7,8 @@ import trafilatura
 from .base import BaseSource, RawItem
 
 
-def _parse_date(entry) -> datetime | None:
-    t = entry.get("published_parsed") or entry.get("updated_parsed")
+def _parse_struct_time(value) -> datetime | None:
+    t = value
     if t:
         return datetime(*t[:6], tzinfo=timezone.utc)
     return None
@@ -26,14 +26,16 @@ class RSSSource(BaseSource):
         items: list[RawItem] = []
 
         for entry in feed.entries:
-            pub = _parse_date(entry)
-            if last_fetched_at and pub and pub <= last_fetched_at:
+            published_at = _parse_struct_time(entry.get("published_parsed"))
+            updated_at = _parse_struct_time(entry.get("updated_parsed"))
+            item_time = published_at or updated_at
+            if last_fetched_at and item_time and item_time <= last_fetched_at:
                 continue
 
             url = entry.get("link", "")
             guid = entry.get("id", url)
             guid_hash = hashlib.md5(guid.encode()).hexdigest()[:8]
-            date_str = (pub or datetime.utcnow()).strftime("%Y-%m-%d")
+            date_str = (item_time or datetime.utcnow()).strftime("%Y-%m-%d")
             title = entry.get("title", "")
 
             # 优先用 entry 自带 content，否则用 summary 字段
@@ -50,7 +52,10 @@ class RSSSource(BaseSource):
                     raw_ref={"type": "url", "url": url},
                     content_type="text/html",
                     raw_bytes=content.encode("utf-8") if content else None,
-                    fetched_at=pub or datetime.utcnow(),
+                    fetched_at=item_time or datetime.utcnow(),
+                    source_published_at=published_at,
+                    source_updated_at=updated_at,
+                    captured_at=datetime.now(timezone.utc),
                 )
             )
             # 存文件路径附加到 raw_ref（pipeline 保存后回填）

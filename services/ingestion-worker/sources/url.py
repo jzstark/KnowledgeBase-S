@@ -9,6 +9,18 @@ import trafilatura
 from sources.base import BaseSource, RawItem
 
 
+def _parse_metadata_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 class URLSource(BaseSource):
     fetch_mode = "one_shot"
 
@@ -25,6 +37,8 @@ class URLSource(BaseSource):
         # 尝试提取标题
         metadata = trafilatura.extract_metadata(downloaded)
         title = metadata.title if metadata and metadata.title else self.url
+        published_at = _parse_metadata_date(getattr(metadata, "date", None) if metadata else None)
+        captured_at = datetime.now(timezone.utc)
 
         item = RawItem(
             source_id=self.source_id,
@@ -32,9 +46,11 @@ class URLSource(BaseSource):
             raw_ref={"type": "url", "url": self.url},
             content_type="html",
             raw_bytes=downloaded.encode("utf-8"),
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=published_at or captured_at,
+            source_published_at=published_at,
+            captured_at=captured_at,
         )
-        item._file_name = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{self.source_id}.html"
+        item._file_name = f"{captured_at.strftime('%Y-%m-%d')}-{self.source_id}.html"
         return [item]
 
     def extract_text(self, raw: RawItem) -> str:

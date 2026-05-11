@@ -556,6 +556,8 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
 
 function UploadModal({ source, onClose, onDone }: { source: Source | null; onClose: () => void; onDone: () => void }) {
   const [files, setFiles] = useState<FileList | null>(null);
+  const [capturedAt, setCapturedAt] = useState("");
+  const [effectiveAt, setEffectiveAt] = useState("");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -567,6 +569,8 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
     try {
       const fd = new FormData();
       for (const f of Array.from(files)) fd.append("files", f);
+      if (capturedAt) fd.append("captured_at", new Date(capturedAt).toISOString());
+      if (effectiveAt) fd.append("effective_at", new Date(effectiveAt).toISOString());
       const res = await fetch(`/api/sources/${source.id}/upload`, {
         method: "POST", credentials: "include", body: fd,
       });
@@ -599,6 +603,26 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
             className="text-sm text-muted-foreground w-full"
           />
           <p className="text-xs text-muted-foreground">可一次选择多个文件，每个文件独立处理后进入知识库。</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="captured-at">保存时间</Label>
+              <Input
+                id="captured-at"
+                type="datetime-local"
+                value={capturedAt}
+                onChange={(e) => setCapturedAt(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="effective-at">内容时间</Label>
+              <Input
+                id="effective-at"
+                type="datetime-local"
+                value={effectiveAt}
+                onChange={(e) => setEffectiveAt(e.target.value)}
+              />
+            </div>
+          </div>
           {result && <p className="text-sm">{result}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>

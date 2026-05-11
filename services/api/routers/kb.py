@@ -4,6 +4,7 @@ import os
 import pathlib
 import secrets
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 import anthropic
@@ -58,6 +59,10 @@ class IngestRequest(BaseModel):
     canonical_name: str | None = None
     aliases: list[str] = []
     perspective: str | None = None
+    source_published_at: datetime | None = None
+    source_updated_at: datetime | None = None
+    captured_at: datetime | None = None
+    effective_at: datetime | None = None
     parent_index_id: str | None = None   # if set, creates part_of edge to this index node
 
 
@@ -91,12 +96,13 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
            tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
-           perspective)
+           perspective, source_published_at, source_updated_at, captured_at, effective_at)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
            :object_type, :source_node_ids, :summary_of, :canonical_name, :aliases,
-           :perspective)
+           :perspective, :source_published_at, :source_updated_at, :captured_at,
+           :effective_at)
         """,
         {
             "id": node_id,
@@ -114,6 +120,10 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "canonical_name": body.canonical_name,
             "aliases": body.aliases,
             "perspective": body.perspective,
+            "source_published_at": body.source_published_at,
+            "source_updated_at": body.source_updated_at,
+            "captured_at": body.captured_at or datetime.now(timezone.utc),
+            "effective_at": body.effective_at,
         },
     )
     if body.parent_index_id:
@@ -206,6 +216,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
         """
         SELECT id, title, abstract, source_type, raw_ref, tags, object_type,
                source_node_ids, summary_of, canonical_name, aliases, perspective,
+               ingested_at, source_published_at, source_updated_at, captured_at, effective_at,
                created_at, updated_at
         FROM knowledge_nodes WHERE id = :id
         """,
@@ -226,6 +237,11 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     tags: list[str] = list(node["tags"]) if node["tags"] else []
     created_at = node["created_at"].isoformat() if node["created_at"] else ""
     updated_at = node["updated_at"].isoformat() if node.get("updated_at") else created_at
+    ingested_at = node["ingested_at"].isoformat() if node.get("ingested_at") else ""
+    source_published_at = node["source_published_at"].isoformat() if node.get("source_published_at") else ""
+    source_updated_at = node["source_updated_at"].isoformat() if node.get("source_updated_at") else ""
+    captured_at = node["captured_at"].isoformat() if node.get("captured_at") else ""
+    effective_at = node["effective_at"].isoformat() if node.get("effective_at") else ""
 
     raw_ref = node["raw_ref"]
     if isinstance(raw_ref, str):
@@ -284,6 +300,11 @@ title: "{title}"
 tags: {tags_yaml}
 wikilinks: {wikilinks_yaml}{extra_fm}
 created_at: {created_at}
+ingested_at: {ingested_at}
+source_published_at: {source_published_at}
+source_updated_at: {source_updated_at}
+captured_at: {captured_at}
+effective_at: {effective_at}
 updated_at: {updated_at}{relations_yaml}
 ---
 
@@ -479,10 +500,17 @@ async def get_node(node_id: str):
     node.pop("embedding", None)
     if node.get("raw_ref") and isinstance(node["raw_ref"], str):
         node["raw_ref"] = json.loads(node["raw_ref"])
-    if node.get("created_at"):
-        node["created_at"] = node["created_at"].isoformat()
-    if node.get("updated_at"):
-        node["updated_at"] = node["updated_at"].isoformat()
+    for key in (
+        "created_at",
+        "updated_at",
+        "ingested_at",
+        "source_published_at",
+        "source_updated_at",
+        "captured_at",
+        "effective_at",
+    ):
+        if node.get(key):
+            node[key] = node[key].isoformat()
 
     # Read wiki body from correct subdirectory
     wiki_body = ""

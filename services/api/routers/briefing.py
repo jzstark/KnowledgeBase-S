@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 BATCH_SIZE = 12  # 初始批次大小；命中 max_tokens 时会自动对半拆分递归重试
+KNOWLEDGE_TIME_SQL = "COALESCE(effective_at, source_published_at, captured_at, ingested_at)"
 
 
 # ── 获取今日选题 ─────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ async def generate_briefing(
             {"user_id": USER_ID, "date": today},
         )
         since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
-        node_cutoff = f"created_at >= '{since}'::timestamptz"
+        node_cutoff = f"{KNOWLEDGE_TIME_SQL} >= '{since}'::timestamptz"
     else:
         # 查询今日是否已有选题，有则只处理更新的节点
         last_topic = await database.database.fetch_one(
@@ -114,17 +115,18 @@ async def generate_briefing(
         else:
             # 今日首次生成：取最近 N 小时
             since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
-            node_cutoff = f"created_at >= '{since}'::timestamptz"
+            node_cutoff = f"{KNOWLEDGE_TIME_SQL} >= '{since}'::timestamptz"
 
     rows = await database.database.fetch_all(
         f"""
-        SELECT id, title, abstract, tags, created_at
+        SELECT id, title, abstract, tags, created_at,
+               {KNOWLEDGE_TIME_SQL} AS knowledge_time
         FROM knowledge_nodes
         WHERE user_id = :user_id
           AND is_primary = true
           AND object_type = 'article'
           AND {node_cutoff}
-        ORDER BY created_at DESC
+        ORDER BY knowledge_time DESC
         """,
         {"user_id": USER_ID},
     )

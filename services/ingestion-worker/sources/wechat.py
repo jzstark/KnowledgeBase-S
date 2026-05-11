@@ -23,6 +23,7 @@ class WechatSource(BaseSource):
         items: list[RawItem] = []
 
         for item in self.pending_items:
+            pushed_dt = None
             # 精确 datetime 过滤（pushed_at 是 ISO8601 字符串）
             if last_fetched_at and item.get("pushed_at"):
                 try:
@@ -37,6 +38,11 @@ class WechatSource(BaseSource):
                         continue
                 except ValueError:
                     pass  # 时间格式异常时保守处理，不过滤
+            elif item.get("pushed_at"):
+                try:
+                    pushed_dt = datetime.fromisoformat(item["pushed_at"].replace("Z", "+00:00"))
+                except ValueError:
+                    pushed_dt = None
 
             p = Path(item.get("file_path", ""))
             if not p.exists():
@@ -48,7 +54,8 @@ class WechatSource(BaseSource):
                 raw_ref={"type": "url", "url": item.get("url", "")},
                 content_type="text/plain",
                 raw_bytes=p.read_bytes(),
-                fetched_at=datetime.now(timezone.utc),
+                fetched_at=pushed_dt or datetime.now(timezone.utc),
+                captured_at=pushed_dt or datetime.now(timezone.utc),
             )
             raw_item._file_name = p.name
             items.append(raw_item)
