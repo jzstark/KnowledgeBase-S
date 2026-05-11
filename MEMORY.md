@@ -34,7 +34,6 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | `ingestion-worker` | 内容抓取与入库 | 支持 HTTP trigger 和轮询模式 |
 | `feedback-worker` | 草稿 diff 分析 | 提炼写作偏好规则 |
 | `summarizer-worker` | 定时触发简报生成 | 只负责调用 API，不承担摘要逻辑 |
-| `scheduler` | 定时调度占位 | **当前仍是 stub** |
 | `maintenance-worker` | 周期维护 | 复用 `api` 镜像执行 `maintenance.py` |
 | `postgres` | 主数据库 | `pgvector/pgvector:pg16` |
 | `rsshub` | RSSHub | 供微信等订阅源使用 |
@@ -47,7 +46,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 - 开发叠加 `docker-compose.dev.yml`
 - `workers` profile 包含 `ingestion-worker`、`summarizer-worker`、`feedback-worker`
 - `maintenance` profile 包含 `maintenance-worker`
-- `scheduler` 和 `watchtower` 在 dev compose 中被禁用
+- `watchtower` 在 dev compose 中被禁用
 
 ### 2.3 认证方式
 
@@ -90,7 +89,6 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | `feedback-worker` | `services/feedback-worker/main.py` | 暴露 `/analyze`，负责 diff -> 偏好规则 |
 | `summarizer-worker` | `services/summarizer-worker/main.py` | 登录 API 后触发 `/api/briefing/generate` |
 | `maintenance-worker` | `services/api/maintenance.py` | 复用 API 镜像执行维护脚本 |
-| `scheduler` | `services/api/scheduler.py` | 当前仅占位，无真实调度逻辑 |
 
 这意味着当前系统不是“每个服务都完全自治”的架构，而是：
 
@@ -146,7 +144,7 @@ summarizer-worker
 | 基础设施 | `database.py`、`auth.py` | schema/init、JWT 认证 |
 | 配置加载 | `config_loader.py`、`prompt_loader.py` | 读取 `config/` 挂载内容 |
 | 业务路由 | `routers/*.py` | sources、kb、briefing、drafts、files、settings、chat |
-| 脚本模块 | `maintenance.py`、`scheduler.py` | 图谱维护、恢复/重建、调度占位 |
+| 脚本模块 | `maintenance.py` | 图谱维护、恢复/重建 |
 
 当前 router 的业务分工是：
 
@@ -358,7 +356,7 @@ wiki 是 **系统生成的 Markdown 副本**，但不是完全只读：
 
 - `multi-layer-plan.md` 里“移除 LLM 语义边”的目标 **尚未完全落实**
 - `maintenance.py` 仍然会生成 `extends/background_of/supports/contradicts`
-- `co_occurs_with` 在配置和前端颜色里预留了位置，但 **后端尚未实现**
+- `co_occurs_with` 尚未实现；Phase 1 已移除前端旧过滤提示
 - 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
 
 ### 4.4 其他表
@@ -638,9 +636,9 @@ wiki 是 **系统生成的 Markdown 副本**，但不是完全只读：
 
 因此它比 `multi-layer-plan.md` 里的“全 raw material 重建”目标更窄。
 
-### 10.4 scheduler 现状
+### 10.4 调度现状
 
-`services/api/scheduler.py` 当前只是一个无限 sleep 的占位脚本，**没有真正调度 ingestion / briefing / maintenance**。  
+Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 现阶段的自动化主要依赖：
 
 - ingestion-worker 自己的轮询
@@ -717,7 +715,7 @@ wiki 是 **系统生成的 Markdown 副本**，但不是完全只读：
 
 - `co_occurs_with` 没有真正实现
 - “移除 LLM 语义边” 尚未完成，maintenance 仍会生成 `extends/background_of/supports/contradicts`
-- scheduler 仍是 stub
+- 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务
 - chat 还没有接入知识库检索

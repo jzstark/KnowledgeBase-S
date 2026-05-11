@@ -100,20 +100,6 @@ services:
         condition: service_healthy
     profiles: ["workers"]
 
-  scheduler:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
-    build:
-      context: ./services/api
-    command: python scheduler.py
-    restart: unless-stopped
-    volumes:
-      - ./config:/app/shared_config:ro
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      API_BASE_URL: http://api:8000
-    depends_on:
-      - api
-
   maintenance-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
     build:

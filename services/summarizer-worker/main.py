@@ -51,8 +51,9 @@ async def trigger_generate(token: str):
         )
         resp.raise_for_status()
         data = resp.json()
-        total = sum(len(g["nodes"]) for g in data.get("groups", []))
-        logger.info(f"简报生成完成：{len(data.get('groups', []))} 个分组，共 {total} 篇")
+        topics = data.get("topics", [])
+        total = sum(t.get("source_count", 0) for t in topics)
+        logger.info(f"简报生成完成：{len(topics)} 个选题，共 {total} 篇来源")
         return data
 
 
@@ -71,7 +72,7 @@ async def main():
     logger.info("定时模式启动，将在每日 briefing_time 触发")
     while True:
         now = datetime.now(timezone.utc)
-        # 简单实现：每小时检查一次，整点触发（实际部署由 scheduler 精确控制）
+        # 简单实现：每小时检查一次。
         logger.info(f"等待下次触发... 当前 UTC: {now.strftime('%H:%M')}")
         await asyncio.sleep(3600)
         try:

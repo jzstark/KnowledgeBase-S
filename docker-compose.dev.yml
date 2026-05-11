@@ -76,9 +76,6 @@ services:
       - ./config:/app/shared_config:ro
     profiles: []   # dev 模式不限制 profile
 
-  scheduler:
-    profiles: ["disabled"]
-
   watchtower:
     profiles: ["disabled"]
 

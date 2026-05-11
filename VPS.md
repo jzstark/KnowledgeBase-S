@@ -67,7 +67,7 @@ In the AWS console, add inbound rules to the instance's Security Group:
 # Pull all pre-built images from ghcr.io
 docker compose pull
 
-# Start core services (postgres, api, web, nginx, scheduler, rsshub, watchtower)
+# Start core services (postgres, api, web, nginx, rsshub, watchtower)
 docker compose up -d
 
 # Start workers (ingestion, summarizer, feedback)
@@ -133,7 +133,7 @@ Local dev uses `docker-compose.dev.yml` on top of the base compose file. Key dif
 - Source directories are **bind-mounted** into containers — code changes take effect immediately without rebuilding
 - `postgres` uses a **named volume** (`postgres_dev`) instead of a bind mount, avoiding Docker Desktop permission issues
 - `web/.next` build cache is in a named volume (`web_next`) so it survives container restarts
-- `scheduler` and `watchtower` are disabled in dev mode
+- `watchtower` is disabled in dev mode
 
 ### First-time setup
 

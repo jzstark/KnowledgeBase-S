@@ -84,14 +84,9 @@ interface OpenFile {
 
 const EDGE_COLORS: Record<string, string> = {
   similar_to: "#60a5fa",
-  background_of: "#f59e0b",
-  extends: "#34d399",
-  wikilink: "#a78bfa",
   mentions: "#a78bfa",
-  contradicts: "#f87171",
   part_of: "#8b5cf6",
   summarizes: "#fbbf24",
-  co_occurs_with: "#4ade80",
 };
 
 const OBJECT_TYPE_COLORS: Record<string, string> = {
