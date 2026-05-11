@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -560,7 +561,7 @@ function ExplorerPanel({
                           <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
                             <button
                               onClick={() => {
-                                onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true });
+                                onOpenFile({ rel_path: f.rel_path, name: f.name, writable: false });
                                 onSelectNode(nodeId);
                               }}
                               className={cn(
@@ -735,6 +736,7 @@ function WikiPanel({
   onCloseFile,
   onOpenFile,
   onSummaryCreated,
+  onSummaryRevised,
 }: {
   detail: NodeDetail | null;
   detailLoading: boolean;
@@ -742,11 +744,16 @@ function WikiPanel({
   onCloseFile: () => void;
   onOpenFile: (f: OpenFile) => void;
   onSummaryCreated?: () => void;
+  onSummaryRevised?: (nodeId: string) => void;
 }) {
   const [sumFormOpen, setSumFormOpen] = useState(false);
   const [perspInput, setPerspInput] = useState("");
   const [sumLoading, setSumLoading] = useState(false);
   const [sumMsg, setSumMsg] = useState("");
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [reviseInstruction, setReviseInstruction] = useState("");
+  const [reviseLoading, setReviseLoading] = useState(false);
+  const [reviseMsg, setReviseMsg] = useState("");
 
   async function handleCreateSummary() {
     if (!detail) return;
@@ -776,6 +783,34 @@ function WikiPanel({
     }
   }
 
+  async function handleReviseSummary() {
+    if (!detail || !reviseInstruction.trim()) return;
+    setReviseLoading(true);
+    setReviseMsg("");
+    try {
+      const r = await fetch(`/api/kb/nodes/${detail.id}/revise_summary`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction: reviseInstruction.trim() }),
+      });
+      if (r.ok) {
+        setReviseInstruction("");
+        setReviseOpen(false);
+        setReviseMsg("已修订");
+        onSummaryRevised?.(detail.id);
+        setTimeout(() => setReviseMsg(""), 2000);
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setReviseMsg(`修订失败：${err.detail || r.status}`);
+      }
+    } catch {
+      setReviseMsg("网络错误");
+    } finally {
+      setReviseLoading(false);
+    }
+  }
+
   if (openFile) return <FilePanel file={openFile} onClose={onCloseFile} />;
 
   if (detailLoading) {
@@ -798,6 +833,7 @@ function WikiPanel({
     : objectType === "index" ? "indices"
     : "articles";
   const canCreateSummary = objectType === "article" || objectType === "index";
+  const canReviseSummary = objectType === "summary";
 
   return (
     <div className="flex flex-col h-full">
@@ -844,6 +880,16 @@ function WikiPanel({
                 ＋ 摘要
               </Button>
             )}
+            {canReviseSummary && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => { setReviseOpen((v) => !v); setReviseMsg(""); }}
+              >
+                修订摘要
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -852,11 +898,11 @@ function WikiPanel({
                 onOpenFile({
                   rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
                   name: `${detail.title || detail.id}.md`,
-                  writable: true,
+                  writable: false,
                 })
               }
             >
-              在编辑器中打开
+              查看 Wiki 导出
             </Button>
           </div>
         </div>
@@ -894,6 +940,44 @@ function WikiPanel({
                   sumMsg.startsWith("生成失败") || sumMsg.startsWith("网络") ? "text-destructive" : "text-green-600"
                 )}>
                   {sumMsg}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {reviseOpen && (
+          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+            <Textarea
+              value={reviseInstruction}
+              onChange={(e) => setReviseInstruction(e.target.value)}
+              placeholder="输入修订指令"
+              className="text-xs min-h-[80px]"
+              disabled={reviseLoading}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                className="h-6 text-xs"
+                onClick={handleReviseSummary}
+                disabled={reviseLoading || !reviseInstruction.trim()}
+              >
+                {reviseLoading ? "修订中…" : "修订"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-muted-foreground"
+                onClick={() => { setReviseOpen(false); setReviseMsg(""); }}
+              >
+                取消
+              </Button>
+              {reviseMsg && (
+                <span className={cn(
+                  "text-xs",
+                  reviseMsg.startsWith("修订失败") || reviseMsg.startsWith("网络") ? "text-destructive" : "text-green-600"
+                )}>
+                  {reviseMsg}
                 </span>
               )}
             </div>
@@ -1014,6 +1098,16 @@ export default function KnowledgePage() {
     if (selectedNodeId === nodeId) return;
     setSelectedNodeId(nodeId);
     setOpenFile(null);
+    setDetailLoading(true);
+    try {
+      const r = await fetch(`/api/kb/node/${nodeId}`, { credentials: "include" });
+      if (r.ok) setDetail(await r.json());
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function refreshSelectedNode(nodeId: string) {
     setDetailLoading(true);
     try {
       const r = await fetch(`/api/kb/node/${nodeId}`, { credentials: "include" });
@@ -1280,6 +1374,10 @@ export default function KnowledgePage() {
               onSummaryCreated={() => {
                 setExplorerKey((k) => k + 1);
                 setListRefreshToken((t) => t + 1);
+                loadGraph();
+              }}
+              onSummaryRevised={(nodeId) => {
+                refreshSelectedNode(nodeId);
                 loadGraph();
               }}
             />

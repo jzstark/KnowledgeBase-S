@@ -265,27 +265,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     wiki_file = _wiki_file_path(user_id, node_id, object_type)
     wiki_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Preserve existing body text; update only frontmatter and relations section.
-    # If the file body is empty (e.g. index nodes before aggregate_index_abstracts runs),
-    # fall back to the DB abstract so nodes always show meaningful content.
-    existing_body = node["abstract"] or ""
-    if wiki_file.exists():
-        raw_content = wiki_file.read_text(encoding="utf-8")
-        parts = raw_content.split("---", 2)
-        if len(parts) >= 3:
-            body_section = parts[2].strip()
-            if "\n## 关联节点\n" in body_section:
-                body_section = body_section[:body_section.index("\n## 关联节点\n")].strip()
-            lines = body_section.split("\n", 2)
-            if len(lines) >= 3:
-                file_body = lines[2].strip()
-            elif len(lines) == 2:
-                file_body = ""
-            else:
-                file_body = body_section
-            # Only override DB abstract if the file actually has content
-            if file_body:
-                existing_body = file_body
+    export_body = node["abstract"] or ""
 
     # Build type-specific frontmatter extras
     perspective_val = node.get("perspective") or ""
@@ -309,7 +289,7 @@ updated_at: {updated_at}{relations_yaml}
 
 # {title}
 
-{existing_body}
+{export_body}
 """
     if relations:
         content += "\n## 关联节点\n"
@@ -536,6 +516,10 @@ class CreateSummaryRequest(BaseModel):
     perspective: str | None = None
 
 
+class ReviseSummaryRequest(BaseModel):
+    instruction: str
+
+
 @router.post("/nodes/{node_id}/create_summary")
 async def create_summary(
     node_id: str,
@@ -554,17 +538,6 @@ async def create_summary(
 
     user_id = source["user_id"] or USER_ID
 
-    # Read existing wiki body for richer context (cap at 3000 chars to avoid token overflow)
-    wiki_file = _wiki_file_path(user_id, node_id, source["object_type"])
-    wiki_body = ""
-    if wiki_file.exists():
-        raw = wiki_file.read_text(encoding="utf-8")
-        parts = raw.split("---", 2)
-        if len(parts) >= 3:
-            section = parts[2].strip()
-            lines = section.split("\n", 2)
-            wiki_body = (lines[2].strip() if len(lines) >= 3 else section)[:3000]
-
     # Build prompt
     perspective_instruction = (
         f"\n\n请从以下视角撰写摘要：{body.perspective}" if body.perspective else ""
@@ -573,7 +546,7 @@ async def create_summary(
         "summary_gen",
         title=source["title"] or node_id,
         abstract=source["abstract"] or "",
-        body=wiki_body,
+        body=(source["abstract"] or "")[:3000],
         perspective_instruction=perspective_instruction,
     )
 
@@ -619,7 +592,7 @@ async def create_summary(
             "id": summary_id,
             "user_id": user_id,
             "title": summary_title,
-            "abstract": summary_content[:500],
+            "abstract": summary_content,
             "source_type": "summary",
             "source_id": node_id,
             "raw_ref": database.jsonb({}),
@@ -650,6 +623,105 @@ async def create_summary(
         "content": summary_content,
         "perspective": body.perspective,
         "source_id": node_id,
+    }
+
+
+@router.post("/nodes/{node_id}/revise_summary")
+async def revise_summary(
+    node_id: str,
+    body: ReviseSummaryRequest,
+    background_tasks: BackgroundTasks,
+):
+    """按用户指令重写 summary 正文，并同步更新 embedding 与 wiki 导出。"""
+    instruction = body.instruction.strip()
+    if not instruction:
+        raise HTTPException(400, "修改指令不能为空")
+
+    summary = await database.database.fetch_one(
+        """
+        SELECT id, user_id, title, abstract, object_type, summary_of, perspective
+        FROM knowledge_nodes WHERE id = :id
+        """,
+        {"id": node_id},
+    )
+    if not summary:
+        raise HTTPException(404, "节点不存在")
+    if summary["object_type"] != "summary":
+        raise HTTPException(400, "只能 revise summary 节点")
+
+    source = None
+    if summary["summary_of"]:
+        source = await database.database.fetch_one(
+            "SELECT id, title, abstract, object_type FROM knowledge_nodes WHERE id = :id",
+            {"id": summary["summary_of"]},
+        )
+
+    source_context = ""
+    if source:
+        source_context = (
+            f"对象类型：{source['object_type'] or ''}\n"
+            f"标题：{source['title'] or source['id']}\n"
+            f"系统摘要：{source['abstract'] or ''}"
+        )
+
+    prompt = (
+        "你是一个知识库编辑助手。请根据用户指令修订已有 summary。\n\n"
+        f"被观察对象：\n{source_context}\n\n"
+        f"当前 summary：\n{summary['abstract'] or ''}\n\n"
+        f"用户修改指令：\n{instruction}\n\n"
+        "要求：\n"
+        "- 只基于被观察对象和当前 summary 中已有事实修订，不要虚构新事实\n"
+        "- 输出修订后的完整 summary 正文\n"
+        "- 使用 3-6 句中文，纯文本输出，不含标题行或 Markdown 格式"
+    )
+
+    try:
+        message = await claude_client.messages.create(
+            model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+            max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        revised_content = message.content[0].text.strip()
+    except Exception as e:
+        raise HTTPException(500, f"摘要修订失败：{e}")
+
+    embed_resp = await openai_client.embeddings.create(
+        model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        input=revised_content[:config_loader.get("embedding.max_chars", 8000)],
+        dimensions=config_loader.get("embedding.dimensions", 1536),
+    )
+    embedding = embed_resp.data[0].embedding
+    embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+
+    await database.database.execute(
+        f"""
+        UPDATE knowledge_nodes
+        SET abstract = :abstract, embedding = '{embedding_literal}'::vector, updated_at = NOW()
+        WHERE id = :id
+        """,
+        {"id": node_id, "abstract": revised_content},
+    )
+
+    await database.database.execute(
+        """
+        DELETE FROM knowledge_edges
+        WHERE relation_type = 'similar_to'
+          AND created_by = 'auto_semantic'
+          AND (from_node_id = :id OR to_node_id = :id)
+        """,
+        {"id": node_id},
+    )
+
+    user_id = summary["user_id"] or USER_ID
+    background_tasks.add_task(write_wiki_node, node_id, user_id)
+    background_tasks.add_task(build_similar_edges, node_id, user_id)
+
+    return {
+        "id": node_id,
+        "title": summary["title"],
+        "content": revised_content,
+        "perspective": summary["perspective"],
+        "source_id": summary["summary_of"],
     }
 
 

@@ -145,3 +145,63 @@ Not run:
   smoke check.
 - `npm run lint` was not usable as a non-interactive check because this repo
   does not yet have ESLint configured and Next.js prompted to create a config.
+
+## 2026-05-11 - Phase 2 Wiki Read-only and Article Immutable
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 2 should enforce the new source-of-truth model without introducing the
+  future object-specific tables yet.
+- In the current schema, summary body remains in `knowledge_nodes.abstract`
+  until Phase 2.5/3 introduces a dedicated summary table/body field.
+- Full summary revise behavior calls the configured Claude and OpenAI embedding
+  providers, so live verification covers validation and routing without
+  invoking LLMs.
+
+Implemented:
+
+- Made `wiki/` read-only through `services/api/routers/files.py`:
+  - `GET /api/files/content` can still read `wiki/` and `config/`.
+  - `PUT /api/files/content` only accepts `config/`.
+  - `DELETE /api/files/content` only accepts `config/`; wiki node deletion
+    remains through `/api/kb/nodes/{id}`.
+- Changed `write_wiki_node()` to export body from DB instead of preserving old
+  wiki file body text.
+- Changed summary creation to use DB source text instead of reading wiki body
+  as generation context.
+- Added `POST /api/kb/nodes/{id}/revise_summary`:
+  - accepts an instruction instead of direct body replacement
+  - only allows `object_type = 'summary'`
+  - rewrites the summary through the LLM path
+  - recalculates embedding
+  - refreshes wiki export and `similar_to` edges
+- Updated `/knowledge` so wiki files open read-only and summary nodes expose a
+  revise-instruction control instead of direct wiki/body editing.
+- Updated settings and `MEMORY.md` to describe wiki as a read-only export.
+
+Verification:
+
+- `python -c "import ast,pathlib; ..."` parsed the changed API files.
+- `docker compose exec -T api python -m py_compile /app/routers/files.py /app/routers/kb.py`
+  passed inside the runtime container.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- `PUT /api/files/content` for `wiki/articles/probe.md` returns 403.
+- `DELETE /api/files/content` for `wiki/articles/probe.md` returns 403.
+- `PUT` then `DELETE` for a temporary `config/templates/*.md` file still
+  returns `{"ok": true}`.
+- `POST /api/kb/nodes/{id}/revise_summary` with an empty instruction returns
+  400 without invoking LLMs.
+- `git diff --check` passed.
+
+Implementation fixes:
+
+- Symptom: local `python -m py_compile services/api/routers/files.py services/api/routers/kb.py`
+  failed with `Permission denied` writing into `services/api/routers/__pycache__`.
+- Root cause: existing `__pycache__` permissions in the workspace do not allow
+  this user to create the temporary pyc file.
+- Fix: used AST parsing locally and ran `py_compile` inside the API container,
+  where runtime permissions match the deployed app.
+- Verification: both AST parsing and container `py_compile` passed.

@@ -3,7 +3,7 @@
 
 提供对 user_data 目录下三个区域的访问：
   - raw/   原始上传文件（只读列表 + 删除通过 kb.py 的节点删除接口）
-  - wiki/  自动生成的 Markdown 笔记（可读写）
+  - wiki/  自动生成的 Markdown 笔记（只读导出）
   - config/ 用户配置模板（可读写）
 """
 
@@ -20,26 +20,35 @@ USER_ID = "default"
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 RAW_TYPES = ["pdf", "image", "wechat", "plaintext", "word"]
-EDITABLE_PREFIXES = ("wiki/", "config/")
+READABLE_PREFIXES = ("wiki/", "config/")
+WRITABLE_PREFIXES = ("config/",)
 
 
 def _user_dir() -> pathlib.Path:
     return USER_DATA_DIR / USER_ID
 
 
-def _safe_editable(rel_path: str) -> pathlib.Path:
+def _safe_path(rel_path: str, allowed_prefixes: tuple[str, ...], deny_detail: str) -> pathlib.Path:
     """
     Resolve rel_path within the user directory and verify it stays inside
-    an editable area (wiki/ or config/). Raises 403 otherwise.
+    an allowed area. Raises 403 otherwise.
     """
-    if not any(rel_path.startswith(p) for p in EDITABLE_PREFIXES):
-        raise HTTPException(status_code=403, detail="该路径不可编辑")
+    if not any(rel_path.startswith(p) for p in allowed_prefixes):
+        raise HTTPException(status_code=403, detail=deny_detail)
     base = _user_dir()
     resolved = (base / rel_path).resolve()
     # Guard against path traversal
     if not str(resolved).startswith(str(base.resolve())):
         raise HTTPException(status_code=403, detail="路径不合法")
     return resolved
+
+
+def _safe_readable(rel_path: str) -> pathlib.Path:
+    return _safe_path(rel_path, READABLE_PREFIXES, "该路径不可读取")
+
+
+def _safe_writable(rel_path: str) -> pathlib.Path:
+    return _safe_path(rel_path, WRITABLE_PREFIXES, "该路径不可编辑")
 
 
 # ── 目录树 ────────────────────────────────────────────────────────────────────
@@ -105,7 +114,7 @@ async def get_tree():
 @router.get("/content")
 async def get_content(rel_path: str = Query(...)):
     """读取 wiki/ 或 config/ 下的 Markdown 文件内容。"""
-    path = _safe_editable(rel_path)
+    path = _safe_readable(rel_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     return {"content": path.read_text(encoding="utf-8")}
@@ -118,8 +127,8 @@ class WriteContentBody(BaseModel):
 
 @router.put("/content")
 async def put_content(body: WriteContentBody):
-    """写入 wiki/ 或 config/ 下的 Markdown 文件内容。"""
-    path = _safe_editable(body.rel_path)
+    """写入 config/ 下的 Markdown 文件内容。wiki/ 是只读导出。"""
+    path = _safe_writable(body.rel_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body.content, encoding="utf-8")
     return {"ok": True}
@@ -127,11 +136,8 @@ async def put_content(body: WriteContentBody):
 
 @router.delete("/content")
 async def delete_content(rel_path: str = Query(...)):
-    """删除 wiki/ 或 config/ 下的文件。
-    wiki 节点文件建议通过 /api/kb/nodes/{id} 删除（会同时清理 DB 记录），
-    此接口用于删除孤立 wiki 文件或 config 模板文件。
-    """
-    path = _safe_editable(rel_path)
+    """删除 config/ 下的文件。wiki 节点删除通过 /api/kb/nodes/{id}。"""
+    path = _safe_writable(rel_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     path.unlink()

@@ -251,10 +251,10 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground mb-3">
-              单向同步：将知识库节点写入{" "}
-              <code className="bg-muted px-1 rounded text-xs">user_data/wiki/nodes/</code>
+              只读导出：将知识库节点写入{" "}
+              <code className="bg-muted px-1 rounded text-xs">user_data/wiki/</code>
               ，可将该目录作为 Obsidian vault 打开（支持双链与图谱视图）。
-              新节点入库时自动同步，此处可触发全量重建。
+              新节点入库时自动导出，此处可触发全量重建。
             </p>
 
             {wikiStatus && (

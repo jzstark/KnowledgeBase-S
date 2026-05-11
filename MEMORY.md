@@ -279,14 +279,14 @@ user_data/default/
 
 ### 3.3 wiki 的当前语义
 
-wiki 是 **系统生成的 Markdown 副本**，但不是完全只读：
+wiki 是 **系统生成的只读 Markdown 导出**：
 
 - 节点入库后，API 会写入 `wiki/articles|entities|summaries|indices/`
-- 前端知识库页允许直接编辑 `wiki/` 与 `config/` 下文件
-- `write_wiki_node()` 会优先保留现有正文，只刷新 frontmatter 和关联节点区块
-- 因此，**用户手工改过的正文通常会保留**
-- 但数据库仍然是 metadata 和检索字段的主要事实来源
-- 如果数据库丢失，可以通过 `restore_from_wiki()` 从 wiki 重建一部分内容
+- 前端知识库页只能查看 `wiki/`，不能直接编辑 wiki 正文
+- `write_wiki_node()` 从 DB 重新导出正文、frontmatter 和关联节点区块
+- article/index/wiki 导出不再作为日常编辑源
+- summary 需要通过 revise instruction API 修改 DB 后再导出
+- 如果数据库丢失，`restore_from_wiki()` 仍可作为灾难恢复工具，但不是日常同步机制
 
 ---
 
