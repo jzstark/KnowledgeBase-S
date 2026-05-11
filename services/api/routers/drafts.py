@@ -157,16 +157,28 @@ async def layered_retrieval(
 
     async def _vec_search(object_types: list[str], top_k: int) -> list[tuple[str, float]]:
         types_str = ", ".join(f"'{t}'" for t in object_types)
+        if object_types == ["summary"]:
+            score_sql = (
+                "0.75 * (1-(COALESCE(body_embedding, embedding)<=>'"
+                + emb_lit
+                + "'::vector)) + 0.25 * (1-(COALESCE(perspective_embedding, body_embedding, embedding)<=>'"
+                + emb_lit
+                + "'::vector))"
+            )
+            vector_filter = "(embedding IS NOT NULL OR body_embedding IS NOT NULL)"
+        else:
+            score_sql = f"1-(embedding<=>'{emb_lit}'::vector)"
+            vector_filter = "embedding IS NOT NULL"
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
-                SELECT id, 1-(embedding<=>'{emb_lit}'::vector) AS sim
+                SELECT id, {score_sql} AS sim
                 FROM knowledge_nodes
                 WHERE user_id = '{user_id}'
-                  AND embedding IS NOT NULL
+                  AND {vector_filter}
                   AND object_type IN ({types_str})
                   {excl_clause}
-                ORDER BY embedding<=>'{emb_lit}'::vector
+                ORDER BY sim DESC
                 LIMIT {top_k}
                 """
             )
@@ -315,12 +327,30 @@ async def layered_retrieval(
             if child_ids:
                 child_ids_str = ", ".join(f"'{c}'" for c in child_ids)
                 async with database.database.connection() as conn:
+                    child_summary_sims = await conn.raw_connection.fetch(
+                        f"""
+                        SELECT summary_of AS child_id,
+                               0.75 * (1-(COALESCE(body_embedding, embedding)<=>'{emb_lit}'::vector))
+                               + 0.25 * (1-(COALESCE(perspective_embedding, body_embedding, embedding)<=>'{emb_lit}'::vector)) AS sim
+                        FROM knowledge_nodes
+                        WHERE summary_of IN ({child_ids_str})
+                          AND object_type = 'summary'
+                          AND (embedding IS NOT NULL OR body_embedding IS NOT NULL)
+                        ORDER BY sim DESC
+                        LIMIT {len(child_ids)}
+                        """
+                    )
                     child_sims = await conn.raw_connection.fetch(
                         f"""
                         SELECT id, 1-(embedding<=>'{emb_lit}'::vector) AS sim
                         FROM knowledge_nodes
                         WHERE id IN ({child_ids_str}) AND embedding IS NOT NULL
                         """
+                    )
+                for cs in child_summary_sims:
+                    child_score = idx_score * float(cs["sim"])
+                    scored_articles[cs["child_id"]] = max(
+                        scored_articles.get(cs["child_id"], 0), child_score
                     )
                 for cs in child_sims:
                     child_score = idx_score * float(cs["sim"])

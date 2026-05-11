@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     source_updated_at TIMESTAMPTZ,
     captured_at TIMESTAMPTZ,
     effective_at TIMESTAMPTZ,
+    perspective_label TEXT,
+    perspective_instruction TEXT,
+    perspective_embedding vector(1536),
+    body_embedding vector(1536),
+    is_default BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -139,12 +144,25 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_published_
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_label TEXT;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_instruction TEXT;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_embedding vector(1536);
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS body_embedding vector(1536);
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
 
 UPDATE knowledge_nodes
 SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
     captured_at = COALESCE(captured_at, created_at, ingested_at, NOW())
 WHERE ingested_at IS NULL OR captured_at IS NULL;
+
+UPDATE knowledge_nodes
+SET perspective_label = COALESCE(NULLIF(perspective_label, ''), NULLIF(perspective, ''), 'default'),
+    perspective_instruction = COALESCE(NULLIF(perspective_instruction, ''), NULLIF(perspective, ''), '默认摘要'),
+    is_default = COALESCE(is_default, false) OR perspective IS NULL OR perspective = '' OR perspective = 'default',
+    body_embedding = COALESCE(body_embedding, embedding),
+    perspective_embedding = COALESCE(perspective_embedding, body_embedding, embedding)
+WHERE object_type = 'summary';
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
@@ -155,6 +173,10 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_priority ON knowledge_nodes(prior
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_knowledge_time ON knowledge_nodes(
     COALESCE(effective_at, source_published_at, captured_at, ingested_at)
 );
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_body_embedding ON knowledge_nodes
+    USING ivfflat (body_embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_perspective_embedding ON knowledge_nodes
+    USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);

@@ -41,6 +41,30 @@ def _make_node_id(object_type: str, raw_ref: dict, user_id: str, canonical_name:
     return f"{prefix}_{secrets.token_hex(6)}"
 
 
+def _vector_literal(values: list[float]) -> str:
+    return "[" + ",".join(repr(x) for x in values) + "]"
+
+
+async def _embed_text(text: str) -> list[float]:
+    resp = await openai_client.embeddings.create(
+        model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        input=text[:config_loader.get("embedding.max_chars", 8000)],
+        dimensions=config_loader.get("embedding.dimensions", 1536),
+    )
+    return resp.data[0].embedding
+
+
+def _summary_perspective(
+    label: str | None,
+    instruction: str | None,
+    legacy_perspective: str | None = None,
+) -> tuple[str, str, bool]:
+    label = (label or legacy_perspective or "").strip()
+    instruction = (instruction or legacy_perspective or "").strip()
+    is_default = not label and not instruction
+    return label or "default", instruction or "默认摘要", is_default
+
+
 # ── 入库 ──────────────────────────────────────────────────────────────────────
 
 class IngestRequest(BaseModel):
@@ -59,6 +83,8 @@ class IngestRequest(BaseModel):
     canonical_name: str | None = None
     aliases: list[str] = []
     perspective: str | None = None
+    perspective_label: str | None = None
+    perspective_instruction: str | None = None
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None
@@ -89,19 +115,38 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             return {"id": existing_ent["id"], "duplicate": True}
 
     node_id = _make_node_id(body.object_type, body.raw_ref or {}, body.user_id, body.canonical_name)
-    embedding_literal = "[" + ",".join(repr(x) for x in body.embedding) + "]"
+    embedding_literal = _vector_literal(body.embedding)
+    perspective_label = None
+    perspective_instruction = None
+    is_default = False
+    body_embedding_literal = None
+    perspective_embedding_literal = None
+    if body.object_type == "summary":
+        perspective_label, perspective_instruction, is_default = _summary_perspective(
+            body.perspective_label,
+            body.perspective_instruction,
+            body.perspective,
+        )
+        body_embedding_literal = embedding_literal
+        perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
+        perspective_embedding_literal = _vector_literal(perspective_embedding)
 
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
            tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
-           perspective, source_published_at, source_updated_at, captured_at, effective_at)
+           perspective, perspective_label, perspective_instruction, perspective_embedding,
+           body_embedding, is_default, source_published_at, source_updated_at, captured_at,
+           effective_at)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
            :object_type, :source_node_ids, :summary_of, :canonical_name, :aliases,
-           :perspective, :source_published_at, :source_updated_at, :captured_at,
+           :perspective, :perspective_label, :perspective_instruction,
+           {f"'{perspective_embedding_literal}'::vector" if perspective_embedding_literal else "NULL"},
+           {f"'{body_embedding_literal}'::vector" if body_embedding_literal else "NULL"},
+           :is_default, :source_published_at, :source_updated_at, :captured_at,
            :effective_at)
         """,
         {
@@ -120,6 +165,9 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "canonical_name": body.canonical_name,
             "aliases": body.aliases,
             "perspective": body.perspective,
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+            "is_default": is_default,
             "source_published_at": body.source_published_at,
             "source_updated_at": body.source_updated_at,
             "captured_at": body.captured_at or datetime.now(timezone.utc),
@@ -216,6 +264,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
         """
         SELECT id, title, abstract, source_type, raw_ref, tags, object_type,
                source_node_ids, summary_of, canonical_name, aliases, perspective,
+               perspective_label, perspective_instruction, is_default,
                ingested_at, source_published_at, source_updated_at, captured_at, effective_at,
                created_at, updated_at
         FROM knowledge_nodes WHERE id = :id
@@ -285,11 +334,18 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
 
     # Build type-specific frontmatter extras
     perspective_val = node.get("perspective") or ""
+    perspective_label = node.get("perspective_label") or perspective_val
+    perspective_instruction = node.get("perspective_instruction") or perspective_val
+    is_default = "true" if node.get("is_default") else "false"
     extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}"
     if object_type == "entity":
         extra_fm = f"\ncanonical_name: {node.get('canonical_name') or title}\naliases: {aliases_yaml}\nsources: {sources_yaml}"
     elif object_type == "summary":
-        extra_fm = f"\nsummary_of: {node.get('summary_of') or ''}\nsources: {sources_yaml}\nperspective: {perspective_val}"
+        extra_fm = (
+            f"\nsummary_of: {node.get('summary_of') or ''}\nsources: {sources_yaml}"
+            f"\nperspective: {perspective_val}\nperspective_label: {perspective_label}"
+            f"\nperspective_instruction: {perspective_instruction}\nis_default: {is_default}"
+        )
     elif object_type == "index":
         extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}\nperspective: {perspective_val}"
 
@@ -394,12 +450,7 @@ async def wiki_status():
 # ── 语义搜索 ───────────────────────────────────────────────────────────────────
 
 async def _embed_query(text: str) -> list[float]:
-    resp = await openai_client.embeddings.create(
-        model=config_loader.get("embedding.model", "text-embedding-3-small"),
-        input=text[:config_loader.get("embedding.max_chars", 8000)],
-        dimensions=config_loader.get("embedding.dimensions", 1536),
-    )
-    return resp.data[0].embedding
+    return await _embed_text(text)
 
 
 async def _hyde_embed_query(text: str) -> list[float]:
@@ -434,20 +485,20 @@ async def search(
 ):
     """语义搜索（RAG 核心调用），无需认证。"""
     embedding = await _embed_query(q)
-    embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+    embedding_literal = _vector_literal(embedding)
 
     tag_list: list[str] = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    conditions = ["embedding IS NOT NULL"]
+    conditions = ["(embedding IS NOT NULL OR body_embedding IS NOT NULL)"]
     extra_params: list = []
 
     if tag_list:
-        placeholders = ", ".join(f"${i+2}" for i in range(len(tag_list)))
+        placeholders = ", ".join(f"${len(extra_params) + i + 1}" for i in range(len(tag_list)))
         conditions.append(f"tags && ARRAY[{placeholders}]::text[]")
         extra_params.extend(tag_list)
 
     if type:
-        ti = len(extra_params) + 2
+        ti = len(extra_params) + 1
         conditions.append(f"object_type = ${ti}")
         extra_params.append(type)
 
@@ -457,10 +508,17 @@ async def search(
     async with database.database.connection() as conn:
         sql = f"""
             SELECT id, user_id, title, abstract, source_type, tags, object_type, created_at,
-                   1 - (embedding <=> '{embedding_literal}'::vector) AS score
+                   perspective_label, perspective_instruction, is_default,
+                   CASE
+                     WHEN object_type = 'summary' THEN
+                       0.75 * (1 - (COALESCE(body_embedding, embedding) <=> '{embedding_literal}'::vector))
+                       + 0.25 * (1 - (COALESCE(perspective_embedding, body_embedding, embedding) <=> '{embedding_literal}'::vector))
+                     ELSE
+                       1 - (embedding <=> '{embedding_literal}'::vector)
+                   END AS score
             FROM knowledge_nodes
             WHERE {where}
-            ORDER BY embedding <=> '{embedding_literal}'::vector
+            ORDER BY score DESC
             LIMIT ${limit_idx}
         """
         rows = await conn.raw_connection.fetch(sql, *extra_params, limit)
@@ -474,6 +532,9 @@ async def search(
             "tags": r["tags"],
             "object_type": r["object_type"],
             "score": float(r["score"]),
+            "perspective_label": r["perspective_label"],
+            "perspective_instruction": r["perspective_instruction"],
+            "is_default": bool(r["is_default"]) if r["is_default"] is not None else False,
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         }
         for r in rows
@@ -498,6 +559,8 @@ async def get_node(node_id: str):
 
     node = dict(row)
     node.pop("embedding", None)
+    node.pop("body_embedding", None)
+    node.pop("perspective_embedding", None)
     if node.get("raw_ref") and isinstance(node["raw_ref"], str):
         node["raw_ref"] = json.loads(node["raw_ref"])
     for key in (
@@ -542,10 +605,14 @@ async def get_node(node_id: str):
 
 class CreateSummaryRequest(BaseModel):
     perspective: str | None = None
+    perspective_label: str | None = None
+    perspective_instruction: str | None = None
 
 
 class ReviseSummaryRequest(BaseModel):
     instruction: str
+    perspective_label: str | None = None
+    perspective_instruction: str | None = None
 
 
 @router.post("/nodes/{node_id}/create_summary")
@@ -565,17 +632,22 @@ async def create_summary(
         raise HTTPException(400, "只能为 article 或 index 节点生成摘要")
 
     user_id = source["user_id"] or USER_ID
+    perspective_label, perspective_instruction, is_default = _summary_perspective(
+        body.perspective_label,
+        body.perspective_instruction,
+        body.perspective,
+    )
 
     # Build prompt
-    perspective_instruction = (
-        f"\n\n请从以下视角撰写摘要：{body.perspective}" if body.perspective else ""
+    prompt_perspective_instruction = (
+        f"\n\n请从以下视角撰写摘要：{perspective_instruction}" if not is_default else ""
     )
     prompt = prompt_loader.fill(
         "summary_gen",
         title=source["title"] or node_id,
         abstract=source["abstract"] or "",
         body=(source["abstract"] or "")[:3000],
-        perspective_instruction=perspective_instruction,
+        perspective_instruction=prompt_perspective_instruction,
     )
 
     # Call Claude
@@ -589,19 +661,16 @@ async def create_summary(
     except Exception as e:
         raise HTTPException(500, f"摘要生成失败：{e}")
 
-    # Generate embedding for the new summary
-    embed_resp = await openai_client.embeddings.create(
-        model=config_loader.get("embedding.model", "text-embedding-3-small"),
-        input=summary_content[:config_loader.get("embedding.max_chars", 8000)],
-        dimensions=config_loader.get("embedding.dimensions", 1536),
-    )
-    embedding = embed_resp.data[0].embedding
-    embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+    # Generate embeddings for summary body and perspective.
+    body_embedding = await _embed_text(summary_content)
+    perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
+    body_embedding_literal = _vector_literal(body_embedding)
+    perspective_embedding_literal = _vector_literal(perspective_embedding)
 
     # Build summary node title
     source_title = source["title"] or node_id
     summary_title = (
-        f"{source_title} — {body.perspective}" if body.perspective else f"{source_title} 摘要"
+        f"{source_title} — {perspective_label}" if not is_default else f"{source_title} 摘要"
     )
 
     # Insert summary node
@@ -610,11 +679,16 @@ async def create_summary(
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, is_primary, object_type, source_node_ids, summary_of, perspective)
+           tags, is_primary, object_type, source_node_ids, summary_of, perspective,
+           perspective_label, perspective_instruction, perspective_embedding,
+           body_embedding, is_default)
         VALUES
-          (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
+          (:id, :user_id, :title, :abstract, '{body_embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
-           :object_type, :source_node_ids, :summary_of, :perspective)
+           :object_type, :source_node_ids, :summary_of, :perspective,
+           :perspective_label, :perspective_instruction,
+           '{perspective_embedding_literal}'::vector, '{body_embedding_literal}'::vector,
+           :is_default)
         """,
         {
             "id": summary_id,
@@ -629,7 +703,10 @@ async def create_summary(
             "object_type": "summary",
             "source_node_ids": [node_id],
             "summary_of": node_id,
-            "perspective": body.perspective,
+            "perspective": None if is_default else perspective_label,
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+            "is_default": is_default,
         },
     )
 
@@ -649,7 +726,10 @@ async def create_summary(
         "id": summary_id,
         "title": summary_title,
         "content": summary_content,
-        "perspective": body.perspective,
+        "perspective": None if is_default else perspective_label,
+        "perspective_label": perspective_label,
+        "perspective_instruction": perspective_instruction,
+        "is_default": is_default,
         "source_id": node_id,
     }
 
@@ -667,7 +747,8 @@ async def revise_summary(
 
     summary = await database.database.fetch_one(
         """
-        SELECT id, user_id, title, abstract, object_type, summary_of, perspective
+        SELECT id, user_id, title, abstract, object_type, summary_of, perspective,
+               perspective_label, perspective_instruction, is_default
         FROM knowledge_nodes WHERE id = :id
         """,
         {"id": node_id},
@@ -713,21 +794,49 @@ async def revise_summary(
     except Exception as e:
         raise HTTPException(500, f"摘要修订失败：{e}")
 
-    embed_resp = await openai_client.embeddings.create(
-        model=config_loader.get("embedding.model", "text-embedding-3-small"),
-        input=revised_content[:config_loader.get("embedding.max_chars", 8000)],
-        dimensions=config_loader.get("embedding.dimensions", 1536),
-    )
-    embedding = embed_resp.data[0].embedding
-    embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+    body_embedding = await _embed_text(revised_content)
+    body_embedding_literal = _vector_literal(body_embedding)
+    perspective_changed = body.perspective_label is not None or body.perspective_instruction is not None
+    perspective_label = summary["perspective_label"] or summary["perspective"] or None
+    perspective_instruction = summary["perspective_instruction"] or summary["perspective"] or None
+    is_default = bool(summary["is_default"])
+    perspective_update_sql = ""
+    params = {"id": node_id, "abstract": revised_content}
+    if perspective_changed:
+        perspective_label, perspective_instruction, is_default = _summary_perspective(
+            body.perspective_label,
+            body.perspective_instruction,
+            summary["perspective"],
+        )
+        perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
+        perspective_embedding_literal = _vector_literal(perspective_embedding)
+        perspective_update_sql = f""",
+            perspective = :perspective,
+            perspective_label = :perspective_label,
+            perspective_instruction = :perspective_instruction,
+            perspective_embedding = '{perspective_embedding_literal}'::vector,
+            is_default = :is_default
+        """
+        params.update(
+            {
+                "perspective": None if is_default else perspective_label,
+                "perspective_label": perspective_label,
+                "perspective_instruction": perspective_instruction,
+                "is_default": is_default,
+            }
+        )
 
     await database.database.execute(
         f"""
         UPDATE knowledge_nodes
-        SET abstract = :abstract, embedding = '{embedding_literal}'::vector, updated_at = NOW()
+        SET abstract = :abstract,
+            embedding = '{body_embedding_literal}'::vector,
+            body_embedding = '{body_embedding_literal}'::vector,
+            updated_at = NOW()
+            {perspective_update_sql}
         WHERE id = :id
         """,
-        {"id": node_id, "abstract": revised_content},
+        params,
     )
 
     await database.database.execute(
@@ -748,7 +857,10 @@ async def revise_summary(
         "id": node_id,
         "title": summary["title"],
         "content": revised_content,
-        "perspective": summary["perspective"],
+        "perspective": None if is_default else perspective_label,
+        "perspective_label": perspective_label,
+        "perspective_instruction": perspective_instruction,
+        "is_default": is_default,
         "source_id": summary["summary_of"],
     }
 

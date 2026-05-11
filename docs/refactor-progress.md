@@ -275,3 +275,72 @@ Implementation fixes:
   non-zero 1536-dimension vector.
 - Verification: the second probe returned the expected time fields and was then
   deleted.
+
+## 2026-05-11 - Phase 2.5 Summary Perspective Embedding
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 2.5 is implemented on the current `knowledge_nodes` table rather than
+  introducing `summary_nodes`; the dedicated object tables remain part of a
+  later object-table migration.
+- Existing `perspective` remains a compatibility field. New code writes
+  `perspective_label` and `perspective_instruction`.
+- Existing summary rows can be safely backfilled by copying their current
+  `embedding` into `body_embedding` and using that as the fallback
+  `perspective_embedding`. New and revised summaries generate real perspective
+  embeddings through OpenAI.
+
+Implemented:
+
+- Added summary-specific fields on `knowledge_nodes`:
+  - `perspective_label`
+  - `perspective_instruction`
+  - `perspective_embedding`
+  - `body_embedding`
+  - `is_default`
+- Added ivfflat indexes for `body_embedding` and `perspective_embedding`.
+- Backfilled existing summaries with default perspective metadata and non-null
+  body/perspective embeddings.
+- Extended `/api/kb/ingest` so auto-created summary nodes get default
+  perspective metadata, `body_embedding`, and `perspective_embedding`.
+- Extended manual summary creation to accept `perspective_label` and
+  `perspective_instruction`, generate both embeddings, and keep the old
+  `perspective` response field for compatibility.
+- Extended summary revise to always recalculate `body_embedding`; if the request
+  includes new perspective fields, it also recalculates `perspective_embedding`.
+- Updated wiki export frontmatter for summaries with perspective label,
+  instruction, and default flag.
+- Updated `/api/kb/search` so summary results are scored by a fixed mixed score:
+  `0.75 * body_similarity + 0.25 * perspective_similarity`.
+- Updated draft layered retrieval summary search to use the same mixed score.
+- Updated index expansion in draft retrieval to score child summaries before
+  falling back to direct child article embedding.
+- Updated the knowledge UI to send the new perspective fields and display
+  summary perspective labels.
+- Updated `MEMORY.md` with the current summary perspective model.
+
+Verification:
+
+- Local AST parsing passed for `database.py`, `routers/kb.py`, and
+  `routers/drafts.py`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `docker compose restart api` ran the migration successfully.
+- API container `py_compile` passed for `database.py`, `routers/kb.py`, and
+  `routers/drafts.py`.
+- Postgres shows all five Phase 2.5 summary columns on `knowledge_nodes`.
+- Postgres shows `idx_knowledge_nodes_body_embedding` and
+  `idx_knowledge_nodes_perspective_embedding` exist.
+- Existing summary backfill check: 94 summaries, with 0 missing labels,
+  instructions, body embeddings, or perspective embeddings.
+- Database-side mixed summary scoring query returned ordered summary results.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- `git diff --check` passed.
+
+Not run:
+
+- Full live `create_summary` / `revise_summary` calls were not run because they
+  invoke configured Claude and OpenAI providers. Validation covered schema,
+  import/runtime compilation, backfill, API health, and the mixed-scoring SQL
+  path without creating new LLM-generated summaries.

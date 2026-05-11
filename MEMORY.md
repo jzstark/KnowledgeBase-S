@@ -323,6 +323,11 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - `canonical_name`
 - `aliases`
 - `perspective`
+- `perspective_label`
+- `perspective_instruction`
+- `perspective_embedding`
+- `body_embedding`
+- `is_default`
 - `ingested_at`
 - `source_published_at`
 - `source_updated_at`
@@ -340,7 +345,9 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 - `abstract` 是检索主字段，绝大多数向量都基于它生成
 - `summary_of` 只对 `summary` 节点有意义
 - `canonical_name` / `aliases` 只对 `entity` 节点有意义
-- `perspective` 已经加到 schema，但当前主要用于手动多视角摘要
+- Phase 2.5 后，summary 使用 `perspective_label` /
+  `perspective_instruction` 表达观察视角，`body_embedding` 表示正文向量，
+  `perspective_embedding` 表示视角向量；旧 `perspective` 仅保留兼容
 - Phase 3 后，知识时间按
   `effective_at ?? source_published_at ?? captured_at ?? ingested_at` 选择；
   `created_at` 继续表示 DB 创建时间，不再作为素材事实时间使用
@@ -474,11 +481,15 @@ wiki 是 **系统生成的只读 Markdown 导出**：
 1. **摄入时自动生成的 summary 节点**
    - 本质上只是把 article 的 `abstract` 再存成一个 `summary`
    - 主要是为了后续分层检索
+   - 默认视角为 `default` / `默认摘要`
 
 2. **手动创建的多视角 summary**
    - API：`POST /api/kb/nodes/{id}/create_summary`
-   - 支持 `perspective`
+   - 支持 `perspective_label` / `perspective_instruction`
    - 可对 `article` 或 `index` 生成新的摘要节点
+   - 创建时写入 `body_embedding` 和 `perspective_embedding`
+   - revise 时重算 `body_embedding`，如请求带新视角字段则重算
+     `perspective_embedding`
 
 ### 6.4 书籍入库（index + chapter articles）
 
@@ -706,6 +717,7 @@ Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 - `article / entity / summary / index` 四类对象
 - 书籍 `index + article` 结构
 - `perspective` 字段
+- summary body/perspective 双向量
 - HyDE 检索
 - 分层 retrieval
 - index abstract 聚合
@@ -715,9 +727,10 @@ Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 
 ### 只部分落地
 
-- 多视角 summary：API 已有，但不是所有流程都自动使用
+- 多视角 summary：API 与双向量检索已落地，但还没有拆到独立
+  `summary_nodes` 表
 - rebuild：存在，但未覆盖所有 source 类型
-- wiki 作为长期可编辑知识库：正文可编辑，但 DB 与文件不是双向实时同步
+- wiki：Phase 2 后是只读导出，不再作为日常可编辑知识源
 
 ### 尚未完成或与计划不一致
 

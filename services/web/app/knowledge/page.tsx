@@ -19,6 +19,9 @@ interface KBNode {
   abstract?: string;
   object_type?: string;
   created_at?: string;
+  perspective_label?: string;
+  perspective_instruction?: string;
+  is_default?: boolean;
 }
 
 interface KBEdge {
@@ -764,7 +767,10 @@ function WikiPanel({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ perspective: perspInput.trim() || null }),
+        body: JSON.stringify({
+          perspective_label: perspInput.trim() || null,
+          perspective_instruction: perspInput.trim() || null,
+        }),
       });
       if (r.ok) {
         const data = await r.json();
@@ -908,6 +914,11 @@ function WikiPanel({
         </div>
         {detail.abstract && (
           <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{detail.abstract}</p>
+        )}
+        {detail.object_type === "summary" && detail.perspective_label && (
+          <p className="text-[11px] text-muted-foreground mt-2">
+            视角：{detail.is_default ? "default" : detail.perspective_label}
+          </p>
         )}
 
         {/* 摘要生成内联表单 */}
