@@ -1,4 +1,4 @@
-.PHONY: dev dev-d build build-dev deploy down backup logs ps
+.PHONY: dev dev-d build build-dev deploy down backup logs ps refactor-smoke
 
 dev:
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up
@@ -26,3 +26,6 @@ logs:
 
 ps:
 	docker compose ps
+
+refactor-smoke:
+	python scripts/refactor_smoke.py
