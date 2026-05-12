@@ -60,6 +60,15 @@ interface GraphData {
   edges: KBEdge[];
 }
 
+interface Job {
+  id: string;
+  job_type: string;
+  status: string;
+  error?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+
 type SimNode = KBNode & d3.SimulationNodeDatum;
 type SimLink = {
   source: string | SimNode;
@@ -759,6 +768,7 @@ function WikiPanel({
   onSelectNode,
   onSummaryCreated,
   onSummaryRevised,
+  onJobQueued,
 }: {
   detail: NodeDetail | null;
   detailLoading: boolean;
@@ -768,6 +778,7 @@ function WikiPanel({
   onSelectNode: (nodeId: string) => void;
   onSummaryCreated?: () => void;
   onSummaryRevised?: (nodeId: string) => void;
+  onJobQueued?: () => void;
 }) {
   const [sumFormOpen, setSumFormOpen] = useState(false);
   const [perspInput, setPerspInput] = useState("");
@@ -821,9 +832,10 @@ function WikiPanel({
       });
       if (r.ok) {
         const data = await r.json();
-        setSumMsg(`已生成：${data.title}`);
+        setSumMsg(`已加入队列：${data.job_id || data.id}`);
         setPerspInput("");
         setSumFormOpen(false);
+        onJobQueued?.();
         onSummaryCreated?.();
       } else {
         const err = await r.json().catch(() => ({}));
@@ -850,8 +862,9 @@ function WikiPanel({
       if (r.ok) {
         setReviseInstruction("");
         setReviseOpen(false);
-        setReviseMsg("已修订");
-        onSummaryRevised?.(detail.id);
+        const data = await r.json();
+        setReviseMsg(`已加入队列：${data.job_id || ""}`);
+        onJobQueued?.();
         setTimeout(() => setReviseMsg(""), 2000);
       } else {
         const err = await r.json().catch(() => ({}));
@@ -1128,10 +1141,55 @@ function WikiPanel({
   );
 }
 
+function JobsPanel({
+  jobs,
+  onRetry,
+  onCancel,
+}: {
+  jobs: Job[];
+  onRetry: (jobId: string) => void;
+  onCancel: (jobId: string) => void;
+}) {
+  if (jobs.length === 0) return null;
+  const visible = jobs.slice(0, 6);
+  return (
+    <div className="border-t border-border bg-muted/20 px-3 py-2 space-y-1">
+      <div className="text-xs font-medium text-muted-foreground">后台任务</div>
+      {visible.map((job) => (
+        <div key={job.id} className="flex items-center gap-2 text-xs">
+          <span className="font-mono text-muted-foreground truncate w-28">{job.id}</span>
+          <span className="truncate flex-1">{job.job_type}</span>
+          <span className={cn(
+            "shrink-0 rounded px-1.5 py-0.5",
+            job.status === "succeeded" && "bg-green-100 text-green-700",
+            job.status === "failed" && "bg-red-100 text-red-700",
+            job.status === "running" && "bg-blue-100 text-blue-700",
+            (job.status === "pending" || job.status === "retrying") && "bg-amber-100 text-amber-700",
+            job.status === "cancelled" && "bg-muted text-muted-foreground",
+          )}>
+            {job.status}
+          </span>
+          {job.status === "failed" && (
+            <button className="text-primary hover:underline" onClick={() => onRetry(job.id)}>
+              重试
+            </button>
+          )}
+          {(job.status === "pending" || job.status === "retrying") && (
+            <button className="text-muted-foreground hover:text-foreground" onClick={() => onCancel(job.id)}>
+              取消
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function KnowledgePage() {
   const [maintenanceMsg, setMaintenanceMsg] = useState("");
+  const [jobs, setJobs] = useState<Job[]>([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
@@ -1161,6 +1219,11 @@ export default function KnowledgePage() {
   const [graphHeight, setGraphHeight] = useState(256);
 
   useEffect(() => { loadGraph(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    loadJobs();
+    const timer = setInterval(loadJobs, 5000);
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -1178,6 +1241,24 @@ export default function KnowledgePage() {
     } finally {
       setGraphLoading(false);
     }
+  }
+
+  async function loadJobs() {
+    const r = await fetch("/api/kb/jobs?limit=12", { credentials: "include" });
+    if (r.ok) {
+      const data = await r.json();
+      setJobs(data.jobs || []);
+    }
+  }
+
+  async function retryJob(jobId: string) {
+    const r = await fetch(`/api/kb/jobs/${jobId}/retry`, { method: "POST", credentials: "include" });
+    if (r.ok) await loadJobs();
+  }
+
+  async function cancelJob(jobId: string) {
+    const r = await fetch(`/api/kb/jobs/${jobId}/cancel`, { method: "POST", credentials: "include" });
+    if (r.ok) await loadJobs();
   }
 
   function toggleNodeType(t: string) {
@@ -1418,10 +1499,16 @@ export default function KnowledgePage() {
   }
 
   async function handleMaintenance() {
-    setMaintenanceMsg("维护中…");
+    setMaintenanceMsg("加入队列中…");
     try {
       const r = await fetch("/api/kb/maintenance/run", { method: "POST", credentials: "include" });
-      setMaintenanceMsg(r.ok ? "维护已触发，后台运行中" : "触发失败，请重试");
+      if (r.ok) {
+        const data = await r.json();
+        setMaintenanceMsg(`已加入队列：${data.job_id || ""}`);
+        await loadJobs();
+      } else {
+        setMaintenanceMsg("触发失败，请重试");
+      }
     } catch {
       setMaintenanceMsg("网络错误");
     }
@@ -1438,6 +1525,7 @@ export default function KnowledgePage() {
           {maintenanceMsg || "立即运行维护"}
         </Button>
       </header>
+      <JobsPanel jobs={jobs} onRetry={retryJob} onCancel={cancelJob} />
 
       {/* 四面板主体 */}
       <div className="flex flex-1 min-h-0">
@@ -1489,6 +1577,7 @@ export default function KnowledgePage() {
                 refreshSelectedNode(nodeId);
                 loadGraph();
               }}
+              onJobQueued={loadJobs}
             />
           </div>
 

@@ -701,3 +701,101 @@ Implementation fixes recorded:
 - The first service-layer write smoke test failed because asyncpg could not
   infer the type of `:user_id` in `(:user_id IS NULL OR user_id = :user_id)`.
   Fixed by generating explicit user-filter SQL when `user_id` is present.
+
+## 2026-05-12 - Phase 8 Job Queue
+
+Assumptions:
+
+- Phase 8 starts with the planned short-term Postgres queue; no Redis,
+  RabbitMQ, or external scheduler is introduced.
+- The first migration target is low-risk long-running work already owned by
+  API/maintenance code:
+  - summary generation
+  - summary revision
+  - index rollup
+  - wiki rebuild
+  - maintenance run
+  - rebuild_from_raw
+- Standalone embedding jobs are not exposed yet. Embeddings run inside the
+  migrated summary/rollup jobs where they already exist today.
+
+Implemented:
+
+- Added `jobs` table with:
+  - `job_type`
+  - `provider`
+  - `model`
+  - JSON `payload`
+  - `pending/running/succeeded/failed/retrying/cancelled` status
+  - priority
+  - idempotency key
+  - attempts/max_attempts
+  - JSON `result`
+  - `error`
+  - timestamps
+- Added indexes for user/status listing, worker claim order, and idempotency
+  lookup.
+- Added `services/api/jobs.py` queue service:
+  - enqueue
+  - list/detail
+  - cancel
+  - retry
+  - claim with `FOR UPDATE SKIP LOCKED`
+  - complete/fail
+- Added `services/api/job_worker.py`, reusing the API image and executing
+  explicit handlers for:
+  - `generate_summary`
+  - `revise_summary`
+  - `aggregate_index_abstract`
+  - `rebuild_wiki`
+  - `run_maintenance`
+  - `rebuild_from_raw`
+- Added `job-worker` to the docker `workers` profile.
+- Added Job API:
+  - `GET /api/kb/jobs`
+  - `GET /api/kb/jobs/{id}`
+  - `POST /api/kb/jobs/{id}/cancel`
+  - `POST /api/kb/jobs/{id}/retry`
+- Changed long-running endpoints to enqueue jobs instead of blocking request
+  handling:
+  - `POST /api/kb/nodes/{id}/create_summary`
+  - `POST /api/kb/nodes/{id}/revise_summary`
+  - `POST /api/kb/indices/{id}/rollup`
+  - `POST /api/kb/wiki/rebuild`
+  - `POST /api/kb/maintenance/run`
+  - `POST /api/kb/maintenance/rebuild_from_raw`
+- Added a lightweight jobs panel to the knowledge page. It polls
+  `/api/kb/jobs`, displays recent job statuses, and exposes retry/cancel
+  actions where applicable.
+- Updated `MEMORY.md` with the Phase 8 runtime model.
+
+Verification:
+
+- API restart completed and schema migration created `jobs` plus indexes:
+  `jobs_pkey`, `idx_jobs_claim`, `idx_jobs_user_idempotency_key`,
+  `idx_jobs_user_status_created`.
+- Service-layer queue smoke inserted a temporary job, claimed it, failed it,
+  retried it, cancelled it, and deleted it.
+- Authenticated API probe:
+  - login succeeded
+  - `GET /api/kb/jobs?limit=3` returned 200
+  - `POST /api/kb/maintenance/run` returned a pending `job_id`
+  - `GET /api/kb/jobs/{id}` returned 200
+  - `POST /api/kb/jobs/{id}/cancel` returned `cancelled`
+- Worker handler probe enqueued and claimed a temporary `rebuild_wiki` job,
+  ran `job_worker.run_job()`, completed it as `succeeded`, and deleted the
+  temporary job. It rebuilt 292 wiki nodes during the probe.
+- `docker compose --profile workers config --services` includes
+  `job-worker`.
+- Python AST parsing passed for `database.py`, `jobs.py`, `job_worker.py`, and
+  `routers/kb.py`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+
+Implementation fixes recorded:
+
+- Local `python -m py_compile` could not write to an existing root-owned
+  `__pycache__`; verification switched to AST parsing, matching previous
+  phases.
+- The first DB verification command had invalid inline Python quoting. Re-ran
+  the check via `psql`, which confirmed `jobs` row count and indexes.

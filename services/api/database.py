@@ -216,6 +216,25 @@ CREATE TABLE IF NOT EXISTS entity_pair_signals (
     PRIMARY KEY (entity_a_id, entity_b_id)
 );
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    job_type VARCHAR NOT NULL,
+    provider VARCHAR,
+    model VARCHAR,
+    payload JSONB NOT NULL DEFAULT '{}',
+    status VARCHAR NOT NULL DEFAULT 'pending',
+    priority INT DEFAULT 0,
+    idempotency_key VARCHAR,
+    attempts INT DEFAULT 0,
+    max_attempts INT DEFAULT 3,
+    result JSONB,
+    error TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS drafts (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
@@ -347,6 +366,20 @@ ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS relatedness_s
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS explanation TEXT;
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS source_article_ids TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS user_id VARCHAR;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS job_type VARCHAR;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS provider VARCHAR;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS model VARCHAR;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'pending';
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS result JSONB;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS error TEXT;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
 
 UPDATE knowledge_nodes
 SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
@@ -473,6 +506,12 @@ CREATE INDEX IF NOT EXISTS idx_entity_facts_source_item ON entity_facts(source_i
 CREATE INDEX IF NOT EXISTS idx_entity_profiles_status ON entity_profiles(status);
 CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_a_score ON entity_pair_signals(entity_a_id, relatedness_score DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_b_score ON entity_pair_signals(entity_b_id, relatedness_score DESC);
+DROP INDEX IF EXISTS uq_jobs_user_idempotency_key;
+CREATE INDEX IF NOT EXISTS idx_jobs_user_status_created ON jobs(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority DESC, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_jobs_user_idempotency_key
+    ON jobs(user_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);

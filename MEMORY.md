@@ -34,6 +34,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | `ingestion-worker` | 内容抓取与入库 | 支持 HTTP trigger 和轮询模式 |
 | `feedback-worker` | 草稿 diff 分析 | 提炼写作偏好规则 |
 | `summarizer-worker` | 定时触发简报生成 | 只负责调用 API，不承担摘要逻辑 |
+| `job-worker` | Postgres job 队列消费者 | 消费 `jobs` 表中的 LLM / rebuild / rollup 派生任务 |
 | `maintenance-worker` | 周期维护 | 复用 `api` 镜像执行 `maintenance.py` |
 | `postgres` | 主数据库 | `pgvector/pgvector:pg16` |
 | `rsshub` | RSSHub | 供微信等订阅源使用 |
@@ -44,7 +45,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 
 - 生产入口是 `docker-compose.yml`
 - 开发叠加 `docker-compose.dev.yml`
-- `workers` profile 包含 `ingestion-worker`、`summarizer-worker`、`feedback-worker`
+- `workers` profile 包含 `ingestion-worker`、`summarizer-worker`、`feedback-worker`、`job-worker`
 - `maintenance` profile 包含 `maintenance-worker`
 - `watchtower` 在 dev compose 中被禁用
 
@@ -66,7 +67,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | 入口层 | `docker-compose*.yml`、`nginx/`、`Makefile`、`deploy.sh` | 进程编排、反向代理、开发/部署入口 |
 | 共享配置层 | `config/` | 系统参数、Prompt、图片 OCR 参数 |
 | API 层 | `services/api/` | DB 初始化、认证、业务路由、维护脚本 |
-| Worker 层 | `services/ingestion-worker/`、`services/feedback-worker/`、`services/summarizer-worker/` | 异步/离线任务 |
+| Worker 层 | `services/ingestion-worker/`、`services/feedback-worker/`、`services/summarizer-worker/`、`services/api/job_worker.py` | 异步/离线任务 |
 | Web 层 | `services/web/` | Next.js 页面、组件、知识库工作台、聊天 UI |
 | 持久化层 | `user_data/`、Postgres | 原始文件、wiki 文件、用户配置、数据库记录 |
 
@@ -88,6 +89,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | `ingestion-worker` | `services/ingestion-worker/main.py` | 同时提供 trigger server 和轮询循环 |
 | `feedback-worker` | `services/feedback-worker/main.py` | 暴露 `/analyze`，负责 diff -> 偏好规则 |
 | `summarizer-worker` | `services/summarizer-worker/main.py` | 登录 API 后触发 `/api/briefing/generate` |
+| `job-worker` | `services/api/job_worker.py` | 复用 API 镜像，轮询 `jobs` 表并执行注册的 job handler |
 | `maintenance-worker` | `services/api/maintenance.py` | 复用 API 镜像执行维护脚本 |
 
 这意味着当前系统不是“每个服务都完全自治”的架构，而是：
@@ -98,7 +100,7 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 
 ### 2.6 运行时调用关系
 
-当前运行时通信方式主要是 **HTTP + 共享数据库 + 共享文件目录**，而不是消息队列。
+当前运行时通信方式主要是 **HTTP + Postgres job queue + 共享数据库 + 共享文件目录**。
 
 关键调用链可以概括为：
 
@@ -126,6 +128,10 @@ Browser
 summarizer-worker
   -> api /auth/login
   -> api /briefing/generate
+
+job-worker
+  -> postgres jobs
+  -> api 内部 handler / maintenance.py
 ```
 
 3 种核心协作介质：
@@ -433,6 +439,7 @@ Index 结构不再写入 `knowledge_edges.part_of`。API 图谱会把
 | `entity_facts` | entity 的 source-grounded facts，回溯到 article/source item |
 | `entity_profiles` | 从 facts 派生、可失效并重建的 entity profile/timeline summary |
 | `entity_pair_signals` | entity relatedness 信号；不反写成图谱边 |
+| `jobs` | Postgres 后台任务队列，记录状态、payload、result/error、attempts |
 | `topics` | 每日选题 |
 | `drafts` | 生成草稿与用户定稿 |
 | `user_settings` | 简报窗口、简报时间等设置 |
@@ -757,12 +764,23 @@ Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
 
 ### 10.4 调度现状
 
-Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
+Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
+`jobs` 表的命令队列和 `job-worker`，但它是 worker，不是 cron scheduler。
+
 现阶段的自动化主要依赖：
 
 - ingestion-worker 自己的轮询
+- `job-worker` 消费 `jobs` 表中的 pending/retrying job
 - 手动 trigger
 - 部署环境自行安排
+
+当前已进入 job queue 的任务包括：
+
+- summary generation / revision
+- index rollup
+- wiki rebuild
+- maintenance run
+- rebuild_from_raw
 
 ---
 

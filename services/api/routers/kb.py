@@ -16,6 +16,7 @@ import config_loader
 import database
 import entity_insights
 import index_structure
+import jobs
 import object_nodes
 import prompt_loader
 from auth import require_auth
@@ -449,10 +450,16 @@ async def _do_rebuild_wiki(user_id: str) -> dict:
 
 
 @router.post("/wiki/rebuild")
-async def rebuild_wiki(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+async def rebuild_wiki(_: dict = Depends(require_auth)):
     """触发全量重建 wiki/nodes/*.md 及 wiki/index.md，需要认证。"""
-    background_tasks.add_task(_do_rebuild_wiki, USER_ID)
-    return {"status": "rebuilding"}
+    job = await jobs.enqueue_job(
+        "rebuild_wiki",
+        {},
+        user_id=USER_ID,
+        priority=2,
+        idempotency_key=f"rebuild_wiki:{USER_ID}",
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}
 
 
 @router.get("/wiki/status")
@@ -469,6 +476,39 @@ async def wiki_status():
         "counts": counts,
         "index_exists": index_path.exists(),
     }
+
+
+@router.get("/jobs")
+async def list_background_jobs(
+    status: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    _: dict = Depends(require_auth),
+):
+    return {"jobs": await jobs.list_jobs(USER_ID, status=status, limit=limit)}
+
+
+@router.get("/jobs/{job_id}")
+async def get_background_job(job_id: str, _: dict = Depends(require_auth)):
+    job = await jobs.get_job(job_id, USER_ID)
+    if not job:
+        raise HTTPException(404, "job 不存在")
+    return job
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_background_job(job_id: str, _: dict = Depends(require_auth)):
+    job = await jobs.cancel_job(job_id, USER_ID)
+    if not job:
+        raise HTTPException(404, "job 不存在")
+    return job
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_background_job(job_id: str, _: dict = Depends(require_auth)):
+    job = await jobs.retry_job(job_id, USER_ID)
+    if not job:
+        raise HTTPException(404, "job 不存在")
+    return job
 
 
 # ── 语义搜索 ───────────────────────────────────────────────────────────────────
@@ -860,36 +900,44 @@ async def get_index_descendants(index_id: str):
 
 @router.post("/indices/{index_id}/rollup")
 async def rollup_index(index_id: str, _: dict = Depends(require_auth)):
-    from maintenance import aggregate_index_abstracts
-
     await _get_index_or_404(index_id)
-    return await aggregate_index_abstracts(USER_ID, index_id=index_id, only_stale=False)
+    job = await jobs.enqueue_job(
+        "aggregate_index_abstract",
+        {"index_id": index_id, "only_stale": False},
+        user_id=USER_ID,
+        provider="anthropic",
+        model=config_loader.get("models.index_summary", "claude-haiku-4-5-20251001"),
+        priority=10,
+        idempotency_key=f"aggregate_index_abstract:{USER_ID}:{index_id}",
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}
 
 
-@router.post("/nodes/{node_id}/create_summary")
-async def create_summary(
+async def generate_summary_job(
     node_id: str,
-    body: CreateSummaryRequest,
-    background_tasks: BackgroundTasks,
-):
-    """为 article 或 index 节点生成新的摘要（可指定视角），创建 summarizes 边。"""
+    perspective_label_input: str | None,
+    perspective_instruction_input: str | None,
+    user_id: str = USER_ID,
+) -> dict[str, Any]:
     source = await database.database.fetch_one(
-        "SELECT id, user_id, title, abstract, object_type FROM knowledge_nodes WHERE id = :id",
-        {"id": node_id},
+        """
+        SELECT id, user_id, title, abstract, object_type
+        FROM knowledge_nodes
+        WHERE id = :id AND user_id = :user_id
+        """,
+        {"id": node_id, "user_id": user_id},
     )
     if not source:
-        raise HTTPException(404, "节点不存在")
+        raise ValueError("节点不存在")
     if source["object_type"] not in ("article", "index"):
-        raise HTTPException(400, "只能为 article 或 index 节点生成摘要")
+        raise ValueError("只能为 article 或 index 节点生成摘要")
 
-    user_id = source["user_id"] or USER_ID
     perspective_label, perspective_instruction, is_default = _summary_perspective(
-        body.perspective_label,
-        body.perspective_instruction,
-        body.perspective,
+        perspective_label_input,
+        perspective_instruction_input,
+        None,
     )
 
-    # Build prompt
     prompt_perspective_instruction = (
         f"\n\n请从以下视角撰写摘要：{perspective_instruction}" if not is_default else ""
     )
@@ -901,30 +949,22 @@ async def create_summary(
         perspective_instruction=prompt_perspective_instruction,
     )
 
-    # Call Claude
-    try:
-        message = await claude_client.messages.create(
-            model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
-            max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
-            messages=[{"role": "user", "content": prompt}],
-        )
-        summary_content = message.content[0].text.strip()
-    except Exception as e:
-        raise HTTPException(500, f"摘要生成失败：{e}")
+    message = await claude_client.messages.create(
+        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+        messages=[{"role": "user", "content": prompt}],
+    )
+    summary_content = message.content[0].text.strip()
 
-    # Generate embeddings for summary body and perspective.
     body_embedding = await _embed_text(summary_content)
     perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
     body_embedding_literal = _vector_literal(body_embedding)
     perspective_embedding_literal = _vector_literal(perspective_embedding)
 
-    # Build summary node title
     source_title = source["title"] or node_id
     summary_title = (
         f"{source_title} — {perspective_label}" if not is_default else f"{source_title} 摘要"
     )
-
-    # Insert summary node
     summary_id = f"sum_{secrets.token_hex(6)}"
     await database.database.execute(
         f"""
@@ -971,22 +1011,18 @@ async def create_summary(
             "body_embedding_literal": body_embedding_literal,
             "perspective_embedding_literal": perspective_embedding_literal,
             "is_default": is_default,
-            "source": {"source_node_ids": [node_id], "created_by": "user"},
+            "source": {"source_node_ids": [node_id], "created_by": "job"},
         },
     )
-
-    # Create summarizes edge (summary → source)
     await database.database.execute(
         """
         INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
-        VALUES (:from_id, :to_id, 'summarizes', 1.0, 'user')
+        VALUES (:from_id, :to_id, 'summarizes', 1.0, 'job')
         """,
         {"from_id": summary_id, "to_id": node_id},
     )
-
-    background_tasks.add_task(write_wiki_node, summary_id, user_id)
-    background_tasks.add_task(build_similar_edges, summary_id, user_id)
-
+    await write_wiki_node(summary_id, user_id)
+    await build_similar_edges(summary_id, user_id)
     return {
         "id": summary_id,
         "title": summary_title,
@@ -999,29 +1035,68 @@ async def create_summary(
     }
 
 
-@router.post("/nodes/{node_id}/revise_summary")
-async def revise_summary(
+@router.post("/nodes/{node_id}/create_summary")
+async def create_summary(
     node_id: str,
-    body: ReviseSummaryRequest,
-    background_tasks: BackgroundTasks,
+    body: CreateSummaryRequest,
 ):
-    """按用户指令重写 summary 正文，并同步更新 embedding 与 wiki 导出。"""
-    instruction = body.instruction.strip()
+    """为 article 或 index 节点生成新的摘要（可指定视角），创建 summarizes 边。"""
+    source = await database.database.fetch_one(
+        "SELECT id, user_id, title, abstract, object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+    if not source:
+        raise HTTPException(404, "节点不存在")
+    if source["object_type"] not in ("article", "index"):
+        raise HTTPException(400, "只能为 article 或 index 节点生成摘要")
+
+    user_id = source["user_id"] or USER_ID
+    perspective_label, perspective_instruction, _ = _summary_perspective(
+        body.perspective_label,
+        body.perspective_instruction,
+        body.perspective,
+    )
+    key = f"generate_summary:{user_id}:{node_id}:{perspective_label}:{perspective_instruction}"
+    job = await jobs.enqueue_job(
+        "generate_summary",
+        {
+            "node_id": node_id,
+            "perspective_label": perspective_label,
+            "perspective_instruction": perspective_instruction,
+        },
+        user_id=user_id,
+        provider="anthropic",
+        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        priority=5,
+        idempotency_key=key,
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}
+
+
+async def revise_summary_job(
+    node_id: str,
+    instruction: str,
+    perspective_label_input: str | None,
+    perspective_instruction_input: str | None,
+    user_id: str = USER_ID,
+) -> dict[str, Any]:
+    instruction = instruction.strip()
     if not instruction:
-        raise HTTPException(400, "修改指令不能为空")
+        raise ValueError("修改指令不能为空")
 
     summary = await database.database.fetch_one(
         """
         SELECT id, user_id, title, abstract, object_type, summary_of, perspective,
                perspective_label, perspective_instruction, is_default
-        FROM knowledge_nodes WHERE id = :id
+        FROM knowledge_nodes
+        WHERE id = :id AND user_id = :user_id
         """,
-        {"id": node_id},
+        {"id": node_id, "user_id": user_id},
     )
     if not summary:
-        raise HTTPException(404, "节点不存在")
+        raise ValueError("节点不存在")
     if summary["object_type"] != "summary":
-        raise HTTPException(400, "只能 revise summary 节点")
+        raise ValueError("只能 revise summary 节点")
 
     source = None
     if summary["summary_of"]:
@@ -1048,29 +1123,26 @@ async def revise_summary(
         "- 输出修订后的完整 summary 正文\n"
         "- 使用 3-6 句中文，纯文本输出，不含标题行或 Markdown 格式"
     )
-
-    try:
-        message = await claude_client.messages.create(
-            model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
-            max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
-            messages=[{"role": "user", "content": prompt}],
-        )
-        revised_content = message.content[0].text.strip()
-    except Exception as e:
-        raise HTTPException(500, f"摘要修订失败：{e}")
+    message = await claude_client.messages.create(
+        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+        messages=[{"role": "user", "content": prompt}],
+    )
+    revised_content = message.content[0].text.strip()
 
     body_embedding = await _embed_text(revised_content)
     body_embedding_literal = _vector_literal(body_embedding)
-    perspective_changed = body.perspective_label is not None or body.perspective_instruction is not None
+    perspective_changed = perspective_label_input is not None or perspective_instruction_input is not None
     perspective_label = summary["perspective_label"] or summary["perspective"] or None
     perspective_instruction = summary["perspective_instruction"] or summary["perspective"] or None
     is_default = bool(summary["is_default"])
     perspective_update_sql = ""
     params = {"id": node_id, "abstract": revised_content}
+    perspective_embedding_literal = None
     if perspective_changed:
         perspective_label, perspective_instruction, is_default = _summary_perspective(
-            body.perspective_label,
-            body.perspective_instruction,
+            perspective_label_input,
+            perspective_instruction_input,
             summary["perspective"],
         )
         perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
@@ -1112,14 +1184,11 @@ async def revise_summary(
             "perspective_instruction": perspective_instruction,
             "body": revised_content,
             "body_embedding_literal": body_embedding_literal,
-            "perspective_embedding_literal": (
-                perspective_embedding_literal if perspective_changed else None
-            ),
+            "perspective_embedding_literal": perspective_embedding_literal,
             "is_default": is_default,
             "source": {"source_node_ids": [summary["summary_of"]] if summary["summary_of"] else []},
         },
     )
-
     await database.database.execute(
         """
         DELETE FROM knowledge_edges
@@ -1129,11 +1198,8 @@ async def revise_summary(
         """,
         {"id": node_id},
     )
-
-    user_id = summary["user_id"] or USER_ID
-    background_tasks.add_task(write_wiki_node, node_id, user_id)
-    background_tasks.add_task(build_similar_edges, node_id, user_id)
-
+    await write_wiki_node(node_id, user_id)
+    await build_similar_edges(node_id, user_id)
     return {
         "id": node_id,
         "title": summary["title"],
@@ -1144,6 +1210,46 @@ async def revise_summary(
         "is_default": is_default,
         "source_id": summary["summary_of"],
     }
+
+
+@router.post("/nodes/{node_id}/revise_summary")
+async def revise_summary(
+    node_id: str,
+    body: ReviseSummaryRequest,
+):
+    """按用户指令重写 summary 正文，并同步更新 embedding 与 wiki 导出。"""
+    instruction = body.instruction.strip()
+    if not instruction:
+        raise HTTPException(400, "修改指令不能为空")
+
+    summary = await database.database.fetch_one(
+        """
+        SELECT id, user_id, title, abstract, object_type, summary_of, perspective,
+               perspective_label, perspective_instruction, is_default
+        FROM knowledge_nodes WHERE id = :id
+        """,
+        {"id": node_id},
+    )
+    if not summary:
+        raise HTTPException(404, "节点不存在")
+    if summary["object_type"] != "summary":
+        raise HTTPException(400, "只能 revise summary 节点")
+
+    user_id = summary["user_id"] or USER_ID
+    job = await jobs.enqueue_job(
+        "revise_summary",
+        {
+            "node_id": node_id,
+            "instruction": instruction,
+            "perspective_label": body.perspective_label,
+            "perspective_instruction": body.perspective_instruction,
+        },
+        user_id=user_id,
+        provider="anthropic",
+        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        priority=5,
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}
 
 
 # ── 节点删除 ──────────────────────────────────────────────────────────────────
@@ -1870,16 +1976,26 @@ async def list_entity_candidates(_: dict = Depends(require_auth)):
 # ── 维护触发（空壳） ───────────────────────────────────────────────────────────
 
 @router.post("/maintenance/run")
-async def trigger_maintenance(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+async def trigger_maintenance(_: dict = Depends(require_auth)):
     """触发知识库维护（孤岛检测 + 补边 + 矛盾发现），后台运行。"""
-    from maintenance import run_maintenance
-    background_tasks.add_task(run_maintenance, USER_ID)
-    return {"status": "triggered"}
+    job = await jobs.enqueue_job(
+        "run_maintenance",
+        {},
+        user_id=USER_ID,
+        priority=1,
+        idempotency_key=f"run_maintenance:{USER_ID}",
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}
 
 
 @router.post("/maintenance/rebuild_from_raw")
-async def trigger_rebuild_from_raw(background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
+async def trigger_rebuild_from_raw(_: dict = Depends(require_auth)):
     """从 raw 文件重建知识库（幂等）。清空所有 file-sourced 节点后触发 ingestion-worker 重新入库。后台运行。"""
-    from maintenance import rebuild_from_raw
-    background_tasks.add_task(rebuild_from_raw, USER_ID)
-    return {"status": "triggered"}
+    job = await jobs.enqueue_job(
+        "rebuild_from_raw",
+        {},
+        user_id=USER_ID,
+        priority=1,
+        idempotency_key=f"rebuild_from_raw:{USER_ID}",
+    )
+    return {"status": job["status"], "job_id": job["id"], "job": job}

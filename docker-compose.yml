@@ -83,6 +83,27 @@ services:
         condition: service_healthy
     profiles: ["workers"]
 
+  job-worker:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest
+    build:
+      context: ./services/api
+    command: python job_worker.py
+    restart: unless-stopped
+    volumes:
+      - ./user_data:/app/user_data
+      - ./config:/app/shared_config:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
+      AUTH_SECRET: ${AUTH_SECRET}
+      USER_DATA_DIR: /app/user_data
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["workers"]
+
   feedback-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/feedback-worker:latest
     build:
