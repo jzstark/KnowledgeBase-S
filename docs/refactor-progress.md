@@ -1002,3 +1002,42 @@ Implementation fixes recorded:
   yet define `WECHAT2RSS_LIC_EMAIL`, `WECHAT2RSS_LIC_CODE`,
   `WECHAT2RSS_TOKEN`, or `WECHAT2RSS_RSS_HOST`; compose config therefore emits
   expected blank-variable warnings until those are set.
+
+## 2026-05-12 - Web startup Google Fonts removal
+
+Issue:
+
+- The web container logged repeated startup failures while requesting
+  `https://fonts.gstatic.com/...JetBrainsMono...woff2`.
+
+Fix:
+
+- Removed `next/font/google` usage from `services/web/app/layout.tsx`.
+- Added local CSS fallback font variables in `services/web/app/globals.css` so
+  existing `--font-inter`, `--font-cormorant`, and `--font-jetbrains`
+  references continue to resolve without network access.
+
+Verification:
+
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- Runtime grep found no `next/font/google`, `fonts.gstatic`, or Google font
+  loader imports in `services/web`.
+- `git diff --check` passed.
+
+## 2026-05-12 - Wechat2RSS management assets proxy
+
+Issue:
+
+- Visiting `/wechat2rss/` returned the Wechat2RSS HTML, but the browser then
+  requested root-relative `/assets/...` files. Nginx sent those to the Next.js
+  web service, causing 404s.
+
+Fix:
+
+- Added login-protected Nginx proxy locations for `/assets/` and
+  `/favicon.ico` to forward Wechat2RSS management-page static assets to the
+  `wechat2rss` container.
+
+Verification:
+
+- Pending reload/restart of Nginx on the VPS.
