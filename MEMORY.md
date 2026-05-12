@@ -395,7 +395,8 @@ Phase 4.5 新增并启用四张专属表：
   `extends/background_of/supports/contradicts`
 - API 图谱和节点详情会隐藏这些 legacy LLM semantic edges
 - `cleanup_legacy_llm_edges()` 会删除历史 legacy LLM semantic edges
-- `co_occurs_with` 尚未实现；Phase 1 已移除前端旧过滤提示
+- Phase 6 后，entity relatedness 存在 `entity_pair_signals` 中，不写入
+  `knowledge_edges.co_occurs_with`
 - 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
 
 ### 4.5 其他表
@@ -413,6 +414,9 @@ Phase 4.5 新增并启用四张专属表：
 | `summary_nodes` | summary 对象专属字段 |
 | `entity_nodes` | entity 对象专属字段 |
 | `index_nodes` | index 对象专属字段 |
+| `entity_facts` | entity 的 source-grounded facts，回溯到 article/source item |
+| `entity_profiles` | 从 facts 派生、可失效并重建的 entity profile/timeline summary |
+| `entity_pair_signals` | entity relatedness 信号；不反写成图谱边 |
 | `topics` | 每日选题 |
 | `drafts` | 生成草稿与用户定稿 |
 | `user_settings` | 简报窗口、简报时间等设置 |
@@ -505,9 +509,10 @@ Phase 4 后，新增素材统一先进入 `source_items`：
 12. 再入库一个初始 `summary`
 13. 把 entity candidates 发给 API 处理
 14. 对新晋升的 entity 生成 entity page，并入库 `entity`
-15. 回灌历史 wikilinks / mentions
-16. 成功则将 source item 标记为 `succeeded`，失败标记为 `failed`
-17. 更新 source 的 `last_fetched_at`
+15. 为匹配到的既有 entity 同步写 `entity_facts` 并标记 profile stale
+16. 回灌历史 wikilinks / mentions
+17. 成功则将 source item 标记为 `succeeded`，失败标记为 `failed`
+18. 更新 source 的 `last_fetched_at`
 
 ### 6.2 entity 候选与晋升
 
@@ -524,10 +529,32 @@ Phase 4 后，新增素材统一先进入 `source_items`：
 3. 入库 `entity`
 4. 写 `wiki/entities/{id}.md`
 5. 标记 `entity_candidates.promoted_entity_id`
-6. 回扫所有 article，给首次出现的实体名注入 `[[entity_id|term]]`
-7. 为 article → entity 建 `mentions` 边
+6. 将候选池中累积的 mentions materialize 为 `entity_facts`
+7. 刷新 `entity_profiles`
+8. 回扫所有 article，给首次出现的实体名注入 `[[entity_id|term]]`
+9. 为 article → entity 建 `mentions` 边
 
-### 6.3 当前 summary 的两种来源
+### 6.3 Entity Facts / Profile / Relatedness
+
+Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
+
+- `entity_facts` 保存来自 article/entity mention 的 source-grounded facts：
+  `entity_id`、`article_id`、`source_item_id`、`fact_text`、`fact_time`、
+  `source_published_at`、`evidence_span`、`confidence`。
+- `entity_profiles` 保存从 facts 派生的 profile 和 timeline summary；
+  facts 变化会把 profile 标记为 `stale`，可通过 regenerate 或 maintenance
+  刷新。
+- `entity_pair_signals` 保存 relatedness：共现文章数、共现分数、其它信号
+  占位字段、综合 `relatedness_score`、解释和来源 article ids。
+- 对外 API：
+  - `GET /api/kb/entities/{id}/facts`
+  - `GET /api/kb/entities/{id}/timeline`
+  - `GET /api/kb/entities/{id}/related`
+  - `POST /api/kb/entities/{id}/regenerate`
+- relatedness 不写入 `knowledge_edges`，因此不会生成
+  `co_occurs_with` 用户图谱边。
+
+### 6.4 当前 summary 的两种来源
 
 代码里实际上存在两类 summary：
 
@@ -668,9 +695,12 @@ Phase 4 后，新增素材统一先进入 `source_items`：
 2. `migrate_wikilink_edges()`
 3. `promote_entity_candidates()`
 4. `backfill_wikilinks_for_entity()` for all entities
-5. `cleanup_orphan_entities()`
-6. `backfill_summarizes_edges()`
-7. `aggregate_index_abstracts()`
+5. `backfill_entity_facts_from_mentions()`
+6. `refresh_stale_entity_profiles()`
+7. `rebuild_entity_pair_signals()`
+8. `cleanup_orphan_entities()`
+9. `backfill_summarizes_edges()`
+10. `aggregate_index_abstracts()`
 
 Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
 调用只用于 entity page / index abstract 等内容生成，不再生成
@@ -787,7 +817,7 @@ Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 
 ### 尚未完成或与计划不一致
 
-- `co_occurs_with` 没有真正实现
+- relatedness 已进入 `entity_pair_signals`，但前端还没有专门展示面板
 - 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务

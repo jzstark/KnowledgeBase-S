@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 import config_loader
 import database
+import entity_insights
 import object_nodes
 import prompt_loader
 from auth import require_auth
@@ -1308,12 +1309,24 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
                 """,
                 {"eid": ent.matches_existing_entity_id, "article_id": body.article_id},
             )
+            await entity_insights.upsert_fact_from_mention(
+                ent.matches_existing_entity_id,
+                body.article_id,
+                summary_hint=ent.summary_hint,
+                salience=ent.salience,
+                user_id=USER_ID,
+            )
             matched_existing.append(ent.matches_existing_entity_id)
             continue
 
         # Upsert into entity_candidates
         mention_entry = database.jsonb(
-            {"article_id": body.article_id, "salience": ent.salience, "seen_at": now_iso}
+            {
+                "article_id": body.article_id,
+                "salience": ent.salience,
+                "seen_at": now_iso,
+                "summary_hint": ent.summary_hint,
+            }
         )
         existing_cand = await database.database.fetch_one(
             "SELECT id, mentions FROM entity_candidates WHERE user_id = :uid AND canonical_name = :name",
@@ -1413,6 +1426,38 @@ async def backfill_entity_wikilinks(entity_id: str):
     return result
 
 
+async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -> dict:
+    cand = await database.database.fetch_one(
+        """
+        SELECT canonical_name, mentions
+        FROM entity_candidates
+        WHERE id = :cid
+        """,
+        {"cid": candidate_id},
+    )
+    if not cand:
+        return {"facts_inserted": 0}
+    mentions = cand["mentions"] or []
+    if isinstance(mentions, str):
+        mentions = json.loads(mentions)
+    inserted = 0
+    for mention in mentions:
+        article_id = mention.get("article_id")
+        if not article_id:
+            continue
+        created = await entity_insights.upsert_fact_from_mention(
+            entity_node_id,
+            article_id,
+            canonical_name=cand["canonical_name"],
+            summary_hint=mention.get("summary_hint"),
+            salience=float(mention.get("salience", 0.5)),
+            user_id=USER_ID,
+        )
+        if created:
+            inserted += 1
+    return {"facts_inserted": inserted}
+
+
 @router.post("/entity_candidates/{candidate_id}/mark_promoted")
 async def mark_candidate_promoted(candidate_id: int, body: dict):
     """ingestion-worker 生成 entity 页后调用，标记候选已晋升。"""
@@ -1423,7 +1468,108 @@ async def mark_candidate_promoted(candidate_id: int, body: dict):
         "UPDATE entity_candidates SET promoted_entity_id = :eid WHERE id = :cid",
         {"eid": entity_node_id, "cid": candidate_id},
     )
-    return {"ok": True}
+    facts_result = await _materialize_candidate_facts(candidate_id, entity_node_id)
+    await entity_insights.refresh_entity_profile(entity_node_id)
+    return {"ok": True, **facts_result}
+
+
+@router.get("/entities/{entity_id}/facts")
+async def list_entity_facts(entity_id: str, limit: int = Query(50, ge=1, le=200)):
+    rows = await database.database.fetch_all(
+        """
+        SELECT ef.id, ef.entity_id, ef.article_id, ef.source_item_id,
+               ef.fact_text, ef.fact_time, ef.source_published_at,
+               ef.evidence_span, ef.confidence, ef.created_at,
+               n.title AS article_title
+        FROM entity_facts ef
+        LEFT JOIN knowledge_nodes n ON n.id = ef.article_id
+        WHERE ef.entity_id = :entity_id
+        ORDER BY ef.fact_time DESC NULLS LAST, ef.created_at DESC
+        LIMIT :limit
+        """,
+        {"entity_id": entity_id, "limit": limit},
+    )
+    return [
+        {
+            "id": r["id"],
+            "entity_id": r["entity_id"],
+            "article_id": r["article_id"],
+            "article_title": r["article_title"],
+            "source_item_id": r["source_item_id"],
+            "fact_text": r["fact_text"],
+            "fact_time": r["fact_time"].isoformat() if r["fact_time"] else None,
+            "source_published_at": (
+                r["source_published_at"].isoformat() if r["source_published_at"] else None
+            ),
+            "evidence_span": r["evidence_span"],
+            "confidence": float(r["confidence"] or 0),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/entities/{entity_id}/timeline")
+async def get_entity_timeline(entity_id: str, limit: int = Query(50, ge=1, le=200)):
+    facts = await list_entity_facts(entity_id, limit)
+    profile = await database.database.fetch_one(
+        "SELECT timeline_summary, status, refreshed_at FROM entity_profiles WHERE entity_id = :id",
+        {"id": entity_id},
+    )
+    return {
+        "entity_id": entity_id,
+        "timeline_summary": profile["timeline_summary"] if profile else "",
+        "profile_status": profile["status"] if profile else "missing",
+        "profile_refreshed_at": (
+            profile["refreshed_at"].isoformat() if profile and profile["refreshed_at"] else None
+        ),
+        "facts": facts,
+    }
+
+
+@router.get("/entities/{entity_id}/related")
+async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=100)):
+    rows = await database.database.fetch_all(
+        """
+        SELECT eps.*,
+               other.id AS related_entity_id,
+               COALESCE(en.canonical_name, other.canonical_name, other.title) AS related_title
+        FROM entity_pair_signals eps
+        JOIN knowledge_nodes other ON other.id = CASE
+          WHEN eps.entity_a_id = :entity_id THEN eps.entity_b_id
+          ELSE eps.entity_a_id
+        END
+        LEFT JOIN entity_nodes en ON en.node_id = other.id
+        WHERE eps.entity_a_id = :entity_id OR eps.entity_b_id = :entity_id
+        ORDER BY eps.relatedness_score DESC, eps.co_occurrence_count DESC
+        LIMIT :limit
+        """,
+        {"entity_id": entity_id, "limit": limit},
+    )
+    return [
+        {
+            "entity_id": r["related_entity_id"],
+            "title": r["related_title"],
+            "relatedness_score": float(r["relatedness_score"] or 0),
+            "co_occurrence_count": int(r["co_occurrence_count"] or 0),
+            "co_occurrence_score": float(r["co_occurrence_score"] or 0),
+            "embedding_similarity": float(r["embedding_similarity"] or 0),
+            "graph_proximity_score": float(r["graph_proximity_score"] or 0),
+            "temporal_score": float(r["temporal_score"] or 0),
+            "explanation": r["explanation"],
+            "source_article_ids": list(r["source_article_ids"] or []),
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/entities/{entity_id}/regenerate")
+async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_auth)):
+    result = await entity_insights.refresh_entity_profile(entity_id)
+    if not result.get("refreshed"):
+        raise HTTPException(404, "entity 不存在")
+    return result
 
 
 @router.get("/entity_candidates")

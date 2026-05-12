@@ -38,6 +38,23 @@ interface NodeDetail extends KBNode {
   edges: KBEdge[];
 }
 
+interface EntityFact {
+  id: number;
+  article_id: string;
+  article_title?: string;
+  fact_text: string;
+  fact_time?: string | null;
+  confidence: number;
+}
+
+interface RelatedEntity {
+  entity_id: string;
+  title: string;
+  relatedness_score: number;
+  co_occurrence_count: number;
+  explanation?: string;
+}
+
 interface GraphData {
   nodes: KBNode[];
   edges: KBEdge[];
@@ -738,6 +755,7 @@ function WikiPanel({
   openFile,
   onCloseFile,
   onOpenFile,
+  onSelectNode,
   onSummaryCreated,
   onSummaryRevised,
 }: {
@@ -746,6 +764,7 @@ function WikiPanel({
   openFile: OpenFile | null;
   onCloseFile: () => void;
   onOpenFile: (f: OpenFile) => void;
+  onSelectNode: (nodeId: string) => void;
   onSummaryCreated?: () => void;
   onSummaryRevised?: (nodeId: string) => void;
 }) {
@@ -757,6 +776,33 @@ function WikiPanel({
   const [reviseInstruction, setReviseInstruction] = useState("");
   const [reviseLoading, setReviseLoading] = useState(false);
   const [reviseMsg, setReviseMsg] = useState("");
+  const [entityFacts, setEntityFacts] = useState<EntityFact[]>([]);
+  const [relatedEntities, setRelatedEntities] = useState<RelatedEntity[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadEntityInsights() {
+      if (!detail || detail.object_type !== "entity") {
+        setEntityFacts([]);
+        setRelatedEntities([]);
+        return;
+      }
+      const [factsRes, relatedRes] = await Promise.all([
+        fetch(`/api/kb/entities/${detail.id}/facts?limit=5`, { credentials: "include" }),
+        fetch(`/api/kb/entities/${detail.id}/related?limit=5`, { credentials: "include" }),
+      ]);
+      if (cancelled) return;
+      setEntityFacts(factsRes.ok ? await factsRes.json() : []);
+      setRelatedEntities(relatedRes.ok ? await relatedRes.json() : []);
+    }
+    loadEntityInsights().catch(() => {
+      if (!cancelled) {
+        setEntityFacts([]);
+        setRelatedEntities([]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [detail?.id, detail?.object_type]);
 
   async function handleCreateSummary() {
     if (!detail) return;
@@ -1024,6 +1070,56 @@ function WikiPanel({
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {objectType === "entity" && (entityFacts.length > 0 || relatedEntities.length > 0) && (
+          <div className="mt-6 pt-4 border-t border-border space-y-4">
+            {entityFacts.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">
+                  来源事实
+                </p>
+                <div className="space-y-2">
+                  {entityFacts.map((fact) => (
+                    <div key={fact.id} className="text-xs text-muted-foreground leading-relaxed">
+                      <div>{fact.fact_text}</div>
+                      <div className="text-[11px] text-muted-foreground/60">
+                        {fact.article_title || fact.article_id}
+                        {fact.fact_time ? ` · ${new Date(fact.fact_time).toLocaleDateString("zh-CN")}` : ""}
+                        {` · ${(fact.confidence * 100).toFixed(0)}%`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {relatedEntities.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">
+                  Related entities
+                </p>
+                <div className="space-y-1">
+                  {relatedEntities.map((entity) => (
+                    <button
+                      key={entity.entity_id}
+                      onClick={() => onSelectNode(entity.entity_id)}
+                      className="w-full text-left text-xs text-muted-foreground hover:text-foreground rounded px-1 py-1 hover:bg-muted"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">{entity.title || entity.entity_id}</span>
+                        <span className="text-[11px] text-muted-foreground/60 shrink-0">
+                          {(entity.relatedness_score * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground/60">
+                        {entity.explanation || `共同出现于 ${entity.co_occurrence_count} 篇 article`}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1382,6 +1478,7 @@ export default function KnowledgePage() {
               openFile={openFile}
               onCloseFile={() => setOpenFile(null)}
               onOpenFile={(f) => setOpenFile(f)}
+              onSelectNode={selectNode}
               onSummaryCreated={() => {
                 setExplorerKey((k) => k + 1);
                 setListRefreshToken((t) => t + 1);

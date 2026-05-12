@@ -18,6 +18,7 @@ import anthropic
 sys.path.insert(0, os.path.dirname(__file__))
 import config_loader
 import database
+import entity_insights
 import object_nodes
 
 USER_ID = "default"
@@ -245,6 +246,13 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             VALUES (:from_id, :to_id, 'mentions', :weight, 'backfill')
             """,
             {"from_id": art["id"], "to_id": entity_id, "weight": salience},
+        )
+        await entity_insights.upsert_fact_from_mention(
+            entity_id,
+            art["id"],
+            canonical_name=canonical,
+            salience=salience,
+            user_id=user_id,
         )
 
         # Append article to entity's source_node_ids
@@ -998,6 +1006,15 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     wikilink_result = {"entities_processed": len(entity_rows), "wikilinks_added": wikilink_total}
     print(f"[maintenance] Wikilink backfill: {wikilink_result}", flush=True)
 
+    facts_result = await entity_insights.backfill_entity_facts_from_mentions(user_id)
+    print(f"[maintenance] Entity facts backfill: {facts_result}", flush=True)
+
+    profiles_result = await entity_insights.refresh_stale_entity_profiles(user_id)
+    print(f"[maintenance] Entity profiles refresh: {profiles_result}", flush=True)
+
+    relatedness_result = await entity_insights.rebuild_entity_pair_signals(user_id)
+    print(f"[maintenance] Entity relatedness refresh: {relatedness_result}", flush=True)
+
     orphan_result = await cleanup_orphan_entities(user_id)
     print(f"[maintenance] Orphan entities: {orphan_result}", flush=True)
 
@@ -1012,6 +1029,9 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "wikilink_migration": migrate_result,
         "entity_promotion": promote_result,
         "wikilink_backfill": wikilink_result,
+        "entity_facts": facts_result,
+        "entity_profiles": profiles_result,
+        "entity_relatedness": relatedness_result,
         "orphan_entities": orphan_result,
         "summarizes_backfill": summarizes_result,
         "index_abstract": index_abstract_result,

@@ -164,6 +164,48 @@ CREATE TABLE IF NOT EXISTS index_nodes (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS entity_facts (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    entity_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    article_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    source_item_id VARCHAR,
+    fact_text TEXT NOT NULL,
+    fact_time TIMESTAMPTZ,
+    source_published_at TIMESTAMPTZ,
+    evidence_span TEXT,
+    confidence FLOAT DEFAULT 0.5,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (entity_id, article_id, fact_text)
+);
+
+CREATE TABLE IF NOT EXISTS entity_profiles (
+    entity_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    profile_text TEXT,
+    timeline_summary TEXT,
+    status VARCHAR DEFAULT 'stale',
+    facts_count INT DEFAULT 0,
+    refreshed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS entity_pair_signals (
+    entity_a_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    entity_b_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    co_occurrence_count INT DEFAULT 0,
+    co_occurrence_score FLOAT DEFAULT 0,
+    embedding_similarity FLOAT DEFAULT 0,
+    graph_proximity_score FLOAT DEFAULT 0,
+    temporal_score FLOAT DEFAULT 0,
+    relatedness_score FLOAT DEFAULT 0,
+    explanation TEXT,
+    source_article_ids TEXT[] DEFAULT '{}',
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (entity_a_id, entity_b_id)
+);
+
 CREATE TABLE IF NOT EXISTS drafts (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,
@@ -267,6 +309,31 @@ ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS rollup_instruction TEXT;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS abstract_stale BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS user_id VARCHAR;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS entity_id VARCHAR;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS article_id VARCHAR;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS source_item_id VARCHAR;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS fact_text TEXT;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS fact_time TIMESTAMPTZ;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS evidence_span TEXT;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS confidence FLOAT DEFAULT 0.5;
+ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS profile_text TEXT;
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS timeline_summary TEXT;
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'stale';
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS facts_count INT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMPTZ;
+ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS co_occurrence_count INT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS co_occurrence_score FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS embedding_similarity FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS graph_proximity_score FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS temporal_score FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS relatedness_score FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS explanation TEXT;
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS source_article_ids TEXT[] DEFAULT '{}';
+ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
 UPDATE knowledge_nodes
 SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
@@ -371,6 +438,12 @@ CREATE INDEX IF NOT EXISTS idx_summary_nodes_perspective_embedding ON summary_no
     USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_entity_nodes_canonical_name ON entity_nodes(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_entity_nodes_merged_into ON entity_nodes(merged_into);
+CREATE INDEX IF NOT EXISTS idx_entity_facts_entity_time ON entity_facts(entity_id, fact_time DESC);
+CREATE INDEX IF NOT EXISTS idx_entity_facts_article ON entity_facts(article_id);
+CREATE INDEX IF NOT EXISTS idx_entity_facts_source_item ON entity_facts(source_item_id);
+CREATE INDEX IF NOT EXISTS idx_entity_profiles_status ON entity_profiles(status);
+CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_a_score ON entity_pair_signals(entity_a_id, relatedness_score DESC);
+CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_b_score ON entity_pair_signals(entity_b_id, relatedness_score DESC);
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);

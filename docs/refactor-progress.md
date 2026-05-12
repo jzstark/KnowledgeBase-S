@@ -543,3 +543,72 @@ Implementation note:
   separate `asyncio.run()` calls against the same `databases` connection pool.
   The probe was rerun with a single event loop and passed; no implementation
   change was needed.
+
+## 2026-05-12 - Phase 6 Entity Facts / Profile / Relatedness
+
+Status: implemented.
+
+Assumptions:
+
+- The project still has no `jobs` table/worker for derived model tasks, so Phase
+  6 uses a synchronous service layer (`entity_insights.py`) that can later be
+  moved behind jobs.
+- Facts are source-grounded records derived from article/entity mentions. When
+  the article analysis supplies `summary_hint`, that hint becomes the fact text;
+  otherwise the system records a deterministic mention fact with the article
+  title and evidence span.
+- Entity profiles are derived from facts with deterministic rollup text in this
+  phase. This keeps the phase verifiable without forcing Claude/OpenAI calls.
+- Relatedness is stored only in `entity_pair_signals`; no `co_occurs_with`
+  graph edges are generated.
+
+Implemented:
+
+- Added `entity_facts`, `entity_profiles`, and `entity_pair_signals` tables with
+  indexes.
+- Added `services/api/entity_insights.py` for:
+  - fact upsert from mentions
+  - stale profile marking
+  - profile refresh
+  - facts backfill from `mentions` edges
+  - relatedness rebuild from article/entity co-occurrence
+- Extended entity candidate processing so matched existing entities immediately
+  create/update facts and mark profiles stale.
+- Extended candidate promotion marking so accumulated candidate mentions are
+  materialized into facts and the entity profile is refreshed.
+- Extended maintenance to backfill facts, refresh stale profiles, and rebuild
+  relatedness after wikilink/mentions maintenance.
+- Added API endpoints:
+  - `GET /api/kb/entities/{id}/facts`
+  - `GET /api/kb/entities/{id}/timeline`
+  - `GET /api/kb/entities/{id}/related`
+  - `POST /api/kb/entities/{id}/regenerate`
+- Added an entity-only section in the knowledge detail panel that shows recent
+  source facts and related entities without adding relatedness edges to the
+  graph.
+- Updated `MEMORY.md` with the new entity model and maintenance flow.
+
+Verification:
+
+- Local AST parsing passed for `entity_insights.py`, `database.py`,
+  `routers/kb.py`, and `maintenance.py`.
+- `docker compose restart api` ran the schema migration successfully.
+- API container `py_compile` passed for `database.py`, `entity_insights.py`,
+  `routers/kb.py`, and `maintenance.py`.
+- Postgres shows the three Phase 6 tables and expected indexes.
+- Backfilled existing mentions into 690 `entity_facts`.
+- Refreshed 104 `entity_profiles`.
+- Rebuilt 1,458 `entity_pair_signals`; rerunning the rebuild kept the count at
+  1,458, confirming idempotent pair replacement.
+- Confirmed `knowledge_edges` has zero `co_occurs_with` rows.
+- Probed `GET /api/kb/entities/{id}/facts`, `/timeline`, and `/related` for an
+  entity with facts; all returned data including source article ids and
+  relatedness explanations.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+
+Not run:
+
+- A full new article ingestion success path was not forced because it can invoke
+  configured Claude/OpenAI providers. Existing mentions were backfilled through
+  the same service layer used by the new candidate-processing path.
