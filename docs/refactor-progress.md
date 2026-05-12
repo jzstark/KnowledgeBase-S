@@ -799,3 +799,77 @@ Implementation fixes recorded:
   phases.
 - The first DB verification command had invalid inline Python quoting. Re-ran
   the check via `psql`, which confirmed `jobs` row count and indexes.
+
+## 2026-05-12 - Phase 9 Rebuild 重做
+
+Assumptions:
+
+- Keep Phase 9 on the existing `rebuild_from_raw` surface instead of adding a
+  second rebuild endpoint.
+- Use `source_items` as the rebuild manifest. Do not scan raw directories to
+  infer what should be rebuilt.
+- Treat `resume` as manifest-status resume: skip already `succeeded` items and
+  continue with non-succeeded selected items.
+
+Implemented:
+
+- Reworked `maintenance.rebuild_from_raw()` to select rebuild work from
+  `source_items`.
+- Added rebuild filters:
+  - `source_id`
+  - `source_type`
+  - `status`
+  - `since`
+  - `until`
+  - `dry_run`
+  - `resume`
+- Added dry-run result reporting for selected source items, selected sources,
+  selected source types, and node delete counts.
+- Changed rebuild deletion scope to selected manifest items:
+  - article/index nodes linked by `source_item_id`
+  - summaries whose `summary_of` points to selected article/index nodes
+  - entity nodes whose `source_node_ids` overlap selected article/index nodes
+  - wiki files for the deleted node IDs
+- Rebuild now resets selected `source_items` to `pending`, clears errors and
+  attempts, resets selected sources' `last_fetched_at`, triggers
+  ingestion-worker by source, waits on selected item statuses, then runs
+  `run_maintenance()`.
+- `job_worker` now passes `rebuild_from_raw` job payload into maintenance.
+- `POST /api/kb/maintenance/rebuild_from_raw` now accepts an optional JSON body
+  carrying the rebuild filters and uses the payload in its idempotency key.
+- URL-backed nodes now get deterministic IDs from `raw_ref.url`; URL ingest also
+  deduplicates by `raw_ref.url`.
+- Default summary nodes created through `/api/kb/ingest` now get deterministic
+  IDs from `summary_of + perspective`.
+- Updated `MEMORY.md` to describe the manifest-driven rebuild model.
+
+Verification:
+
+- Python AST parsing passed for `maintenance.py`, `job_worker.py`, and
+  `routers/kb.py`.
+- Restarted API successfully.
+- Ran dry-run rebuild with no matching URL items.
+- Inserted a temporary source/source_item, ran non-empty dry-run selection by
+  `source_id`, and cleaned up the temporary records.
+- Inserted temporary article/summary/entity nodes linked to a temporary
+  source_item, ran dry-run selection, confirmed node delete counts
+  `article/index=1`, `summary=1`, `entity=1`, and cleaned up the temporary
+  records.
+- Authenticated `POST /api/kb/maintenance/rebuild_from_raw` with
+  `{"dry_run": true, "source_type": "plaintext"}` returned 200 and a queued
+  job; the temporary job row was deleted.
+- Worker smoke enqueued a temporary `rebuild_from_raw` dry-run job, claimed it,
+  ran `job_worker.run_job()`, completed it as `succeeded`, and deleted the job.
+- Verified temporary smoke source/source_item/job rows were cleaned up.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- `docker compose logs api --tail 80` showed no Phase 9 errors after probes.
+- `git diff --check` passed.
+
+Implementation fixes recorded:
+
+- Initial dry-run failed because the `databases` library rejects bind values
+  that are not present in the SQL text. Fixed by only adding filter params when
+  the corresponding SQL predicate is added.
+- The first inline container smoke used `async def` after a semicolon, which is
+  invalid Python syntax. Re-ran the smoke using `exec()` with a multi-line
+  async function body.

@@ -37,13 +37,30 @@ def _is_visible_edge(relation_type: str | None) -> bool:
     return relation_type not in LEGACY_LLM_EDGE_TYPES
 
 
-def _make_node_id(object_type: str, raw_ref: dict, user_id: str, canonical_name: str | None) -> str:
-    """Return a deterministic ID for file-backed nodes and entities; random otherwise."""
+def _make_node_id(
+    object_type: str,
+    raw_ref: dict,
+    user_id: str,
+    canonical_name: str | None,
+    summary_of: str | None = None,
+    perspective_label: str | None = None,
+    perspective_instruction: str | None = None,
+) -> str:
+    """Return a deterministic ID for source-backed nodes and entities; random otherwise."""
     prefix = object_type[:3] if object_type else "nod"
     raw_path = (raw_ref or {}).get("path")
     if raw_path:
         h = hashlib.sha256(raw_path.encode()).hexdigest()[:16]
         return f"{prefix}_{h}"
+    raw_url = (raw_ref or {}).get("url")
+    if raw_url:
+        h = hashlib.sha256(raw_url.encode()).hexdigest()[:16]
+        return f"{prefix}_{h}"
+    if object_type == "summary" and summary_of:
+        h = hashlib.sha256(
+            f"{user_id}:{summary_of}:{perspective_label or ''}:{perspective_instruction or ''}".encode()
+        ).hexdigest()[:16]
+        return f"sum_{h}"
     if object_type == "entity" and canonical_name:
         h = hashlib.sha256(f"{user_id}:{canonical_name}".encode()).hexdigest()[:16]
         return f"ent_{h}"
@@ -102,6 +119,16 @@ class IngestRequest(BaseModel):
     parent_index_id: str | None = None   # if set, adds an index_children row
 
 
+class RebuildFromRawRequest(BaseModel):
+    source_id: str | None = None
+    source_type: str | None = None
+    status: str | None = None
+    since: str | None = None
+    until: str | None = None
+    dry_run: bool = False
+    resume: bool = False
+
+
 @router.post("/ingest")
 async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     """内容入库唯一写入入口（ingestion-worker 调用，无需认证）。"""
@@ -111,6 +138,14 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         existing = await database.database.fetch_one(
             "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND raw_ref->>'path' = :path",
             {"uid": body.user_id, "path": raw_path},
+        )
+        if existing:
+            return {"id": existing["id"], "duplicate": True}
+    raw_url = (body.raw_ref or {}).get("url")
+    if raw_url:
+        existing = await database.database.fetch_one(
+            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND raw_ref->>'url' = :url",
+            {"uid": body.user_id, "url": raw_url},
         )
         if existing:
             return {"id": existing["id"], "duplicate": True}
@@ -124,7 +159,6 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         if existing_ent:
             return {"id": existing_ent["id"], "duplicate": True}
 
-    node_id = _make_node_id(body.object_type, body.raw_ref or {}, body.user_id, body.canonical_name)
     embedding_literal = _vector_literal(body.embedding)
     perspective_label = None
     perspective_instruction = None
@@ -140,6 +174,22 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         body_embedding_literal = embedding_literal
         perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
         perspective_embedding_literal = _vector_literal(perspective_embedding)
+    node_id = _make_node_id(
+        body.object_type,
+        body.raw_ref or {},
+        body.user_id,
+        body.canonical_name,
+        body.summary_of,
+        perspective_label,
+        perspective_instruction,
+    )
+    if body.object_type == "summary" and body.summary_of:
+        existing_summary = await database.database.fetch_one(
+            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND id = :id",
+            {"uid": body.user_id, "id": node_id},
+        )
+        if existing_summary:
+            return {"id": existing_summary["id"], "duplicate": True}
 
     await database.database.execute(
         f"""
@@ -1989,13 +2039,28 @@ async def trigger_maintenance(_: dict = Depends(require_auth)):
 
 
 @router.post("/maintenance/rebuild_from_raw")
-async def trigger_rebuild_from_raw(_: dict = Depends(require_auth)):
-    """从 raw 文件重建知识库（幂等）。清空所有 file-sourced 节点后触发 ingestion-worker 重新入库。后台运行。"""
+async def trigger_rebuild_from_raw(
+    body: RebuildFromRawRequest | None = None,
+    _: dict = Depends(require_auth),
+):
+    """从 source_items manifest 重建知识库。后台运行；支持 filter/dry-run/resume。"""
+    payload = body.model_dump(exclude_none=True) if body else {}
+    key_parts = [
+        "rebuild_from_raw",
+        USER_ID,
+        payload.get("source_id") or "",
+        payload.get("source_type") or "",
+        payload.get("status") or "",
+        payload.get("since") or "",
+        payload.get("until") or "",
+        "dry" if payload.get("dry_run") else "run",
+        "resume" if payload.get("resume") else "full",
+    ]
     job = await jobs.enqueue_job(
         "rebuild_from_raw",
-        {},
+        payload,
         user_id=USER_ID,
         priority=1,
-        idempotency_key=f"rebuild_from_raw:{USER_ID}",
+        idempotency_key=":".join(key_parts),
     )
     return {"status": job["status"], "job_id": job["id"], "job": job}

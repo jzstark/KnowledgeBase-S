@@ -52,7 +52,7 @@ async def run_job(job: dict) -> dict:
     if job_type == "rebuild_from_raw":
         from maintenance import rebuild_from_raw
 
-        return await rebuild_from_raw(user_id)
+        return await rebuild_from_raw(user_id, **payload)
 
     raise ValueError(f"unknown job_type: {job_type}")
 

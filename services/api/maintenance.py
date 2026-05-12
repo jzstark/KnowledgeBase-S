@@ -829,14 +829,32 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
 
 # ── 11. Rebuild From Raw ─────────────────────────────────────────────────────────
 
-async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
+def _parse_rebuild_time(value: str | None):
+    if not value:
+        return None
+    from datetime import datetime as _datetime
+
+    return _datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+async def rebuild_from_raw(
+    user_id: str = USER_ID,
+    *,
+    source_id: str | None = None,
+    source_type: str | None = None,
+    status: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    dry_run: bool = False,
+    resume: bool = False,
+) -> dict:
     """
-    从 raw 文件重建知识库（幂等）。
+    从 source_items manifest 重建知识库（幂等）。
     执行流程：
-      1. 清空所有 file-sourced article/entity/summary 节点及 entity_candidates
+      1. 按 source_items manifest 选择待重建 item（支持 source/type/status/time filter）
       2. 删除对应 wiki 文件
-      3. 重置 file-type source 的 last_fetched_at，触发 ingestion-worker 重新处理
-      4. 轮询等待所有 source 完成（最长 60 分钟）
+      3. 将选中 source_items 重置为 pending，触发 ingestion-worker 重新处理
+      4. 轮询等待选中 source_items 完成（最长 60 分钟）
       5. 运行 run_maintenance()
 
     须在 api 容器中执行：
@@ -849,54 +867,169 @@ async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
     wiki_dir = user_data_dir / user_id / "wiki"
     ingestion_url = os.environ.get("INGESTION_WORKER_URL", "http://ingestion-worker:8001")
 
-    # ── Step 1: 清空可重建内容 ────────────────────────────────────────────────
-    print("[rebuild] Step 1: 清空可重建内容...", flush=True)
+    filters = {
+        "source_id": source_id,
+        "source_type": source_type,
+        "status": status,
+        "since": since,
+        "until": until,
+        "resume": resume,
+        "dry_run": dry_run,
+    }
 
-    # 先删 entity_candidates（有 FK 约束指向 entity 节点，须先删）
-    ec_row = await database.database.fetch_one(
-        "SELECT COUNT(*) AS n FROM entity_candidates WHERE user_id = :uid", {"uid": user_id}
-    )
-    ec_count = int(ec_row["n"]) if ec_row else 0
-    await database.database.execute(
-        "DELETE FROM entity_candidates WHERE user_id = :uid", {"uid": user_id}
-    )
+    # ── Step 1: 选择 manifest items ───────────────────────────────────────────
+    print(f"[rebuild] Step 1: 选择 source_items manifest... {filters}", flush=True)
 
-    # 再删 entity 节点（knowledge_edges ON DELETE CASCADE 自动清理边）
-    ent_rows = await database.database.fetch_all(
-        "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity'",
-        {"uid": user_id},
-    )
-    entity_ids = {r["id"] for r in ent_rows}
-    await database.database.execute(
-        "DELETE FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity'",
-        {"uid": user_id},
-    )
+    where = ["si.user_id = :uid"]
+    params = {"uid": user_id}
+    if source_id:
+        where.append("si.source_id = :source_id")
+        params["source_id"] = source_id
+    if source_type:
+        where.append("si.source_type = :source_type")
+        params["source_type"] = source_type
+    if status:
+        where.append("si.status = :status")
+        params["status"] = status
+    if since:
+        where.append(
+            "COALESCE(si.effective_at, si.source_published_at, si.captured_at, si.created_at) >= :since"
+        )
+        params["since"] = _parse_rebuild_time(since)
+    if until:
+        where.append(
+            "COALESCE(si.effective_at, si.source_published_at, si.captured_at, si.created_at) <= :until"
+        )
+        params["until"] = _parse_rebuild_time(until)
+    if resume:
+        where.append("si.status <> 'succeeded'")
 
-    # 删 file-sourced 节点（summary_of FK ON DELETE CASCADE 自动级联删子 summary）
-    art_rows = await database.database.fetch_all(
-        """SELECT id FROM knowledge_nodes WHERE user_id = :uid
-           AND source_type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
+    item_rows = await database.database.fetch_all(
+        f"""
+        SELECT si.id, si.source_id, si.source_type, si.status
+        FROM source_items si
+        WHERE {' AND '.join(where)}
+        ORDER BY si.source_id, si.created_at ASC
+        """,
+        params,
+    )
+    item_ids = [r["id"] for r in item_rows]
+    source_ids = sorted({r["source_id"] for r in item_rows})
+    source_types = sorted({r["source_type"] for r in item_rows})
+
+    if not item_ids:
+        result = {
+            "dry_run": dry_run,
+            "filters": filters,
+            "source_items_selected": 0,
+            "sources_selected": 0,
+            "nodes_deleted": 0,
+            "wiki_files_deleted": 0,
+            "sources_triggered": 0,
+            "sources_failed": 0,
+            "maintenance": None,
+        }
+        print(f"[rebuild] 无匹配 source_items: {json.dumps(result, ensure_ascii=False)}", flush=True)
+        return result
+
+    node_rows = await database.database.fetch_all(
+        """
+        SELECT id, object_type
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND source_item_id = ANY(:item_ids)
+          AND object_type IN ('article', 'index')
+        """,
+        {"uid": user_id, "item_ids": item_ids},
+    )
+    base_ids = {r["id"] for r in node_rows}
+    summary_rows = await database.database.fetch_all(
+        """
+        SELECT id
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND object_type = 'summary'
+          AND summary_of = ANY(:base_ids)
+        """,
+        {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
+    )
+    summary_ids = {r["id"] for r in summary_rows}
+    entity_rows = await database.database.fetch_all(
+        """
+        SELECT id
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND object_type = 'entity'
+          AND source_node_ids && :base_ids
+        """,
+        {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
+    )
+    entity_ids = {r["id"] for r in entity_rows}
+    deleted_ids = base_ids | summary_ids | entity_ids
+
+    dry_run_result = {
+        "dry_run": True,
+        "filters": filters,
+        "source_items_selected": len(item_ids),
+        "sources_selected": len(source_ids),
+        "source_types_selected": source_types,
+        "nodes_to_delete": len(deleted_ids),
+        "article_or_index_nodes_to_delete": len(base_ids),
+        "summary_nodes_to_delete": len(summary_ids),
+        "entity_nodes_to_delete": len(entity_ids),
+    }
+    if dry_run:
+        print(f"[rebuild] dry run: {json.dumps(dry_run_result, ensure_ascii=False)}", flush=True)
+        return dry_run_result
+
+    # ── Step 2: 清空可重建内容 ────────────────────────────────────────────────
+    print("[rebuild] Step 2: 清空选中 manifest 对应内容...", flush=True)
+
+    ec_before_row = await database.database.fetch_one(
+        "SELECT COUNT(*) AS n FROM entity_candidates WHERE user_id = :uid",
         {"uid": user_id},
     )
-    article_ids = {r["id"] for r in art_rows}
+    ec_before = int(ec_before_row["n"]) if ec_before_row else 0
     await database.database.execute(
-        """DELETE FROM knowledge_nodes WHERE user_id = :uid
-           AND source_type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
+        """
+        DELETE FROM entity_candidates
+        WHERE user_id = :uid
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(mentions) AS m
+            WHERE m->>'article_id' = ANY(:base_ids)
+          )
+        """,
+        {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
+    )
+    ec_after_row = await database.database.fetch_one(
+        "SELECT COUNT(*) AS n FROM entity_candidates WHERE user_id = :uid",
         {"uid": user_id},
     )
+    ec_after = int(ec_after_row["n"]) if ec_after_row else 0
+    ec_deleted = ec_before - ec_after
+
+    if deleted_ids:
+        await database.database.execute(
+            """
+            DELETE FROM knowledge_nodes
+            WHERE user_id = :uid AND id = ANY(:ids)
+            """,
+            {"uid": user_id, "ids": list(deleted_ids)},
+        )
 
     print(
-        f"[rebuild] 已清空: entity_candidates={ec_count}, "
-        f"entities={len(entity_ids)}, file-sourced nodes={len(article_ids)} (含 cascade summary)",
+        f"[rebuild] 已清空: nodes={len(deleted_ids)}, "
+        f"base={len(base_ids)}, summaries={len(summary_ids)}, entities={len(entity_ids)}, "
+        f"entity_candidates_deleted={ec_deleted}",
         flush=True,
     )
 
-    # ── Step 2: 清理 wiki 文件 ────────────────────────────────────────────────
+    # ── Step 2b: 清理 wiki 文件 ───────────────────────────────────────────────
     wiki_deleted = 0
-    deleted_ids = entity_ids | article_ids
 
-    # 按 ID 删除 article/entity/index 的 wiki 文件
-    for subdir in ("articles", "entities", "indices"):
+    # 按 ID 删除 article/entity/index/summary 的 wiki 文件
+    for subdir in ("articles", "entities", "indices", "summaries"):
         d = wiki_dir / subdir
         if not d.exists():
             continue
@@ -905,29 +1038,37 @@ async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
                 f.unlink()
                 wiki_deleted += 1
 
-    # 重建删除的 summary wiki 文件：删除 wiki/summaries/ 下所有文件（全部重建）
-    # 包括 auto-generated summaries（cascade 已删 DB 记录）和孤立文件
-    sum_dir = wiki_dir / "summaries"
-    if sum_dir.exists():
-        for f in sum_dir.iterdir():
-            if f.is_file() and f.suffix == ".md":
-                f.unlink()
-                wiki_deleted += 1
-
     print(f"[rebuild] 已删除 wiki 文件: {wiki_deleted} 个", flush=True)
 
-    # ── Step 3: 重置 last_fetched_at，触发 ingestion-worker ──────────────────
+    # ── Step 3: 重置 source_items，触发 ingestion-worker ────────────────────
     print("[rebuild] Step 3: 触发 ingestion-worker...", flush=True)
 
-    sources = await database.database.fetch_all(
-        """SELECT id, name FROM sources WHERE user_id = :uid
-           AND type IN ('pdf', 'plaintext', 'word', 'image', 'wechat')""",
-        {"uid": user_id},
+    await database.database.execute(
+        """
+        UPDATE source_items
+        SET status = 'pending', error = NULL, attempts = 0, updated_at = NOW()
+        WHERE user_id = :uid AND id = ANY(:item_ids)
+        """,
+        {"uid": user_id, "item_ids": item_ids},
     )
-    for src in sources:
-        await database.database.execute(
-            "UPDATE sources SET last_fetched_at = NULL WHERE id = :id", {"id": src["id"]}
-        )
+    await database.database.execute(
+        """
+        UPDATE sources
+        SET last_fetched_at = NULL
+        WHERE user_id = :uid AND id = ANY(:source_ids)
+        """,
+        {"uid": user_id, "source_ids": source_ids},
+    )
+
+    sources = await database.database.fetch_all(
+        """
+        SELECT id, name
+        FROM sources
+        WHERE user_id = :uid AND id = ANY(:source_ids)
+        ORDER BY created_at ASC
+        """,
+        {"uid": user_id, "source_ids": source_ids},
+    )
 
     triggered: list[str] = []
     failed: list[str] = []
@@ -955,48 +1096,57 @@ async def rebuild_from_raw(user_id: str = USER_ID) -> dict:
     else:
         # ── Step 4: 轮询等待所有 source 完成 ──────────────────────────────────
         print(
-            f"[rebuild] Step 4: 等待 {len(triggered)} 个 source 完成（最长 60 分钟）...",
+            f"[rebuild] Step 4: 等待 {len(item_ids)} 个 source_items 完成（最长 60 分钟）...",
             flush=True,
         )
         max_wait = 3600
         interval = 20
         elapsed = 0
-        pending = list(triggered)
+        pending_count = len(item_ids)
 
-        while elapsed < max_wait and pending:
+        while elapsed < max_wait and pending_count:
             await asyncio.sleep(interval)
             elapsed += interval
-            still = []
-            for sid in pending:
-                row = await database.database.fetch_one(
-                    "SELECT last_fetched_at FROM sources WHERE id = :id", {"id": sid}
-                )
-                if row and row["last_fetched_at"] is None:
-                    still.append(sid)
-            if len(still) < len(pending):
-                done = len(triggered) - len(still)
+            row = await database.database.fetch_one(
+                """
+                SELECT COUNT(*) AS n
+                FROM source_items
+                WHERE user_id = :uid
+                  AND id = ANY(:item_ids)
+                  AND status IN ('pending', 'processing')
+                """,
+                {"uid": user_id, "item_ids": item_ids},
+            )
+            still_count = int(row["n"]) if row else 0
+            if still_count < pending_count:
+                done = len(item_ids) - still_count
                 print(
-                    f"[rebuild]   进度: {done}/{len(triggered)} 完成 ({elapsed}s 已过)",
+                    f"[rebuild]   进度: {done}/{len(item_ids)} 完成 ({elapsed}s 已过)",
                     flush=True,
                 )
-            pending = still
+            pending_count = still_count
 
-        if pending:
-            print(f"[rebuild] 警告：超时，以下 source 未完成: {pending}", flush=True)
+        if pending_count:
+            print(f"[rebuild] 警告：超时，仍有 {pending_count} 个 source_items 未完成", flush=True)
         else:
-            print("[rebuild] 所有 source 已完成 ingestion", flush=True)
+            print("[rebuild] 所有选中 source_items 已完成 ingestion", flush=True)
 
     # ── Step 5: 运行维护任务 ──────────────────────────────────────────────────
     print("[rebuild] Step 5: 运行维护任务（entity 晋升、wikilink 回灌等）...", flush=True)
     maintenance_result = await run_maintenance(user_id)
 
     result = {
-        "entity_candidates_deleted": ec_count,
+        "entity_candidates_deleted": ec_deleted,
         "entities_deleted": len(entity_ids),
-        "file_nodes_deleted": len(article_ids),
+        "article_or_index_nodes_deleted": len(base_ids),
+        "summary_nodes_deleted": len(summary_ids),
+        "source_items_selected": len(item_ids),
+        "sources_selected": len(source_ids),
+        "source_types_selected": source_types,
         "wiki_files_deleted": wiki_deleted,
         "sources_triggered": len(triggered),
         "sources_failed": len(failed),
+        "filters": filters,
         "maintenance": maintenance_result,
     }
     print(f"[rebuild] 完成: {json.dumps(result, ensure_ascii=False)}", flush=True)
@@ -1077,7 +1227,7 @@ if __name__ == "__main__":
         elif cmd == "rebuild_from_raw":
             if "--confirm" not in sys.argv:
                 print(
-                    "此操作将清空数据库中所有 file-sourced 节点（articles/entities/summaries）"
+                    "此操作将按 source_items manifest 清空可重建派生节点"
                     " 并通过 ingestion-worker 重新入库。\n"
                     "确认执行请加 --confirm 参数：\n"
                     "  python maintenance.py rebuild_from_raw --confirm\n"

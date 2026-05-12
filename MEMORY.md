@@ -502,7 +502,8 @@ Phase 4 后，新增素材统一先进入 `source_items`：
 - `source_items` 已作为新写入路径启用，但旧 `sources.config.uploads` /
   `pending_items` 数据结构仍保留兼容读取。
 - Source Items 尚未配套独立前端管理页。
-- Rebuild 还没有完全改为以 `source_items` 为唯一入口，这是后续 Phase。
+- Rebuild 已改为以 `source_items` manifest 为入口；旧 raw 目录扫描不再是
+  rebuild 的依据。
 
 ---
 
@@ -744,23 +745,22 @@ Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
 
 ### 10.3 `rebuild_from_raw()`
 
-此命令已经存在，但 **当前是部分重建，不是全源全量重建**。
+Phase 9 后，`rebuild_from_raw()` 是 source_items manifest 驱动的重建任务。
 
-目前它主要重建：
+当前行为：
 
-- `pdf`
-- `plaintext`
-- `word`
-- `image`
-- `wechat`
+- 不再扫描 raw 目录猜测来源。
+- 以 `source_items` 为准选择待重建 item。
+- 支持按 `source_id`、`source_type`、`status`、时间窗口过滤。
+- 支持 `dry_run`，只返回将选择多少 item/source 以及将删除多少派生节点。
+- 支持 `resume`，跳过已 `succeeded` 的 manifest item。
+- 删除选中 item 对应的 article/index、默认 summary 和由这些文章派生的
+  entity 节点/wiki 文件，然后把选中 item 重置为 `pending` 并触发
+  ingestion-worker。
+- 完成 ingestion 后运行 `run_maintenance()`。
 
-它不会完整覆盖：
-
-- RSS
-- URL
-- 书籍 index/chapters
-
-因此它比 `multi-layer-plan.md` 里的“全 raw material 重建”目标更窄。
+限制：断点恢复依赖 `source_items.status`，running job 本身仍由 Phase 8
+的 `jobs` 表追踪。
 
 ### 10.4 调度现状
 
@@ -839,15 +839,14 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - HyDE 检索
 - 分层 retrieval
 - index abstract 聚合
-- 确定性 ID（文件型节点和 entity）
+- 确定性 ID（文件型节点、URL 节点、默认 summary 和 entity）
 - `restore_from_wiki()`
-- `rebuild_from_raw()` 的部分版本
+- `rebuild_from_raw()` manifest 版本
 
 ### 只部分落地
 
 - 多视角 summary：API、双向量检索、`summary_nodes` 已落地；旧
   `knowledge_nodes` 字段仍保留兼容
-- rebuild：存在，但未覆盖所有 source 类型
 - wiki：Phase 2 后是只读导出，不再作为日常可编辑知识源
 
 ### 尚未完成或与计划不一致
