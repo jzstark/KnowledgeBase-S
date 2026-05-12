@@ -102,8 +102,8 @@ async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, A
             VALUES
               (:node_id, :description, :rollup_instruction, :abstract_stale)
             ON CONFLICT (node_id) DO UPDATE SET
-              description = EXCLUDED.description,
-              rollup_instruction = EXCLUDED.rollup_instruction,
+              description = COALESCE(EXCLUDED.description, index_nodes.description),
+              rollup_instruction = COALESCE(EXCLUDED.rollup_instruction, index_nodes.rollup_instruction),
               abstract_stale = EXCLUDED.abstract_stale,
               updated_at = NOW()
             """,

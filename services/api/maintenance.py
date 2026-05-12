@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config_loader
 import database
 import entity_insights
+import index_structure
 import object_nodes
 
 USER_ID = "default"
@@ -377,11 +378,15 @@ async def backfill_summarizes_edges(user_id: str) -> dict:
 
 # ── 9. Index Abstract 聚合 ─────────────────────────────────────────────────────
 
-async def aggregate_index_abstracts(user_id: str) -> dict:
+async def aggregate_index_abstracts(
+    user_id: str,
+    index_id: str | None = None,
+    only_stale: bool = False,
+) -> dict:
     """
     为每个 index 节点生成聚合 abstract（底层向上）。
 
-    收集直接子节点（via part_of 边）的 abstract，调用 LLM 生成 3-5 句综合摘要，
+    收集直接子节点（via index_children）的 abstract，调用 LLM 生成 3-5 句综合摘要，
     更新 DB 中的 abstract 和 embedding，并刷新 wiki 文件 frontmatter。
     幂等：每次运行都用最新子节点状态覆盖。
     """
@@ -399,9 +404,20 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
     max_children  = config_loader.get("ingestion.max_index_children_abstracts", 20)
 
     # 1. 找所有 index 节点
+    filters = ["kn.user_id = :uid", "kn.object_type = 'index'"]
+    params = {"uid": user_id, "index_id": index_id}
+    if index_id:
+        filters.append("kn.id = :index_id")
+    if only_stale:
+        filters.append("COALESCE(ix.abstract_stale, false) = true")
     index_rows = await database.database.fetch_all(
-        "SELECT id, title FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'index'",
-        {"uid": user_id},
+        f"""
+        SELECT kn.id, kn.title, ix.rollup_instruction
+        FROM knowledge_nodes kn
+        LEFT JOIN index_nodes ix ON ix.node_id = kn.id
+        WHERE {' AND '.join(filters)}
+        """,
+        params,
     )
     if not index_rows:
         return {"processed": 0, "skipped": 0}
@@ -412,14 +428,15 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
     child_map: dict[str, list[tuple[str, str]]] = {idx: [] for idx in index_ids}
     for idx_id in index_ids:
         rows = await database.database.fetch_all(
-            f"""
-            SELECT ke.from_node_id AS child_id, kn.object_type AS child_type
-            FROM knowledge_edges ke
-            JOIN knowledge_nodes kn ON kn.id = ke.from_node_id
-            WHERE ke.to_node_id = '{idx_id}'
-              AND ke.relation_type = 'part_of'
-              AND kn.user_id = '{user_id}'
             """
+            SELECT ic.child_id, kn.object_type AS child_type
+            FROM index_children ic
+            JOIN knowledge_nodes kn ON kn.id = ic.child_id
+            WHERE ic.index_id = :idx_id
+              AND kn.user_id = :user_id
+            ORDER BY ic.position ASC, ic.created_at ASC
+            """,
+            {"idx_id": idx_id, "user_id": user_id},
         )
         child_map[idx_id] = [(r["child_id"], r["child_type"]) for r in rows]
 
@@ -434,6 +451,7 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
     for idx_row in ordered:
         idx_id    = idx_row["id"]
         idx_title = idx_row["title"] or idx_id
+        rollup_instruction = idx_row["rollup_instruction"] or ""
         children  = child_map.get(idx_id, [])
 
         if not children:
@@ -460,7 +478,9 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
             prompt = prompt_loader.fill(
                 "index_summary",
                 index_title=idx_title,
-                child_abstracts="\n".join(child_abstracts),
+                child_abstracts=(
+                    f"Rollup instruction: {rollup_instruction}\n\n" if rollup_instruction else ""
+                ) + "\n".join(child_abstracts),
             )
             resp = await claude_client.messages.create(
                 model=config_loader.get("models.index_summary", "claude-haiku-4-5-20251001"),
@@ -499,7 +519,7 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
         await object_nodes.upsert_object_node(
             idx_id,
             "index",
-            {"description": new_abstract, "abstract_stale": False},
+            {"abstract_stale": False},
         )
 
         # 8. 刷新 wiki 文件 frontmatter（write_wiki_node 保留已有 body；
@@ -516,14 +536,14 @@ async def aggregate_index_abstracts(user_id: str) -> dict:
 
 async def restore_from_wiki(user_id: str = USER_ID) -> dict:
     """
-    从 wiki 文件重建 knowledge_nodes 和 knowledge_edges（用于 postgres 数据丢失时恢复）。
+    从 wiki 文件重建 knowledge_nodes / index_children / knowledge_edges（用于 postgres 数据丢失时恢复）。
 
     流程：
       1. 扫描 wiki/{articles,summaries,entities,indices}/ 下所有 .md 文件
       2. 解析 frontmatter（id、type、title、tags、raw_ref 等）+ 提取 body 作为 abstract
       3. 用 OpenAI 生成 embedding
       4. INSERT 到 knowledge_nodes（跳过已存在的）
-      5. 重建 edges：summarizes（来自 summary_of 字段）、part_of（来自 relations 字段）
+      5. 重建 summarizes / mentions 边，并把 legacy part_of relations 迁移为 index_children
 
     幂等：已存在的节点跳过，ON CONFLICT DO NOTHING 保护边。
     """
@@ -777,12 +797,20 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
         if object_type == "summary" and m.get("summary_of"):
             await _add_edge(node_id, m["summary_of"], "summarizes")
 
-        # part_of: article → index (from relations frontmatter added by write_wiki_node)
+        # legacy part_of relations are restored into index_children, not knowledge_edges.
         relations = m.get("relations") or []
         if isinstance(relations, list):
             for rel in relations:
                 if isinstance(rel, dict) and rel.get("type") == "part_of" and rel.get("id"):
-                    await _add_edge(node_id, rel["id"], "part_of")
+                    try:
+                        await index_structure.add_child(
+                            rel["id"],
+                            node_id,
+                            user_id=user_id,
+                            child_role="member",
+                        )
+                    except Exception as e:
+                        print(f"[restore] index child error {rel['id']}→{node_id}: {e}", flush=True)
 
         # mentions: article/summary → entity  (scan [[entity_id|...]] in body)
         if object_type in ("article", "summary"):

@@ -612,3 +612,92 @@ Not run:
 - A full new article ingestion success path was not forced because it can invoke
   configured Claude/OpenAI providers. Existing mentions were backfilled through
   the same service layer used by the new candidate-processing path.
+
+## 2026-05-12 - Phase 7 Index Structured
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 8 has not introduced a jobs table/worker yet, so `POST /api/kb/indices/{id}/rollup`
+  runs the existing index rollup path synchronously.
+- `index_children` is the source of truth for index membership and order.
+  Existing `knowledge_edges.part_of` rows are migrated into `index_children`
+  and hidden from API graph/detail responses instead of being deleted.
+- API graph responses project `index_children` as read-only `contains` edges
+  for visualization; those are not stored in `knowledge_edges`.
+
+Implemented:
+
+- Added `index_children` with `(index_id, child_id)` primary key, `position`,
+  `child_role`, timestamps, and indexes on `(index_id, position)` and
+  `child_id`.
+- Added schema backfill from legacy `knowledge_edges.part_of` into
+  `index_children`.
+- Added `services/api/index_structure.py` with:
+  - `add_child`
+  - `remove_child`
+  - `reorder_children`
+  - `get_children`
+  - `get_parents`
+  - `get_ancestors`
+  - `get_descendants`
+  - stale marking for parent index rollups
+- Changed `/api/kb/ingest` so `parent_index_id` writes `index_children` instead
+  of a real `part_of` edge.
+- Added Index API endpoints:
+  - `POST /api/kb/indices`
+  - `GET /api/kb/indices/{id}`
+  - `PATCH /api/kb/indices/{id}`
+  - `GET /api/kb/indices/{id}/children`
+  - `POST /api/kb/indices/{id}/children`
+  - `DELETE /api/kb/indices/{id}/children/{child_id}`
+  - `PATCH /api/kb/indices/{id}/children/order`
+  - `POST /api/kb/indices/{id}/rollup`
+- Added structure query endpoints:
+  - `GET /api/kb/objects/{id}/parents`
+  - `GET /api/kb/objects/{id}/ancestors`
+  - `GET /api/kb/indices/{id}/descendants`
+- Changed `aggregate_index_abstracts()` to read children from
+  `index_children`, preserve user-editable `index_nodes.description`, and clear
+  `abstract_stale` after rollup.
+- Changed draft layered retrieval index expansion to read article children from
+  `index_children`.
+- Changed `restore_from_wiki()` so legacy `part_of` frontmatter relations are
+  restored into `index_children`, not `knowledge_edges`.
+- Hid legacy `part_of` from node/detail graph responses and projected
+  `index_children` as `contains` edges for graph display.
+- Updated `MEMORY.md` with the structured index model.
+
+Verification:
+
+- API schema migration completed after restart.
+- Postgres shows 66 rows in `index_children` backfilled from existing legacy
+  data and the expected indexes:
+  `index_children_pkey`, `idx_index_children_index_position`,
+  `idx_index_children_child_id`.
+- Existing legacy `part_of` rows remain in `knowledge_edges` for compatibility
+  but `/api/kb/graph/all` returned 66 `contains` edges and 0 `part_of` edges.
+- Probed:
+  - `GET /api/kb/indices/ind_32ad72a2a2b66a21/children` -> 54 children
+  - `GET /api/kb/indices/ind_32ad72a2a2b66a21/descendants` -> 54 descendants
+  - `GET /api/kb/objects/{child}/parents` -> parent index returned
+  - `GET /api/kb/objects/{child}/ancestors` -> 1 ancestor returned
+- Service-layer add/reorder smoke test inserted temporary nodes, added two
+  children, reordered them, confirmed parent lookup and `abstract_stale = true`,
+  then deleted the temporary nodes.
+- Container AST parsing passed for `database.py`, `index_structure.py`,
+  `object_nodes.py`, `routers/kb.py`, `routers/drafts.py`, and
+  `maintenance.py`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+- `git diff --check` passed.
+
+Implementation fixes recorded:
+
+- First API restart failed because the backfill query referenced
+  `knowledge_edges.created_at`, which does not exist. Fixed by using `NOW()`
+  for migrated `index_children.created_at`.
+- The first service-layer write smoke test failed because asyncpg could not
+  infer the type of `:user_id` in `(:user_id IS NULL OR user_id = :user_id)`.
+  Fixed by generating explicit user-filter SQL when `user_id` is present.

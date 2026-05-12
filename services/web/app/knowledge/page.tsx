@@ -107,6 +107,7 @@ const EDGE_COLORS: Record<string, string> = {
   similar_to: "#60a5fa",
   mentions: "#a78bfa",
   part_of: "#8b5cf6",
+  contains: "#8b5cf6",
   summarizes: "#fbbf24",
 };
 

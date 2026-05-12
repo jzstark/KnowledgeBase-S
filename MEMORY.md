@@ -367,6 +367,17 @@ Phase 4.5 新增并启用四张专属表：
 | `entity_nodes` | `canonical_name`、`aliases`、`entity_type`、`merged_into` |
 | `index_nodes` | `description`、`rollup_instruction`、`abstract_stale` |
 
+Phase 7 新增 `index_children` 作为 index 结构事实源：
+
+- `index_id`
+- `child_id`
+- `position`
+- `child_role`
+
+Index 的父子关系、顺序、反向 parent 查询和 descendants 查询都以
+`index_children` 为准；历史 `knowledge_edges.part_of` 只作为迁移来源和
+兼容数据，不再作为真实写入边。
+
 当前状态：
 
 - schema 初始化会回填现有 `knowledge_nodes` 到四张专属表。
@@ -387,7 +398,9 @@ Phase 4.5 新增并启用四张专属表：
 | `similar_to` | 入库后基于 embedding 自动建立 |
 | `mentions` | entity 回灌 / wikilink 迁移 / restore_from_wiki |
 | `summarizes` | summary 指向 article 或 index |
-| `part_of` | 书籍章节挂到 index |
+
+Index 结构不再写入 `knowledge_edges.part_of`。API 图谱会把
+`index_children` 投影为只读的 `contains` 关系用于展示。
 
 重要说明：
 
@@ -397,6 +410,8 @@ Phase 4.5 新增并启用四张专属表：
 - `cleanup_legacy_llm_edges()` 会删除历史 legacy LLM semantic edges
 - Phase 6 后，entity relatedness 存在 `entity_pair_signals` 中，不写入
   `knowledge_edges.co_occurs_with`
+- Phase 7 后，index membership 存在 `index_children` 中，不再写入
+  `knowledge_edges.part_of`
 - 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
 
 ### 4.5 其他表
@@ -414,6 +429,7 @@ Phase 4.5 新增并启用四张专属表：
 | `summary_nodes` | summary 对象专属字段 |
 | `entity_nodes` | entity 对象专属字段 |
 | `index_nodes` | index 对象专属字段 |
+| `index_children` | index 的 children、顺序、child role；支持 parent/ancestor/descendant 查询 |
 | `entity_facts` | entity 的 source-grounded facts，回溯到 article/source item |
 | `entity_profiles` | 从 facts 派生、可失效并重建的 entity profile/timeline summary |
 | `entity_pair_signals` | entity relatedness 信号；不反写成图谱边 |
@@ -579,7 +595,7 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 - `.mobi/.azw3` 为 best-effort
 - 每本书先创建一个 `index`
 - 每个有效章节创建一个 `article`
-- article 通过 `part_of` 边挂到 index
+- article 通过 `index_children` 挂到 index
 - 每章也会生成一个 `summary`
 - 书籍 index 的 `abstract` 初始为空，后续由 maintenance 聚合补齐
 
@@ -610,7 +626,7 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 4. 单跳扩展：
    - article → entity → article
 5. index 展开：
-   - 高分 index 展开其 article 子节点
+   - 高分 index 通过 `index_children` 展开其 article 子节点
 6. fallback：
    - 若结果太少，回退到 article/index 直接向量命中
 
@@ -714,7 +730,8 @@ Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
 - 解析 frontmatter
 - 生成 embedding
 - 补建 `knowledge_nodes`
-- 尝试恢复 `summarizes` / `part_of` / `mentions`
+- 尝试恢复 `summarizes` / `mentions`，并把 legacy `part_of`
+  frontmatter relation 迁移为 `index_children`
 
 可恢复的主要是结构和可见正文，无法完整恢复所有历史推导边。
 

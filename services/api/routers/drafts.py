@@ -316,15 +316,16 @@ async def layered_retrieval(
 
         for index_id, idx_score in high_indices:
             child_rows = await database.database.fetch_all(
-                f"""
-                SELECT ke.from_node_id AS child_id
-                FROM knowledge_edges ke
-                JOIN knowledge_nodes kn ON kn.id = ke.from_node_id
-                WHERE ke.to_node_id = '{index_id}'
-                  AND ke.relation_type = 'part_of'
-                  AND kn.object_type = 'article'
-                  AND kn.user_id = '{user_id}'
                 """
+                SELECT ic.child_id
+                FROM index_children ic
+                JOIN knowledge_nodes kn ON kn.id = ic.child_id
+                WHERE ic.index_id = :index_id
+                  AND kn.object_type = 'article'
+                  AND kn.user_id = :user_id
+                ORDER BY ic.position ASC, ic.created_at ASC
+                """,
+                {"index_id": index_id, "user_id": user_id},
             )
             child_ids = [r["child_id"] for r in child_rows]
             if child_ids:

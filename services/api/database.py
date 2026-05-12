@@ -164,6 +164,16 @@ CREATE TABLE IF NOT EXISTS index_nodes (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS index_children (
+    index_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    child_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    position INT DEFAULT 0,
+    child_role VARCHAR DEFAULT 'member',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (index_id, child_id)
+);
+
 CREATE TABLE IF NOT EXISTS entity_facts (
     id SERIAL PRIMARY KEY,
     user_id VARCHAR NOT NULL,
@@ -309,6 +319,9 @@ ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS rollup_instruction TEXT;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS abstract_stale BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE IF EXISTS index_children ADD COLUMN IF NOT EXISTS position INT DEFAULT 0;
+ALTER TABLE IF EXISTS index_children ADD COLUMN IF NOT EXISTS child_role VARCHAR DEFAULT 'member';
+ALTER TABLE IF EXISTS index_children ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS user_id VARCHAR;
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS entity_id VARCHAR;
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS article_id VARCHAR;
@@ -407,6 +420,20 @@ ON CONFLICT (node_id) DO UPDATE SET
   description = EXCLUDED.description,
   updated_at = NOW();
 
+INSERT INTO index_children
+  (index_id, child_id, position, child_role, created_at, updated_at)
+SELECT ke.to_node_id,
+       ke.from_node_id,
+       ROW_NUMBER() OVER (PARTITION BY ke.to_node_id ORDER BY ke.id) - 1,
+       'member',
+       NOW(),
+       NOW()
+FROM knowledge_edges ke
+JOIN knowledge_nodes parent ON parent.id = ke.to_node_id AND parent.object_type = 'index'
+JOIN knowledge_nodes child ON child.id = ke.from_node_id AND child.object_type IN ('article', 'index')
+WHERE ke.relation_type = 'part_of'
+ON CONFLICT (index_id, child_id) DO NOTHING;
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
@@ -438,6 +465,8 @@ CREATE INDEX IF NOT EXISTS idx_summary_nodes_perspective_embedding ON summary_no
     USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_entity_nodes_canonical_name ON entity_nodes(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_entity_nodes_merged_into ON entity_nodes(merged_into);
+CREATE INDEX IF NOT EXISTS idx_index_children_index_position ON index_children(index_id, position);
+CREATE INDEX IF NOT EXISTS idx_index_children_child_id ON index_children(child_id);
 CREATE INDEX IF NOT EXISTS idx_entity_facts_entity_time ON entity_facts(entity_id, fact_time DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_facts_article ON entity_facts(article_id);
 CREATE INDEX IF NOT EXISTS idx_entity_facts_source_item ON entity_facts(source_item_id);
