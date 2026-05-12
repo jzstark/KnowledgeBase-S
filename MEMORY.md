@@ -388,15 +388,13 @@ Phase 4.5 新增并启用四张专属表：
 | `mentions` | entity 回灌 / wikilink 迁移 / restore_from_wiki |
 | `summarizes` | summary 指向 article 或 index |
 | `part_of` | 书籍章节挂到 index |
-| `extends` | maintenance 的 LLM 补边 |
-| `background_of` | maintenance 的 LLM 补边 |
-| `supports` | maintenance 的 LLM 补边 |
-| `contradicts` | maintenance 的 LLM 补边 |
 
 重要说明：
 
-- `multi-layer-plan.md` 里“移除 LLM 语义边”的目标 **尚未完全落实**
-- `maintenance.py` 仍然会生成 `extends/background_of/supports/contradicts`
+- Phase 5 后，`maintenance.py` 不再生成
+  `extends/background_of/supports/contradicts`
+- API 图谱和节点详情会隐藏这些 legacy LLM semantic edges
+- `cleanup_legacy_llm_edges()` 会删除历史 legacy LLM semantic edges
 - `co_occurs_with` 尚未实现；Phase 1 已移除前端旧过滤提示
 - 历史 `wikilink` 边会被 `migrate_wikilink_edges()` 迁移成 `mentions`
 
@@ -666,17 +664,17 @@ Phase 4 后，新增素材统一先进入 `source_items`：
 
 当前维护任务包括：
 
-1. `migrate_wikilink_edges()`
-2. `fix_islands()`
-3. `supplement_edges()`
-4. `detect_contradictions()`
-5. `promote_entity_candidates()`
-6. `backfill_wikilinks_for_entity()` for all entities
-7. `cleanup_orphan_entities()`
-8. `backfill_summarizes_edges()`
-9. `aggregate_index_abstracts()`
+1. `cleanup_legacy_llm_edges()`
+2. `migrate_wikilink_edges()`
+3. `promote_entity_candidates()`
+4. `backfill_wikilinks_for_entity()` for all entities
+5. `cleanup_orphan_entities()`
+6. `backfill_summarizes_edges()`
+7. `aggregate_index_abstracts()`
 
-这说明当前系统仍然保留了较强的 LLM 图谱维护逻辑，不是纯统计图。
+Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
+调用只用于 entity page / index abstract 等内容生成，不再生成
+`extends/background_of/supports/contradicts` 图谱边。
 
 ### 10.2 `restore_from_wiki()`
 
@@ -782,15 +780,14 @@ Phase 1 已移除旧 `scheduler` 空壳；当前没有独立 scheduler 服务。
 
 ### 只部分落地
 
-- 多视角 summary：API 与双向量检索已落地，但还没有拆到独立
-  `summary_nodes` 表
+- 多视角 summary：API、双向量检索、`summary_nodes` 已落地；旧
+  `knowledge_nodes` 字段仍保留兼容
 - rebuild：存在，但未覆盖所有 source 类型
 - wiki：Phase 2 后是只读导出，不再作为日常可编辑知识源
 
 ### 尚未完成或与计划不一致
 
 - `co_occurs_with` 没有真正实现
-- “移除 LLM 语义边” 尚未完成，maintenance 仍会生成 `extends/background_of/supports/contradicts`
 - 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务

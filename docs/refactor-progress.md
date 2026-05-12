@@ -489,3 +489,57 @@ Not run:
 - Live summary create/revise and full ingestion success paths were not forced
   because they can invoke configured Claude/OpenAI providers. The code paths are
   wired to the new `object_nodes` service and container compilation passed.
+
+## 2026-05-11 - Phase 5 Remove LLM Semantic Edges
+
+Status: implemented.
+
+Assumptions:
+
+- Phase 5 removes LLM-inferred graph relations
+  `extends/background_of/supports/contradicts`; it does not remove all LLM usage
+  from maintenance because entity page generation and index abstract aggregation
+  remain part of later/current workflows.
+- `similar_to` remains a statistical embedding edge and is not treated as an LLM
+  semantic edge.
+- Legacy LLM semantic edges may be deleted by maintenance because the refactor
+  plan allows cleanup/hiding and those edges are no longer part of the graph
+  model.
+
+Implemented:
+
+- Removed the active LLM semantic edge inference functions from
+  `services/api/maintenance.py`:
+  `fix_islands`, `supplement_edges`, and `detect_contradictions`.
+- Changed `run_maintenance()` so it no longer requires a Claude key before
+  running deterministic maintenance tasks and no longer calls the removed edge
+  inference steps.
+- Added `cleanup_legacy_llm_edges()` to delete existing
+  `extends/background_of/supports/contradicts` edges during maintenance.
+- Changed `/api/kb/graph/all` to exclude legacy LLM semantic edges and exclude
+  them from graph degree counts.
+- Changed `/api/kb/graph`, `/api/kb/node/{id}`, and wiki export relation
+  collection to hide legacy LLM semantic edges.
+- Updated `MEMORY.md` to describe the Phase 5 graph model and maintenance flow.
+
+Verification:
+
+- API container `py_compile` passed for `maintenance.py` and `routers/kb.py`.
+- `rg` confirmed there are no remaining references to `fix_islands`,
+  `supplement_edges`, `detect_contradictions`, `analyze_relation`,
+  `upsert_llm_edge`, or `auto_llm` in `services/api`.
+- Postgres currently has zero
+  `extends/background_of/supports/contradicts` edges.
+- Direct `cleanup_legacy_llm_edges()` probe returned
+  `{'deleted': {}, 'total_deleted': 0}`.
+- Restarted API successfully.
+- `/api/kb/graph/all` probe returned no legacy LLM semantic edge types.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `python scripts/refactor_smoke.py --skip-auth` passed.
+
+Implementation note:
+
+- An initial one-line Python verification command failed because it used
+  separate `asyncio.run()` calls against the same `databases` connection pool.
+  The probe was rerun with a single event loop and passed; no implementation
+  change was needed.

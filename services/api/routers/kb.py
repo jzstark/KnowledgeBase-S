@@ -27,6 +27,11 @@ openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 claude_client = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
 USER_ID = "default"
+LEGACY_LLM_EDGE_TYPES = {"extends", "background_of", "supports", "contradicts"}
+
+
+def _is_visible_edge(relation_type: str | None) -> bool:
+    return relation_type not in LEGACY_LLM_EDGE_TYPES
 
 
 def _make_node_id(object_type: str, raw_ref: dict, user_id: str, canonical_name: str | None) -> str:
@@ -325,6 +330,8 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     for e in edges:
         ed = dict(e)
         other = ed["to_node_id"] if ed["from_node_id"] == node_id else ed["from_node_id"]
+        if not _is_visible_edge(ed["relation_type"]):
+            continue
         if ed["relation_type"] in ("wikilink", "mentions"):
             wikilinks.append(other)
         else:
@@ -615,7 +622,7 @@ async def get_node(node_id: str):
     return {
         **node,
         "wiki_body": wiki_body,
-        "edges": [dict(e) for e in edges],
+        "edges": [dict(e) for e in edges if _is_visible_edge(e["relation_type"])],
     }
 
 
@@ -982,6 +989,8 @@ async def get_graph(root: str, depth: int = Query(2, ge=1, le=3)):
         )
         for e in edge_rows:
             ed = dict(e)
+            if not _is_visible_edge(ed["relation_type"]):
+                continue
             if ed["id"] not in visited_edges:
                 visited_edges.add(ed["id"])
                 edges_out.append(ed)
@@ -1075,7 +1084,9 @@ async def get_full_graph(
         node_rows = await conn.raw_connection.fetch(
             f"""
             SELECT n.id, n.title, n.source_type, n.tags, n.object_type,
-                   COUNT(e.id)::int AS degree
+                   COUNT(e.id) FILTER (
+                     WHERE e.relation_type NOT IN ('extends', 'background_of', 'supports', 'contradicts')
+                   )::int AS degree
             FROM knowledge_nodes n
             LEFT JOIN knowledge_edges e ON e.from_node_id = n.id OR e.to_node_id = n.id
             WHERE n.user_id = $1 {type_filter}
@@ -1086,7 +1097,12 @@ async def get_full_graph(
             *params,
         )
         edge_rows = await conn.raw_connection.fetch(
-            "SELECT id, from_node_id, to_node_id, relation_type, weight FROM knowledge_edges LIMIT 1000"
+            """
+            SELECT id, from_node_id, to_node_id, relation_type, weight
+            FROM knowledge_edges
+            WHERE relation_type NOT IN ('extends', 'background_of', 'supports', 'contradicts')
+            LIMIT 1000
+            """
         )
 
     node_ids = {r["id"] for r in node_rows}
