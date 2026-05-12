@@ -1041,3 +1041,26 @@ Fix:
 Verification:
 
 - Pending reload/restart of Nginx on the VPS.
+
+## 2026-05-12 - Wechat2RSS management root API proxy
+
+Issue:
+
+- The Wechat2RSS management page posts root-relative API requests such as
+  `/list?k=...`. Nginx routed those requests to the Next.js web service, so
+  Wechat2RSS login/list calls returned 404 and the UI reported a wrong
+  passphrase.
+
+Fix:
+
+- Added Nginx proxy locations for Wechat2RSS root API paths including
+  `/config`, `/list`, `/login/`, `/add/`, `/addurl`, `/del/`, `/pause/`,
+  `/feed/`, and `/img-proxy`.
+- Management/mutation routes remain protected by the existing KnowledgeBase-S
+  login `auth_request`; public feed and image-proxy routes rely on Wechat2RSS
+  token/HMAC behavior.
+
+Verification:
+
+- `docker compose config --services` passed.
+- `git diff --check` passed.
