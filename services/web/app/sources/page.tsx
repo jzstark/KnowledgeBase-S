@@ -6,7 +6,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -30,6 +29,14 @@ interface Source {
   last_fetched_at: string | null;
   created_at: string;
   article_count: number;
+}
+
+interface WechatSubscription {
+  feed_id: string;
+  name: string;
+  enabled: boolean;
+  source_id: string | null;
+  source_name: string | null;
 }
 
 type TabType = "auto" | "manual";
@@ -75,7 +82,6 @@ export default function SourcesPage() {
   const [tab, setTab] = useState<TabType>("auto");
   const [showAdd, setShowAdd] = useState(false);
   const [fetching, setFetching] = useState<string | null>(null);
-  const [newlyCreatedWechat, setNewlyCreatedWechat] = useState<Source | null>(null);
   const [uploadTarget, setUploadTarget] = useState<Source | null>(null);
   const [addUrlTarget, setAddUrlTarget] = useState<Source | null>(null);
 
@@ -123,7 +129,6 @@ export default function SourcesPage() {
   function handleCreated(source: Source) {
     setSources((p) => [source, ...p]);
     setShowAdd(false);
-    if (source.type === "wechat") setNewlyCreatedWechat(source);
     if (AUTO_TYPES.includes(source.type)) setTab("auto");
     else setTab("manual");
   }
@@ -139,15 +144,11 @@ export default function SourcesPage() {
           <Button
             size="sm"
             variant={showAdd ? "outline" : "default"}
-            onClick={() => { setShowAdd((v) => !v); setNewlyCreatedWechat(null); }}
+            onClick={() => setShowAdd((v) => !v)}
           >
             {showAdd ? "取消" : "+ 新建 Source"}
           </Button>
         </div>
-
-        {newlyCreatedWechat && (
-          <WechatInfo source={newlyCreatedWechat} onClose={() => setNewlyCreatedWechat(null)} />
-        )}
 
         {showAdd && <AddForm onCreated={handleCreated} />}
 
@@ -237,15 +238,7 @@ function SourceCard({
   onAddUrl: () => void;
   onTogglePrimary: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const cfg = parseCfg(source);
-
-  async function copyToken() {
-    if (!source.api_token) return;
-    await navigator.clipboard.writeText(source.api_token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
 
   function fmtDate(iso: string | null) {
     if (!iso) return "从未";
@@ -274,6 +267,9 @@ function SourceCard({
               {typeof cfg.url === "string" && (
                 <p className="text-xs text-muted-foreground truncate mt-0.5">{cfg.url}</p>
               )}
+              {source.type === "wechat" && typeof cfg.feed_id === "string" && (
+                <p className="text-xs text-muted-foreground truncate mt-0.5">Feed ID：{cfg.feed_id}</p>
+              )}
               {FILE_TYPES.includes(source.type) && (
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {uploadCount > 0 ? `${uploadCount} 次上传批次` : "暂无上传记录"}
@@ -294,23 +290,16 @@ function SourceCard({
             </Button>
             <span className="text-xs text-muted-foreground">{source.article_count} 篇</span>
 
-            {source.type === "rss" && (
+            {(source.type === "rss" || source.type === "wechat") && (
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onFetch} disabled={fetching}>
                 {fetching ? "抓取中…" : "立即抓取"}
               </Button>
             )}
 
             {source.type === "wechat" && (
-              <>
-                <Button variant="outline" size="sm" className="h-7 text-xs text-green-700 border-green-200" asChild>
-                  <Link href={`/sources/${source.id}`}>查看配置</Link>
-                </Button>
-                {source.api_token && (
-                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={copyToken}>
-                    {copied ? "已复制 ✓" : "复制 Token"}
-                  </Button>
-                )}
-              </>
+              <Button variant="outline" size="sm" className="h-7 text-xs text-green-700 border-green-200" asChild>
+                <Link href={`/sources/${source.id}`}>查看配置</Link>
+              </Button>
             )}
 
             {source.type === "url" && (
@@ -342,132 +331,79 @@ function SourceCard({
   );
 }
 
-// ── WeChat Info Panel ─────────────────────────────────────────────────────────
-
-function WechatInfo({ source, onClose }: { source: Source; onClose: () => void }) {
-  const [copied, setCopied] = useState<string | null>(null);
-  const [showGuide, setShowGuide] = useState(false);
-  const pushUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/api/sources/wechat/ingest`;
-
-  async function copy(text: string, key: string) {
-    await navigator.clipboard.writeText(text);
-    setCopied(key);
-    setTimeout(() => setCopied(null), 2000);
-  }
-
-  const bodyTemplate = JSON.stringify({
-    source_id: source.id,
-    title: "文章标题",
-    content: "正文全文",
-    url: "原文链接",
-  }, null, 2);
-
-  return (
-    <Card className="mb-6 border-green-200 bg-green-50 dark:bg-green-950/20 dark:border-green-900">
-      <CardContent className="p-4">
-        <div className="flex justify-between items-start mb-3">
-          <p className="text-sm font-medium text-green-800 dark:text-green-400">微信公众号 Source 已创建 — 配置快捷指令：</p>
-          <Button variant="ghost" size="sm" className="h-6 text-xs text-green-700" onClick={onClose}>关闭</Button>
-        </div>
-
-        <div className="space-y-2 text-xs">
-          <InfoRow label="推送地址" value={pushUrl} onCopy={() => copy(pushUrl, "url")} copied={copied === "url"} />
-          <InfoRow label="Source ID" value={source.id} onCopy={() => copy(source.id, "id")} copied={copied === "id"} />
-          {source.api_token && (
-            <InfoRow label="API Token" value={source.api_token} onCopy={() => copy(source.api_token!, "token")} copied={copied === "token"} />
-          )}
-        </div>
-
-        <div className="mt-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-xs text-green-700"
-            onClick={() => setShowGuide((v) => !v)}
-          >
-            {showGuide ? "▼" : "▶"} iPhone 快捷指令配置方法
-          </Button>
-
-          {showGuide && (
-            <div className="mt-2 space-y-2 text-xs text-green-800 dark:text-green-300 bg-card border border-border rounded-lg p-3">
-              <p className="font-medium">在「快捷指令」App 中新建快捷指令，添加以下操作：</p>
-              <ol className="list-decimal list-inside space-y-1.5 text-green-700 dark:text-green-400">
-                <li>操作：<strong>获取 URL 的内容</strong></li>
-                <li>URL 填写上方「推送地址」</li>
-                <li>方法：<strong>POST</strong></li>
-                <li>
-                  标头添加一项：
-                  <code className="mx-1 bg-muted px-1 rounded">X-API-Token</code>
-                  值填写上方「API Token」
-                </li>
-                <li>请求体选 <strong>JSON</strong>，内容参考下方模板</li>
-                <li>将快捷指令加入「共享表单」，在微信 / Safari 分享文章时触发</li>
-              </ol>
-
-              <div className="mt-2">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-medium">请求体模板（source_id 已预填）</span>
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => copy(bodyTemplate, "body")}>
-                    {copied === "body" ? "已复制 ✓" : "复制"}
-                  </Button>
-                </div>
-                <pre className="bg-muted rounded p-2 text-muted-foreground overflow-x-auto text-xs leading-relaxed">
-                  {bodyTemplate}
-                </pre>
-              </div>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function InfoRow({ label, value, onCopy, copied }: { label: string; value: string; onCopy: () => void; copied: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-green-700 dark:text-green-400 w-20 shrink-0">{label}：</span>
-      <code className="flex-1 bg-card border border-border rounded px-2 py-1 truncate text-xs">{value}</code>
-      <Button variant="outline" size="sm" className="h-6 text-xs shrink-0" onClick={onCopy}>
-        {copied ? "✓" : "复制"}
-      </Button>
-    </div>
-  );
-}
-
 // ── Add Form ─────────────────────────────────────────────────────────────────
 
 function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
   const [type, setType] = useState("rss");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [wechatSubscriptions, setWechatSubscriptions] = useState<WechatSubscription[]>([]);
+  const [loadingWechat, setLoadingWechat] = useState(false);
+  const [selectedFeedId, setSelectedFeedId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (type !== "wechat") return;
+    setError("");
+    setLoadingWechat(true);
+    fetch("/api/sources/wechat2rss/subscriptions", { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || `加载公众号失败 (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        const subscriptions = data.subscriptions || [];
+        setWechatSubscriptions(subscriptions);
+        const firstAvailable = subscriptions.find((s: WechatSubscription) => !s.enabled);
+        setSelectedFeedId(firstAvailable?.feed_id || "");
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "加载公众号失败"))
+      .finally(() => setLoadingWechat(false));
+  }, [type]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (!name.trim()) { setError("请填写名称"); return; }
+    if (type !== "wechat" && !name.trim()) { setError("请填写名称"); return; }
     if ((type === "rss" || type === "url") && !url.trim()) { setError("请填写 URL"); return; }
+    if (type === "wechat" && !selectedFeedId) { setError("请选择公众号"); return; }
 
     setSaving(true);
     try {
-      const config: Record<string, string> = {};
-      if (type === "rss" || type === "url") config.url = url.trim();
+      let res: Response;
+      if (type === "wechat") {
+        const selected = wechatSubscriptions.find((s) => s.feed_id === selectedFeedId);
+        res = await fetch("/api/sources/wechat2rss/sources", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            feed_id: selectedFeedId,
+            name: selected?.name || selectedFeedId,
+          }),
+        });
+      } else {
+        const config: Record<string, string> = {};
+        if (type === "rss" || type === "url") config.url = url.trim();
 
-      const res = await fetch("/api/sources", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), type, config }),
-      });
+        res = await fetch("/api/sources", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name.trim(), type, config }),
+        });
+      }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setError(body.detail || `创建失败 (${res.status})`);
         return;
       }
       onCreated(await res.json());
-      setName(""); setUrl(""); setType("rss");
+      setName(""); setUrl(""); setType("rss"); setSelectedFeedId("");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "请求失败");
     } finally {
@@ -485,7 +421,7 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
             <Label className="text-xs w-14 shrink-0">类型</Label>
             <select
               value={type}
-              onChange={(e) => { setType(e.target.value); setUrl(""); }}
+              onChange={(e) => { setType(e.target.value); setUrl(""); setName(""); setError(""); }}
               className="text-sm border border-input rounded-md px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <optgroup label="自动抓取型">
@@ -503,16 +439,18 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
             </select>
           </div>
 
-          <div className="flex gap-3 items-center">
-            <Label className="text-xs w-14 shrink-0">名称</Label>
-            <Input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={type === "pdf" ? "例：有趣的 Paper" : "例：科技早报"}
-              className="flex-1 text-sm"
-            />
-          </div>
+          {type !== "wechat" && (
+            <div className="flex gap-3 items-center">
+              <Label className="text-xs w-14 shrink-0">名称</Label>
+              <Input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={type === "pdf" ? "例：有趣的 Paper" : "例：科技早报"}
+                className="flex-1 text-sm"
+              />
+            </div>
+          )}
 
           {(type === "rss" || type === "url") && (
             <div className="flex gap-3 items-center">
@@ -534,15 +472,43 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
           )}
 
           {type === "wechat" && (
-            <p className="text-xs text-muted-foreground pl-[4.5rem]">
-              创建后自动生成专属 API Token，配置到 iPhone 快捷指令使用。
-            </p>
+            <div className="space-y-2 pl-[4.5rem]">
+              {loadingWechat ? (
+                <p className="text-xs text-muted-foreground">正在加载 Wechat2RSS 公众号列表…</p>
+              ) : wechatSubscriptions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  暂无可选公众号。请先进入 Wechat2RSS 管理界面添加订阅。
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <select
+                    value={selectedFeedId}
+                    onChange={(e) => setSelectedFeedId(e.target.value)}
+                    className="w-full text-sm border border-input rounded-md px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    {!selectedFeedId && (
+                      <option value="" disabled>
+                        没有未追踪的公众号
+                      </option>
+                    )}
+                    {wechatSubscriptions.map((s) => (
+                      <option key={s.feed_id} value={s.feed_id} disabled={s.enabled}>
+                        {s.name} ({s.feed_id}){s.enabled ? " - 已追踪" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    公众号列表来自 Wechat2RSS，创建后按 RSS 订阅自动抓取。
+                  </p>
+                </div>
+              )}
+            </div>
           )}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
 
           <div className="flex justify-end">
-            <Button type="submit" size="sm" disabled={saving}>
+            <Button type="submit" size="sm" disabled={saving || loadingWechat || (type === "wechat" && !selectedFeedId)}>
               {saving ? "创建中…" : "创建渠道"}
             </Button>
           </div>

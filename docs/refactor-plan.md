@@ -1201,12 +1201,12 @@ wechat2rss container
 
 - `wechat2rss` 作为外部上游服务。
 - 用户单独购买并维护 wechat2rss 授权。
-- KnowledgeBase-S 不再维护微信 push 特例作为核心路径。
+- KnowledgeBase-S 不再维护微信 push 特例。
 - 微信公众号内容以 RSS source 进入系统。
 - KnowledgeBase-S 前端的微信 source 页面维护一个公众号列表。
 - 用户在微信 source 页面勾选公众号，即表示选择该公众号对应的 RSS feed 作为 source。
 - 公众号 RSS 只在 VPS 内网或服务端侧使用，不对外公开暴露。
-- 当前 `/api/sources/wechat/ingest` 可以保留为 legacy，一段时间后移除。
+- `/api/sources/wechat/ingest` 移除；微信 source 只通过 wechat2rss 创建。
 
 目标形态：
 
@@ -1232,7 +1232,7 @@ wechat2rss
 - 微信 source 页面可以列出公众号并启用/停用订阅。
 - ingestion-worker 以普通 RSS 流程处理公众号内容。
 - 前端和外部用户看不到完整 tokenized RSS URL。
-- wechat push 逻辑不再是主路径。
+- wechat push 逻辑已移除，不再作为可用路径。
 
 待确认：
 

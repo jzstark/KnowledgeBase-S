@@ -112,7 +112,7 @@ Browser
         -> postgres
         -> user_data/
 
-Browser / iPhone Shortcut
+Browser / Wechat2RSS feed
   -> api /sources/*
     -> ingestion-worker /trigger/*
       -> api /kb/*
@@ -156,7 +156,7 @@ job-worker
 
 | Router | 负责内容 |
 | --- | --- |
-| `sources.py` | source CRUD、文件上传、URL 入队、微信 push、抓取触发 |
+| `sources.py` | source CRUD、文件上传、URL 入队、Wechat2RSS 订阅、抓取触发 |
 | `kb.py` | 节点入库、wiki 同步、图谱/节点查询、summary 创建、memory、entity candidates |
 | `briefing.py` | 今日选题生成与状态更新 |
 | `drafts.py` | 分层检索、草稿生成、草稿历史、反馈提交 |
@@ -456,7 +456,7 @@ Index 结构不再写入 `knowledge_edges.part_of`。API 图谱会把
 | 类型 | fetch_mode | 当前实现 |
 | --- | --- | --- |
 | `rss` | `subscription` | `feedparser` 拉 feed，`trafilatura` 抽正文 |
-| `wechat` | `push` | iPhone 快捷指令 POST 到 `/api/sources/wechat/ingest` |
+| `wechat` | `subscription` | Wechat2RSS 公众号 feed，经 RSS pipeline 入库 |
 | `url` | `manual` | 当前实际抓取 `config.url` 指向的单个 URL |
 | `pdf` | `manual` | 上传文件，PyMuPDF 提取文本后再用 Claude 清洗 |
 | `image` | `manual` | 上传图片，Claude Vision OCR + 清洗 |
@@ -486,7 +486,7 @@ Phase 4 后，新增素材统一先进入 `source_items`：
   `source_items`。
 - 文件上传不再只追加到 `sources.config.uploads`，而是每个文件一条
   `source_items`，并记录 `raw_snapshot_ref`。
-- 微信 push 写 raw 文件后创建 `source_items`。
+- 微信公众号由 Wechat2RSS feed 抓取后创建 `source_items`。
 - RSS/旧配置来源由 ingestion-worker 抓取后先 materialize 为
   `source_items`，再消费 pending item。
 - worker 会把 item 状态从 `pending` 改为 `processing`，完成后改为

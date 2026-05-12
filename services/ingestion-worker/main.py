@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import sys
+from urllib.parse import quote
 
 import httpx
 import uvicorn
@@ -22,7 +23,6 @@ from sources.pdf import PDFSource
 from sources.plaintext import PlaintextSource
 from sources.rss import RSSSource
 from sources.url import URLSource
-from sources.wechat import WechatSource
 from sources.word import WordSource
 
 logging.basicConfig(
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))
+WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "http://wechat2rss:8080")
+WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 
 
 # ── HTTP Trigger Server ───────────────────────────────────────────────────────
@@ -86,7 +88,18 @@ def build_source(config: dict):
         url = raw_config.get("url", "")
         return URLSource(source_id=config["id"], url=url)
     elif t == "wechat":
-        return WechatSource(source_id=config["id"], config=raw_config)
+        if raw_config.get("provider") != "wechat2rss":
+            logger.warning("跳过无效微信 source 配置: %s", config["id"])
+            return None
+        feed_id = str(raw_config.get("feed_id") or "").strip()
+        if not feed_id or not WECHAT2RSS_TOKEN:
+            logger.warning("跳过未配置 feed_id/token 的微信 source: %s", config["id"])
+            return None
+        feed_url = (
+            f"{WECHAT2RSS_BASE_URL.rstrip('/')}/feed/{quote(feed_id)}.xml"
+            f"?k={quote(WECHAT2RSS_TOKEN)}"
+        )
+        return RSSSource(source_id=config["id"], feed_url=feed_url)
     elif t in ("pdf", "image", "plaintext", "word"):
         uploads = raw_config.get("uploads", [])
         cls = {"pdf": PDFSource, "image": ImageSource,
@@ -108,7 +121,7 @@ async def _dispatch_pipeline(source, config: dict):
 
 async def run_once():
     """轮询模式下只处理自动抓取型（subscription）sources；
-    manual/push 型由用户通过 trigger 端点显式触发。"""
+    manual 型由用户通过 trigger 端点显式触发。"""
     sources = await fetch_sources()
     subscription_sources = [s for s in sources if s.get("fetch_mode") == "subscription"]
     logger.info(f"共 {len(subscription_sources)} 个订阅源待自动抓取")

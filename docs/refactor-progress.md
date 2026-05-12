@@ -957,3 +957,48 @@ Implementation fixes recorded:
 - `python -m py_compile services/api/auth.py` still cannot write to the
   existing root-owned `services/api/__pycache__`; verification used no-write AST
   parsing instead.
+
+## 2026-05-12 - Wechat2RSS-only WeChat source
+
+Assumption:
+
+- 微信公众号 source 只保留 Wechat2RSS 部署路径；旧 iPhone 快捷指令 push
+  source 不迁移、不兼容，用户需要从 Wechat2RSS 公众号列表重新创建 source。
+
+Implemented:
+
+- Added a `wechat2rss` Docker Compose service using `ttttmr/wechat2rss:latest`
+  with env-based license/token configuration and `./data/wechat2rss` persistence.
+- Added API support for listing Wechat2RSS subscriptions and creating one
+  `wechat` source per selected feed.
+- Changed `wechat` sources to `fetch_mode = subscription`; generic source
+  creation no longer creates legacy token-based WeChat sources.
+- Removed the legacy `/api/sources/wechat/ingest` endpoint and the
+  ingestion-worker `WechatSource` push adapter.
+- Changed the ingestion worker so `wechat` sources must have
+  `provider = wechat2rss`; it builds the internal tokenized feed URL server-side
+  and reuses `RSSSource`.
+- Reworked the source UI so selecting WeChat loads the Wechat2RSS subscription
+  list, creates a source from one selected account, and no longer shows
+  shortcut/API-token instructions.
+- Added a login-protected Nginx `/wechat2rss/` reverse proxy and included
+  Wechat2RSS data in backups.
+
+Verification:
+
+- Read-only AST parsing passed for `services/api/routers/sources.py`,
+  `services/ingestion-worker/main.py`, and `services/ingestion-worker/sources/base.py`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- `docker compose config --services` and
+  `docker compose --profile workers config --services` both include
+  `wechat2rss`; workers config still includes `ingestion-worker`.
+- `git diff --check` passed.
+- Runtime grep found no legacy `wechat/ingest`, `WechatSource`,
+  `X-API-Token`, or shortcut references in active service/frontend code.
+
+Implementation fixes recorded:
+
+- Container smoke against Wechat2RSS was not run because local `.env` does not
+  yet define `WECHAT2RSS_LIC_EMAIL`, `WECHAT2RSS_LIC_CODE`,
+  `WECHAT2RSS_TOKEN`, or `WECHAT2RSS_RSS_HOST`; compose config therefore emits
+  expected blank-variable warnings until those are set.

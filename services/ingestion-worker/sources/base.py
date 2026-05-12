@@ -20,11 +20,11 @@ class RawItem:
 
 
 class BaseSource(ABC):
-    fetch_mode: Literal["subscription", "one_shot", "push"]
+    fetch_mode: Literal["subscription", "one_shot"]
 
     @abstractmethod
     def fetch_new_items(self, last_fetched_at: datetime | None) -> list[RawItem]:
-        """拉取自 last_fetched_at 以来的新内容。push 型返回空列表。"""
+        """拉取自 last_fetched_at 以来的新内容。"""
         ...
 
     @abstractmethod

@@ -1,12 +1,14 @@
 import hashlib
+import json
 import os
 import secrets
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from pydantic import BaseModel
 
@@ -16,6 +18,8 @@ from auth import require_auth
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 INGESTION_WORKER_URL = os.environ.get("INGESTION_WORKER_URL", "http://ingestion-worker:8001")
+WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "http://wechat2rss:8080")
+WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"
 
@@ -35,7 +39,7 @@ class SourceUpdate(BaseModel):
 
 
 FETCH_MODES = {
-    "wechat": "push",
+    "wechat": "subscription",
     "rss": "subscription",
     "url": "manual",
     "pdf": "manual",
@@ -52,13 +56,6 @@ FILE_ACCEPT = {
     "word": ".doc,.docx",
     "epub": ".epub,.mobi,.azw3",
 }
-
-
-class WechatIngestBody(BaseModel):
-    source_id: str
-    title: str
-    content: str
-    url: str = ""
 
 
 class SourceItemCreate(BaseModel):
@@ -86,6 +83,12 @@ class SourceItemStatusUpdate(BaseModel):
     extracted_text_ref: str | None = None
     error: str | None = None
     title: str | None = None
+
+
+class Wechat2RSSSourceCreate(BaseModel):
+    feed_id: str
+    name: str | None = None
+    is_primary: bool = True
 
 
 def _validate_optional_time(value: str | None, field_name: str) -> str | None:
@@ -170,53 +173,163 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
     return _serialize_source_item(row)
 
 
-# ── 微信 push 端点（无需登录 cookie，靠 X-API-Token 鉴权）────────────────────
+def _source_config(row) -> dict[str, Any]:
+    cfg = row["config"] if row and row["config"] else {}
+    if isinstance(cfg, str):
+        try:
+            return json.loads(cfg)
+        except json.JSONDecodeError:
+            return {}
+    return dict(cfg)
 
-@router.post("/wechat/ingest")
-async def wechat_ingest(request: Request, body: WechatIngestBody):
-    """接收 iPhone 快捷指令推送的微信公众号文章，入库并触发 ingestion-worker。"""
-    token = request.headers.get("X-API-Token", "")
 
-    row = await database.database.fetch_one(
-        "SELECT id, user_id, type, api_token, config, is_primary FROM sources WHERE id = :id",
-        {"id": body.source_id},
-    )
-    if not row or row["type"] != "wechat":
-        raise HTTPException(404, "source 不存在")
-    if not secrets.compare_digest(token, row["api_token"] or ""):
-        raise HTTPException(401, "token 无效")
+def _feed_id_from_link(link: str) -> str | None:
+    path = urlparse(link).path
+    marker = "/feed/"
+    if marker not in path:
+        return None
+    feed_part = path.split(marker, 1)[1].rsplit("/", 1)[-1]
+    return feed_part.rsplit(".", 1)[0] or None
 
-    # 保存原始正文到 raw/wechat/
-    raw_dir = USER_DATA_DIR / USER_ID / "raw" / "wechat"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    content_hash = hashlib.md5(body.content.encode()).hexdigest()[:8]
-    file_name = f"{date.today()}-{content_hash}.txt"
-    (raw_dir / file_name).write_text(body.content, encoding="utf-8")
 
-    pushed_at = datetime.utcnow()
-    await _create_source_item(
-        row,
-        SourceItemCreate(
-            origin_ref=body.url or f"wechat://{file_name}",
-            origin_ref_type="external",
-            raw_snapshot_ref=str(raw_dir / file_name),
-            content_hash=content_hash,
-            title=body.title,
-            captured_at=pushed_at,
-            raw_retention_policy="keep_raw",
-        ),
-    )
-
-    # 触发 ingestion-worker（fire-and-forget）
+async def _fetch_wechat2rss_list() -> list[dict[str, Any]]:
+    if not WECHAT2RSS_TOKEN:
+        raise HTTPException(503, "WECHAT2RSS_TOKEN 未配置")
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{INGESTION_WORKER_URL}/trigger/{body.source_id}", timeout=5
+            resp = await client.get(
+                f"{WECHAT2RSS_BASE_URL.rstrip('/')}/list",
+                params={"k": WECHAT2RSS_TOKEN, "page": 1, "size": 500},
+                timeout=10,
             )
-    except Exception:
-        pass
+            resp.raise_for_status()
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"无法连接 wechat2rss: {e}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"wechat2rss 返回错误: {e.response.status_code}")
 
-    return {"ok": True}
+    payload = resp.json()
+    if payload.get("err"):
+        raise HTTPException(502, f"wechat2rss 返回错误: {payload['err']}")
+    data = payload.get("data") or []
+    if not isinstance(data, list):
+        raise HTTPException(502, "wechat2rss /list 响应格式异常")
+    return data
+
+
+async def _wechat2rss_source_map() -> dict[str, dict[str, Any]]:
+    rows = await database.database.fetch_all(
+        """
+        SELECT id, name, config, is_primary
+        FROM sources
+        WHERE type = 'wechat'
+          AND config->>'provider' = 'wechat2rss'
+        """
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cfg = _source_config(row)
+        feed_id = str(cfg.get("feed_id") or "")
+        if feed_id:
+            result[feed_id] = {
+                "source_id": row["id"],
+                "source_name": row["name"],
+                "is_primary": row["is_primary"],
+            }
+    return result
+
+
+@router.get("/wechat2rss/subscriptions")
+async def list_wechat2rss_subscriptions(_: dict = Depends(require_auth)):
+    source_map = await _wechat2rss_source_map()
+    subscriptions: list[dict[str, Any]] = []
+    for item in await _fetch_wechat2rss_list():
+        raw_id = item.get("id")
+        feed_id = str(raw_id) if raw_id is not None else _feed_id_from_link(str(item.get("link") or ""))
+        if not feed_id:
+            continue
+        source = source_map.get(feed_id)
+        subscriptions.append(
+            {
+                "feed_id": feed_id,
+                "name": item.get("name") or feed_id,
+                "enabled": bool(source),
+                "source_id": source["source_id"] if source else None,
+                "source_name": source["source_name"] if source else None,
+                "is_primary": source["is_primary"] if source else None,
+            }
+        )
+    return {"subscriptions": subscriptions}
+
+
+@router.post("/wechat2rss/sources", status_code=status.HTTP_201_CREATED)
+async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depends(require_auth)):
+    feed_id = body.feed_id.strip()
+    if not feed_id:
+        raise HTTPException(400, "feed_id 不能为空")
+
+    existing = await database.database.fetch_one(
+        """
+        SELECT * FROM sources
+        WHERE type = 'wechat'
+          AND config->>'provider' = 'wechat2rss'
+          AND config->>'feed_id' = :feed_id
+        """,
+        {"feed_id": feed_id},
+    )
+    if existing:
+        d = dict(existing)
+        d["article_count"] = int(
+            await database.database.fetch_val(
+                "SELECT COUNT(*) FROM knowledge_nodes WHERE source_id = :id AND user_id = 'default'",
+                {"id": d["id"]},
+            )
+            or 0
+        )
+        if d.get("last_fetched_at"):
+            d["last_fetched_at"] = d["last_fetched_at"].isoformat()
+        if d.get("created_at"):
+            d["created_at"] = d["created_at"].isoformat()
+        return d
+
+    name = (body.name or "").strip()
+    if not name:
+        for item in await _fetch_wechat2rss_list():
+            candidate = str(item.get("id")) if item.get("id") is not None else _feed_id_from_link(str(item.get("link") or ""))
+            if candidate == feed_id:
+                name = str(item.get("name") or feed_id)
+                break
+    if not name:
+        name = feed_id
+
+    source_id = f"src_{secrets.token_hex(6)}"
+    await database.database.execute(
+        """
+        INSERT INTO sources (id, user_id, name, type, fetch_mode, is_primary, config, api_token)
+        VALUES (:id, :user_id, :name, 'wechat', 'subscription', :is_primary, :config, NULL)
+        """,
+        {
+            "id": source_id,
+            "user_id": USER_ID,
+            "name": name,
+            "is_primary": body.is_primary,
+            "config": database.jsonb(
+                {
+                    "provider": "wechat2rss",
+                    "feed_id": feed_id,
+                    "name": name,
+                }
+            ),
+        },
+    )
+    row = await database.database.fetch_one(
+        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+    )
+    d = dict(row)
+    if d.get("created_at"):
+        d["created_at"] = d["created_at"].isoformat()
+    d["article_count"] = 0
+    return d
 
 
 @router.get("/{source_id}/source-items")
@@ -363,9 +476,10 @@ async def list_sources():
 async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
     if body.type not in FETCH_MODES:
         raise HTTPException(400, f"不支持的 source 类型: {body.type}")
+    if body.type == "wechat":
+        raise HTTPException(400, "微信公众号 source 请通过 wechat2rss 订阅列表创建")
 
     source_id = f"src_{secrets.token_hex(6)}"
-    api_token = secrets.token_hex(16) if body.type == "wechat" else None
 
     await database.database.execute(
         """
@@ -380,7 +494,7 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
             "fetch_mode": FETCH_MODES[body.type],
             "is_primary": body.is_primary,
             "config": database.jsonb(body.config),
-            "api_token": api_token,
+            "api_token": None,
         },
     )
     row = await database.database.fetch_one(

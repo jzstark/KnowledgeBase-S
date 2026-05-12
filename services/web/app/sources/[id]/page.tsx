@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -22,6 +22,7 @@ interface Source {
 const TYPE_LABELS: Record<string, string> = {
   rss: "RSS", wechat: "微信", url: "URL",
   pdf: "PDF", image: "图片", plaintext: "文本", word: "Word",
+  epub: "电子书",
 };
 const TYPE_COLORS: Record<string, string> = {
   rss: "bg-orange-100 text-orange-700",
@@ -31,6 +32,7 @@ const TYPE_COLORS: Record<string, string> = {
   image: "bg-purple-100 text-purple-700",
   plaintext: "bg-gray-100 text-gray-700",
   word: "bg-indigo-100 text-indigo-700",
+  epub: "bg-teal-100 text-teal-700",
 };
 
 function parseCfg(s: Source): Record<string, unknown> {
@@ -83,76 +85,48 @@ function Section({ title, children, badge }: { title: string; children: React.Re
 // ── 微信专属：连接配置 ─────────────────────────────────────────────────────────
 
 function WechatConfig({ source }: { source: Source }) {
-  const pushUrl = typeof window !== "undefined"
-    ? `${window.location.origin}/api/sources/wechat/ingest`
-    : "/api/sources/wechat/ingest";
+  const cfg = parseCfg(source);
+  const [fetching, setFetching] = useState(false);
+  const [message, setMessage] = useState("");
 
-  const bodyTemplate = JSON.stringify({
-    source_id: source.id,
-    title: "文章标题",
-    content: "正文全文",
-    url: "原文链接",
-  }, null, 2);
-
-  const [copiedBody, setCopiedBody] = useState(false);
-  async function copyBody() {
-    await navigator.clipboard.writeText(bodyTemplate);
-    setCopiedBody(true);
-    setTimeout(() => setCopiedBody(false), 2000);
+  async function triggerFetch() {
+    setFetching(true);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/sources/${source.id}/fetch`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (res.ok) setMessage("已触发抓取，ingestion-worker 将按 RSS 流程处理。");
+      else {
+        const body = await res.json().catch(() => ({}));
+        setMessage(body.detail || `触发失败 (${res.status})`);
+      }
+    } finally {
+      setFetching(false);
+    }
   }
 
   return (
     <>
-      {/* 连接配置 */}
-      <Section title="连接配置">
-        <CopyRow label="推送地址" value={pushUrl} />
+      <Section title="Wechat2RSS 订阅">
         <CopyRow label="Source ID" value={source.id} />
-        {source.api_token && (
-          <CopyRow label="API Token" value={source.api_token} />
+        {typeof cfg.feed_id === "string" && (
+          <CopyRow label="Feed ID" value={cfg.feed_id} />
         )}
-      </Section>
-
-      {/* 快捷指令配置 */}
-      <Section title="iPhone 快捷指令" badge="配置指南">
-        <ol className="list-decimal list-inside space-y-2 text-sm text-gray-600">
-          <li>打开「快捷指令」App，新建快捷指令</li>
-          <li>
-            添加操作：<strong className="text-gray-800">获取 URL 的内容</strong>
-          </li>
-          <li>
-            URL 填入上方「推送地址」，方法选 <strong className="text-gray-800">POST</strong>
-          </li>
-          <li>
-            标头添加一项：
-            <code className="mx-1 text-xs bg-gray-100 border border-gray-200 px-1.5 py-0.5 rounded">X-API-Token</code>
-            值填入上方「API Token」
-          </li>
-          <li>
-            请求体选 <strong className="text-gray-800">JSON</strong>，参考下方模板
-            （title / content / url 替换为快捷指令变量，如「询问输入」或共享内容）
-          </li>
-          <li>将快捷指令加入「共享表单」，在微信 / Safari 中分享文章时即可触发</li>
-        </ol>
-
-        <div className="mt-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-gray-700">请求体模板（source_id 已预填）</span>
-            <button
-              onClick={copyBody}
-              className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50"
-            >
-              {copiedBody ? "已复制 ✓" : "复制"}
-            </button>
-          </div>
-          <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600 overflow-x-auto leading-relaxed">
-            {bodyTemplate}
-          </pre>
+        {typeof cfg.name === "string" && (
+          <CopyRow label="公众号" value={cfg.name} mono={false} />
+        )}
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            onClick={triggerFetch}
+            disabled={fetching}
+            className="text-xs px-3 py-1.5 border border-green-200 text-green-700 rounded hover:bg-green-50 disabled:opacity-50"
+          >
+            {fetching ? "抓取中…" : "立即抓取"}
+          </button>
+          {message && <span className="text-xs text-gray-500">{message}</span>}
         </div>
-      </Section>
-
-      {/* 预留扩展区域 */}
-      <Section title="安装说明 / QR Code" badge="即将推出">
-        <p className="text-sm text-gray-400">后续将在此提供一键导入的快捷指令文件与二维码。</p>
       </Section>
     </>
   );
@@ -162,7 +136,6 @@ function WechatConfig({ source }: { source: Source }) {
 
 export default function SourceDetailPage() {
   const params = useParams();
-  const router = useRouter();
   const id = params.id as string;
 
   const [source, setSource] = useState<Source | null>(null);
