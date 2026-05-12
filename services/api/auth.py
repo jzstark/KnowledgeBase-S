@@ -11,7 +11,7 @@ TOKEN_EXPIRE_DAYS = 7
 
 
 def verify_password(password: str) -> bool:
-    return password == AUTH_PASSWORD
+    return password.strip() == AUTH_PASSWORD
 
 
 def create_token() -> str:

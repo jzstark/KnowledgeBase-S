@@ -930,3 +930,30 @@ Implementation fixes recorded:
   `services/api/__pycache__`; verification switched to a no-write AST parse.
 - `next lint` entered Next.js first-run ESLint configuration, so it was not used
   as a verification signal. TypeScript verification used `tsc --noEmit`.
+
+## 2026-05-12 - Login passphrase whitespace fix
+
+Assumption:
+
+- The reported false negative on the login page can be caused by copied or
+  password-manager-filled passphrases containing leading/trailing whitespace.
+
+Implemented:
+
+- Trimmed the passphrase before the login page sends it to `/api/auth/login`.
+- Trimmed the submitted passphrase in `verify_password()` before comparing with
+  `AUTH_PASSWORD`.
+
+Verification:
+
+- Confirmed the running API accepts the configured `AUTH_PASSWORD` unchanged.
+- Confirmed padded input with leading spaces and a trailing newline returns 200
+  through `api:8000`, `web:3000`, and `nginx`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- Read-only AST parsing passed for `services/api/auth.py`.
+
+Implementation fixes recorded:
+
+- `python -m py_compile services/api/auth.py` still cannot write to the
+  existing root-owned `services/api/__pycache__`; verification used no-write AST
+  parsing instead.
