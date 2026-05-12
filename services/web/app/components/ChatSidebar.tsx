@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowUp, PenSquare, X, Trash2 } from "lucide-react";
+import { ArrowUp, BookOpen, PenSquare, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -25,6 +25,27 @@ interface Message {
   id?: number;
   role: "user" | "assistant";
   content: string;
+  toolEvents?: ToolEvent[];
+  references?: ToolReference[];
+}
+
+interface ToolReference {
+  id: string;
+  title?: string | null;
+  object_type?: string | null;
+  source_type?: string | null;
+  score?: number | null;
+}
+
+interface ToolEvent {
+  name: string;
+  input?: Record<string, unknown>;
+  result?: {
+    results?: unknown[];
+    node?: unknown;
+    nodes?: unknown[];
+    sources?: unknown[];
+  };
 }
 
 export default function ChatSidebar() {
@@ -186,12 +207,19 @@ export default function ChatSidebar() {
           const payload = line.slice(6).trim();
           if (payload === "[DONE]") break;
           try {
-            const { delta } = JSON.parse(payload);
+            const { delta, tool_result, references } = JSON.parse(payload);
             setMessages((prev) => {
               const next = [...prev];
+              const current = next[next.length - 1];
+              const nextRefs = references ? mergeReferences(current.references ?? [], references) : current.references;
+              const nextToolEvents = tool_result
+                ? [...(current.toolEvents ?? []), tool_result]
+                : current.toolEvents;
               next[next.length - 1] = {
-                ...next[next.length - 1],
-                content: next[next.length - 1].content + delta,
+                ...current,
+                content: current.content + (delta ?? ""),
+                toolEvents: nextToolEvents,
+                references: nextRefs,
               };
               return next;
             });
@@ -210,6 +238,34 @@ export default function ChatSidebar() {
       scrollToBottom();
     }
   }, [input, isStreaming, activeSessionId, loadSessions, scrollToBottom]);
+
+  function mergeReferences(existing: ToolReference[], incoming: ToolReference[]) {
+    const seen = new Set(existing.map((r) => r.id));
+    const merged = [...existing];
+    for (const ref of incoming) {
+      if (!ref.id || seen.has(ref.id)) continue;
+      merged.push(ref);
+      seen.add(ref.id);
+    }
+    return merged.slice(0, 12);
+  }
+
+  function toolLabel(event: ToolEvent) {
+    if (event.name === "kb_search") {
+      const count = event.result?.results?.length ?? 0;
+      return `搜索知识库 · ${count}`;
+    }
+    if (event.name === "kb_get_node") return "打开节点详情";
+    if (event.name === "kb_get_neighbors") {
+      const count = event.result?.nodes?.length ?? 0;
+      return `查看邻居 · ${count}`;
+    }
+    if (event.name === "kb_get_sources") {
+      const count = event.result?.sources?.length ?? 0;
+      return `查看来源 · ${count}`;
+    }
+    return event.name;
+  }
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -300,6 +356,35 @@ export default function ChatSidebar() {
               )}
             >
               {msg.content}
+              {msg.role === "assistant" && msg.toolEvents && msg.toolEvents.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5 whitespace-normal">
+                  {msg.toolEvents.map((event, idx) => (
+                    <span
+                      key={`${event.name}-${idx}`}
+                      className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                    >
+                      <Search className="h-3 w-3" />
+                      {toolLabel(event)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {msg.role === "assistant" && msg.references && msg.references.length > 0 && (
+                <div className="mt-2 space-y-1 whitespace-normal">
+                  {msg.references.slice(0, 5).map((ref) => (
+                    <div
+                      key={ref.id}
+                      className="flex items-start gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px] leading-snug text-muted-foreground"
+                    >
+                      <BookOpen className="mt-0.5 h-3 w-3 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="truncate text-foreground">{ref.title || ref.id}</div>
+                        <div className="font-mono text-[10px]">{ref.object_type || "node"} · {ref.id}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               {msg.role === "assistant" && isStreaming && i === messages.length - 1 && (
                 <span className="inline-block w-1 h-3 ml-0.5 bg-current animate-pulse align-middle" />
               )}

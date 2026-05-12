@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import database
+import kb_tools
 from auth import require_auth
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -27,7 +28,10 @@ CONTEXT_WINDOW = 20  # 最近消息条数
 
 claude = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
-SYSTEM_PROMPT = "你是一个知识库助手，在个人知识管理系统中协助用户。"
+SYSTEM_PROMPT = """你是一个知识库助手，在个人知识管理系统中协助用户。
+
+你可以使用只读知识库工具搜索、打开节点、查看邻居和来源。回答涉及知识库内容时优先使用工具，并在回答中引用节点标题或节点 id。
+当前阶段禁止创建、修改或删除 summary、index、tags、entity 或任何知识库内容。"""
 
 
 class CreateSessionRequest(BaseModel):
@@ -36,6 +40,34 @@ class CreateSessionRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: str
+
+
+def _content_block_to_dict(block) -> dict:
+    if hasattr(block, "model_dump"):
+        return block.model_dump(exclude_none=True)
+    if isinstance(block, dict):
+        return block
+    data = {"type": getattr(block, "type", "")}
+    if hasattr(block, "text"):
+        data["text"] = block.text
+    if hasattr(block, "id"):
+        data["id"] = block.id
+    if hasattr(block, "name"):
+        data["name"] = block.name
+    if hasattr(block, "input"):
+        data["input"] = block.input
+    return data
+
+
+def _merge_references(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    seen = {r.get("id") for r in existing}
+    merged = [*existing]
+    for ref in incoming:
+        if not ref.get("id") or ref.get("id") in seen:
+            continue
+        merged.append(ref)
+        seen.add(ref.get("id"))
+    return merged[:12]
 
 
 # ── 会话管理 ──────────────────────────────────────────────────────────────────
@@ -135,16 +167,51 @@ async def send_message(
 
     async def stream_response():
         full_text = ""
+        references: list[dict] = []
         try:
-            async with claude.messages.stream(
-                model="claude-sonnet-4-6",
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            ) as stream:
-                async for text in stream.text_stream:
+            tool_messages = list(messages)
+            for _ in range(4):
+                response = await claude.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=2048,
+                    system=SYSTEM_PROMPT,
+                    messages=tool_messages,
+                    tools=kb_tools.READ_ONLY_TOOLS,
+                )
+                content_blocks = [_content_block_to_dict(block) for block in response.content]
+                tool_uses = [block for block in content_blocks if block.get("type") == "tool_use"]
+                if not tool_uses:
+                    text = "".join(block.get("text", "") for block in content_blocks if block.get("type") == "text")
                     full_text += text
-                    yield f"data: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
+                    if text:
+                        yield f"data: {json.dumps({'delta': text, 'references': references}, ensure_ascii=False)}\n\n"
+                    break
+
+                preface = "".join(block.get("text", "") for block in content_blocks if block.get("type") == "text")
+                if preface:
+                    full_text += preface
+                    yield f"data: {json.dumps({'delta': preface}, ensure_ascii=False)}\n\n"
+
+                tool_messages.append({"role": "assistant", "content": content_blocks})
+                tool_results = []
+                for tool_use in tool_uses:
+                    tool_name = tool_use.get("name") or ""
+                    tool_input = tool_use.get("input") or {}
+                    result = await kb_tools.run_tool(tool_name, tool_input, USER_ID)
+                    references = _merge_references(references, result.get("references") or [])
+                    yield f"data: {json.dumps({'tool_result': {'name': tool_name, 'input': tool_input, 'result': result}, 'references': references}, ensure_ascii=False)}\n\n"
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.get("id"),
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+                tool_messages.append({"role": "user", "content": tool_results})
+            else:
+                fallback = "\n\n（工具调用次数已达上限，请缩小问题范围后重试。）"
+                full_text += fallback
+                yield f"data: {json.dumps({'delta': fallback, 'references': references}, ensure_ascii=False)}\n\n"
         finally:
             if full_text:
                 await database.database.execute(

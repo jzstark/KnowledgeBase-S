@@ -873,3 +873,60 @@ Implementation fixes recorded:
 - The first inline container smoke used `async def` after a semicolon, which is
   invalid Python syntax. Re-ran the smoke using `exec()` with a multi-line
   async function body.
+
+## 2026-05-12 - Phase 10 Chat Toolset
+
+Assumptions:
+
+- Phase 10 only exposes read-only Chat tools.
+- `kb.tools` is implemented as an API service module, not as direct Chat SQL
+  embedded in the router.
+- Chat tool results are surfaced over the existing SSE response and shown by
+  the current sidebar; assistant messages remain stored as plain text.
+
+Implemented:
+
+- Added `services/api/kb_tools.py` with read-only tools:
+  - `kb_search(query, filters)`
+  - `kb_get_node(id)`
+  - `kb_get_neighbors(id, depth)`
+  - `kb_get_sources(node_id)`
+- `kb_search` supports object/source/time filters and uses semantic search with
+  the existing embedding model; if embedding is unavailable, it falls back to
+  text search.
+- `kb_get_node` returns object-specific fields via `object_nodes`, strips
+  embeddings, and includes a wiki body excerpt.
+- `kb_get_neighbors` returns only visible graph edges plus index `contains`
+  structure.
+- `kb_get_sources` returns source item/source metadata for a node and its
+  source nodes.
+- Updated `routers/chat.py` so Chat calls Anthropic with the read-only toolset,
+  executes tool calls through `kb_tools.run_tool()`, streams tool result events
+  and merged references over SSE, then stores the final assistant text.
+- Updated Chat system prompt to require read-only behavior and forbid creating,
+  modifying, or deleting summary/index/tags/entity content.
+- Updated `ChatSidebar` to display tool-call badges and referenced nodes from
+  SSE events.
+- Updated `MEMORY.md` to describe the Phase 10 Chat Toolset state.
+
+Verification:
+
+- Read-only AST parsing passed for `services/api/kb_tools.py` and
+  `services/api/routers/chat.py`.
+- `npm exec tsc -- --noEmit` passed in `services/web`.
+- Restarted API successfully; logs showed startup complete and no Phase 10
+  import/runtime errors.
+- In-container `kb_tools` smoke confirmed:
+  - registered tools are `kb_search`, `kb_get_node`, `kb_get_neighbors`,
+    `kb_get_sources`
+  - no tool names include create/revise/delete/update
+  - `kb_get_node`, `kb_get_neighbors`, and `kb_get_sources` work against an
+    existing node
+  - `kb_search` returned results and references
+
+Implementation fixes recorded:
+
+- Local `python -m py_compile` could not write to an existing root-owned
+  `services/api/__pycache__`; verification switched to a no-write AST parse.
+- `next lint` entered Next.js first-run ESLint configuration, so it was not used
+  as a verification signal. TypeScript verification used `tsc --noEmit`.

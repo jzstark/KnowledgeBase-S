@@ -218,7 +218,7 @@ job-worker
 | `middleware.ts` | 页面保护，拿 cookie 去 API 验证 |
 | `components/Nav.tsx` | 顶部导航、主题切换、聊天开关 |
 | `components/ChatContext.tsx` | 聊天侧栏状态 |
-| `components/ChatSidebar.tsx` | 会话列表、消息流式渲染 |
+| `components/ChatSidebar.tsx` | 会话列表、消息 SSE 渲染、Chat 工具调用与引用展示 |
 
 页面层大致分 3 组：
 
@@ -704,8 +704,11 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 全局还有一个 `ChatSidebar`：
 
 - 会话持久化到 `chat_sessions` / `chat_messages`
-- SSE 流式返回 Claude
-- 目前 **不做知识库 RAG**
+- SSE 返回 Claude 回复、工具调用状态和工具引用
+- Phase 10 后通过 `services/api/kb_tools.py` 访问只读知识库工具：
+  `kb_search`、`kb_get_node`、`kb_get_neighbors`、`kb_get_sources`
+- 当前阶段不暴露 Chat 写工具；Chat 不能创建、修改或删除 summary /
+  index / tags / entity
 
 ---
 
@@ -842,6 +845,8 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 确定性 ID（文件型节点、URL 节点、默认 summary 和 entity）
 - `restore_from_wiki()`
 - `rebuild_from_raw()` manifest 版本
+- Chat 只读 Knowledge Toolset（search / get_node / get_neighbors /
+  get_sources）与前端引用展示
 
 ### 只部分落地
 
@@ -855,7 +860,6 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务
-- chat 还没有接入知识库检索
 
 ---
 
