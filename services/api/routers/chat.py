@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import database
+import config_loader
 import kb_tools
 from auth import require_auth
 
@@ -25,13 +26,16 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 USER_ID = "default"
 CONTEXT_WINDOW = 20  # 最近消息条数
+MAX_TOOL_ROUNDS = int(config_loader.get("chat.max_tool_rounds", 5))
 
 claude = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
-SYSTEM_PROMPT = """你是一个知识库助手，在个人知识管理系统中协助用户。
+SYSTEM_PROMPT = f"""你是一个知识库助手，在个人知识管理系统中协助用户。
 
 你可以使用只读知识库工具搜索、打开节点、查看邻居和来源。回答涉及知识库内容时优先使用工具，并在回答中引用节点标题或节点 id。
-当前阶段禁止创建、修改或删除 summary、index、tags、entity 或任何知识库内容。"""
+当前阶段禁止创建、修改或删除 summary、index、tags、entity 或任何知识库内容。
+
+工具预算：每次回答最多 {MAX_TOOL_ROUNDS} 轮工具调用。优先先搜索，再打开最相关的少量节点；不要为了穷尽所有材料而反复扩大搜索。如果证据不完整，基于已检索内容回答并说明限制。"""
 
 
 class CreateSessionRequest(BaseModel):
@@ -170,7 +174,7 @@ async def send_message(
         references: list[dict] = []
         try:
             tool_messages = list(messages)
-            for _ in range(4):
+            for _ in range(MAX_TOOL_ROUNDS):
                 response = await claude.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=2048,

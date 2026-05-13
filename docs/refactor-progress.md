@@ -1064,3 +1064,29 @@ Verification:
 
 - `docker compose config --services` passed.
 - `git diff --check` passed.
+
+## 2026-05-13 - Wechat2RSS local activation fallback
+
+Issue:
+
+- On a local test machine, Wechat2RSS can exit during startup when the
+  activation code is already bound to the VPS. Because Nginx referenced
+  `wechat2rss:8080` directly in `proxy_pass`, Nginx resolved the upstream at
+  startup and failed with `host not found in upstream "wechat2rss"` when the
+  Wechat2RSS container was not running.
+
+Fix:
+
+- Added Docker DNS runtime resolution in `nginx/nginx.conf` via
+  `resolver 127.0.0.11` and a `$wechat2rss_upstream` variable.
+- Updated all Wechat2RSS Nginx proxy locations to use the runtime-resolved
+  upstream variable, so Nginx can start even if Wechat2RSS is unavailable.
+- Removed `wechat2rss` from the Nginx `depends_on` list in `docker-compose.yml`.
+  Accessing `/wechat2rss/*` will still fail while Wechat2RSS is unavailable,
+  but the main local web/API stack remains usable.
+
+Verification:
+
+- `docker compose config` passed.
+- `docker compose run --rm nginx nginx -t` passed.
+- `git diff --check` passed.

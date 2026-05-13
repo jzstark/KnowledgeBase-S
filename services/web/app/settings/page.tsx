@@ -9,8 +9,6 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -19,38 +17,6 @@ interface Settings {
   briefing_time: string;
   maintenance_frequency: string;
 }
-
-interface MemoryRule {
-  id: number;
-  template_name: string;
-  rule: string;
-  rule_type: string;
-  confidence: number;
-  count: number;
-}
-
-// ── 置信度进度条 ──────────────────────────────────────────────────────────────
-
-function ConfidenceBar({ value }: { value: number }) {
-  const pct = Math.round(value * 100);
-  const color =
-    value >= 0.8 ? "bg-green-500" : value >= 0.5 ? "bg-blue-400" : "bg-muted-foreground/30";
-  return (
-    <div className="flex items-center gap-2">
-      <div className="w-20 h-1.5 bg-muted rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs text-muted-foreground">{pct}%</span>
-    </div>
-  );
-}
-
-const RULE_TYPE_LABELS: Record<string, string> = {
-  style: "风格",
-  structure: "结构",
-  content: "内容",
-  tone: "语气",
-};
 
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
@@ -62,9 +28,6 @@ export default function SettingsPage() {
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
-
-  const [rules, setRules] = useState<MemoryRule[]>([]);
-  const [rulesLoading, setRulesLoading] = useState(true);
 
   const [wikiStatus, setWikiStatus] = useState<{ synced_count: number; index_exists: boolean } | null>(null);
   const [wikiRebuilding, setWikiRebuilding] = useState(false);
@@ -78,7 +41,6 @@ export default function SettingsPage() {
       })
       .catch(() => {});
 
-    loadRules();
     loadWikiStatus();
   }, []);
 
@@ -96,24 +58,6 @@ export default function SettingsPage() {
     } finally {
       setSettingsSaving(false);
     }
-  }
-
-  async function loadRules() {
-    setRulesLoading(true);
-    try {
-      const r = await fetch("/api/kb/memory", { credentials: "include" });
-      if (r.ok) {
-        const data = await r.json();
-        if (Array.isArray(data)) setRules(data);
-      }
-    } finally {
-      setRulesLoading(false);
-    }
-  }
-
-  async function deleteRule(id: number) {
-    await fetch(`/api/kb/memory/${id}`, { method: "DELETE", credentials: "include" });
-    setRules((prev) => prev.filter((r) => r.id !== id));
   }
 
   async function loadWikiStatus() {
@@ -152,10 +96,10 @@ export default function SettingsPage() {
     <main className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-6 py-8 space-y-5">
 
-        <h1 className="text-2xl font-semibold">系统设置</h1>
+        <h1 className="text-2xl font-semibold">工作室 &gt; 系统设置</h1>
 
         {/* ① 流程节奏 */}
-        <Card>
+        <Card id="system">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">流程节奏</CardTitle>
           </CardHeader>
@@ -192,59 +136,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* ② 写作偏好规则 */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold">写作偏好规则</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-xs text-muted-foreground mb-3">
-              由系统从你的定稿修改中自动学习。置信度 ≥ 80% 的规则会在生成草稿时自动应用。
-            </p>
-
-            {rulesLoading ? (
-              <p className="text-sm text-muted-foreground">加载中…</p>
-            ) : rules.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                暂无学习到的偏好规则。在草稿历史页提交定稿后，系统会自动学习。
-              </p>
-            ) : (
-              <div className="space-y-0">
-                {rules.map((r, i) => (
-                  <div key={r.id}>
-                    <div className="flex items-start gap-3 py-2.5">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm leading-relaxed">{r.rule}</p>
-                        <div className="flex items-center gap-3 mt-1.5">
-                          <Badge variant="secondary" className="text-xs px-1.5 py-0">
-                            {RULE_TYPE_LABELS[r.rule_type] || r.rule_type}
-                          </Badge>
-                          <ConfidenceBar value={r.confidence} />
-                          <span className="text-xs text-muted-foreground">出现 {r.count} 次</span>
-                          {r.template_name && (
-                            <span className="text-xs text-blue-500">{r.template_name}</span>
-                          )}
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => deleteRule(r.id)}
-                        title="删除此规则"
-                      >
-                        ×
-                      </Button>
-                    </div>
-                    {i < rules.length - 1 && <Separator />}
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ③ Obsidian 同步 */}
+        {/* ② Obsidian 同步 */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">Obsidian 同步</CardTitle>
@@ -280,7 +172,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* ④ 数据导出 */}
+        {/* ③ 数据导出 */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">数据导出</CardTitle>

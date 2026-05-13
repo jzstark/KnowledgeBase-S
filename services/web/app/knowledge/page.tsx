@@ -1297,6 +1297,24 @@ export default function KnowledgePage() {
     }
   }
 
+  useEffect(() => {
+    function selectNodeFromLocation() {
+      const hashMatch = window.location.hash.match(/^#node=(.+)$/);
+      const queryNode = new URLSearchParams(window.location.search).get("node");
+      const nodeId = hashMatch ? decodeURIComponent(hashMatch[1]) : queryNode;
+      if (nodeId) selectNode(nodeId);
+    }
+
+    selectNodeFromLocation();
+    window.addEventListener("hashchange", selectNodeFromLocation);
+    window.addEventListener("popstate", selectNodeFromLocation);
+    return () => {
+      window.removeEventListener("hashchange", selectNodeFromLocation);
+      window.removeEventListener("popstate", selectNodeFromLocation);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function refreshSelectedNode(nodeId: string) {
     setDetailLoading(true);
     try {
@@ -1517,7 +1535,7 @@ export default function KnowledgePage() {
   }
 
   return (
-    <main className="h-[calc(100vh-52px)] bg-background p-4">
+    <main className="h-screen bg-background p-4">
       <div className="h-full flex flex-col rounded-xl border border-border overflow-hidden shadow-sm">
       {/* 顶部工具栏 */}
       <header className="bg-muted/50 border-b border-border px-5 py-2.5 flex items-center justify-between shrink-0">

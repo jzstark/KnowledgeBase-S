@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Nav from "./components/Nav";
+import AppFrame from "./components/AppFrame";
 import { ChatProvider } from "./components/ChatContext";
-import ChatSidebar from "./components/ChatSidebar";
 import { ThemeProvider } from "@/components/theme-provider";
 import { GoogleAnalytics } from "@next/third-parties/google";
 
@@ -25,9 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           disableTransitionOnChange
         >
           <ChatProvider>
-            <Nav />
-            <ChatSidebar />
-            {children}
+            <AppFrame>{children}</AppFrame>
           </ChatProvider>
         </ThemeProvider>
         <GoogleAnalytics gaId="G-HR0B9YJW5B" />

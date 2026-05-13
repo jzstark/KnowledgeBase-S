@@ -231,7 +231,7 @@ export default function InstructionsPage() {
     <main className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-6 py-8 space-y-5">
 
-        <h1 className="text-2xl font-semibold">指令设置</h1>
+        <h1 className="text-2xl font-semibold">工作室 &gt; 写作模板</h1>
 
         {/* ① 选题方向 */}
         <Card>
@@ -300,7 +300,7 @@ export default function InstructionsPage() {
         </Card>
 
         {/* ② 写作模板 */}
-        <Card>
+        <Card id="templates">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">写作模板</CardTitle>
             <p className="text-xs text-muted-foreground">模板是纯自然语言描述，告诉 AI「你想要什么样的文章」。</p>

@@ -216,7 +216,7 @@ export default function BriefingPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-52px)] bg-background p-4">
+    <div className="h-screen bg-background p-4">
       <div className="h-full flex flex-col rounded-xl border border-border overflow-hidden shadow-sm">
       {/* 顶部状态栏 */}
       <header className="bg-muted/50 border-b border-border px-6 py-3 flex items-center justify-between shrink-0">

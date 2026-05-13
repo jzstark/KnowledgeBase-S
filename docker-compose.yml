@@ -182,4 +182,3 @@ services:
     depends_on:
       - web
       - api
-      - wechat2rss

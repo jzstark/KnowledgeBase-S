@@ -100,7 +100,7 @@ export default function DraftsPage() {
   return (
     <main className="min-h-screen bg-background">
       <div className="max-w-6xl mx-auto px-6 py-8">
-        <h1 className="text-2xl font-semibold mb-6">草稿历史</h1>
+        <h1 className="mb-6 text-2xl font-semibold">工作室 &gt; 草稿历史</h1>
 
         {loading ? (
           <p className="text-muted-foreground text-sm">加载中…</p>
