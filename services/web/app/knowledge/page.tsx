@@ -140,6 +140,7 @@ function nodeSymbolPath(d: SimNode, selected: boolean): string {
   const type =
     d.object_type === "index" ? d3.symbolDiamond
     : d.object_type === "summary" ? d3.symbolTriangle
+    : d.object_type === "article" ? d3.symbolSquare
     : d3.symbolCircle;
   return d3.symbol().type(type).size(area)() ?? "";
 }
