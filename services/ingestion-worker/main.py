@@ -53,14 +53,16 @@ async def trigger_one(source_id: str):
     source = build_source(config)
     if source is None:
         return {"ok": False, "detail": f"unsupported type: {config.get('type')}"}
-    asyncio.create_task(_dispatch_pipeline(source, config))
+    task = asyncio.create_task(_dispatch_pipeline(source, config))
+    task.add_done_callback(_log_task_exception)
     return {"ok": True}
 
 
 @trigger_app.post("/trigger")
 async def trigger_all():
     """触发所有订阅源（相当于 --once，后台运行）。"""
-    asyncio.create_task(run_once())
+    task = asyncio.create_task(run_once())
+    task.add_done_callback(_log_task_exception)
     return {"ok": True}
 
 
@@ -118,6 +120,13 @@ async def _dispatch_pipeline(source, config: dict):
         await run_pipeline(source, config)
 
 
+def _log_task_exception(task: asyncio.Task):
+    try:
+        task.result()
+    except Exception as exc:
+        logger.error("后台任务异常: %s", exc, exc_info=exc)
+
+
 async def run_once():
     """轮询模式下只处理自动抓取型（subscription）sources；
     manual 型由用户通过 trigger 端点显式触发。"""
@@ -126,11 +135,22 @@ async def run_once():
     logger.info(f"共 {len(subscription_sources)} 个订阅源待自动抓取")
 
     for config in subscription_sources:
-        source = build_source(config)
-        if source is None:
-            logger.info(f"跳过暂未支持的类型: {config['type']}")
-            continue
-        await _dispatch_pipeline(source, config)
+        source_id = config.get("id")
+        try:
+            source = build_source(config)
+            if source is None:
+                logger.info(f"跳过暂未支持的类型: {config['type']}")
+                continue
+            await _dispatch_pipeline(source, config)
+        except Exception as exc:
+            logger.error(
+                "source 运行失败: id=%s name=%s type=%s error=%s",
+                source_id,
+                config.get("name"),
+                config.get("type"),
+                exc,
+                exc_info=True,
+            )
 
 
 async def poll_loop():

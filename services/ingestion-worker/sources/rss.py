@@ -2,6 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 import feedparser
+import httpx
 import trafilatura
 
 import config_loader
@@ -24,11 +25,28 @@ class RSSSource(BaseSource):
         self.source_id = source_id
         self.feed_url = feed_url
 
+    def _fetch_feed(self):
+        try:
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=30,
+                headers={
+                    "User-Agent": "KnowledgeBase-S ingestion-worker/1.0",
+                    "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+                },
+            ) as client:
+                resp = client.get(self.feed_url)
+                resp.raise_for_status()
+        except httpx.TooManyRedirects as exc:
+            raise RuntimeError(f"RSS feed redirect loop: {self.feed_url}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"RSS feed returned HTTP {exc.response.status_code}: {self.feed_url}") from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"RSS feed request failed: {self.feed_url}: {exc}") from exc
+        return feedparser.parse(resp.content)
+
     def fetch_new_items(self, last_fetched_at: datetime | None) -> list[RawItem]:
-        feed = feedparser.parse(self.feed_url)
-        status = getattr(feed, "status", None)
-        if status and status >= 400:
-            raise RuntimeError(f"RSS feed returned HTTP {status}: {self.feed_url}")
+        feed = self._fetch_feed()
         if getattr(feed, "bozo", False) and not feed.entries:
             raise RuntimeError(f"RSS feed parse failed: {getattr(feed, 'bozo_exception', 'unknown error')}")
 
