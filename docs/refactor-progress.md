@@ -1090,3 +1090,27 @@ Verification:
 - `docker compose config` passed.
 - `docker compose run --rm nginx nginx -t` passed.
 - `git diff --check` passed.
+
+## 2026-05-14 - Wechat2RSS prefixed management proxy
+
+Issue:
+
+- Visiting `/wechat2rss/` returned the Wechat2RSS HTML with HTTP 200, but the
+  management page could still render blank if the frontend requested prefixed
+  resource or API paths such as `/wechat2rss/assets/...`,
+  `/wechat2rss/config`, or `/wechat2rss/list`.
+- The existing Nginx config handled root-relative Wechat2RSS paths like
+  `/assets/...` and `/list`, but did not explicitly strip the `/wechat2rss/`
+  prefix for those same resource/API paths.
+
+Fix:
+
+- Added Nginx regex proxy locations for prefixed Wechat2RSS management paths.
+- The protected management paths strip `/wechat2rss/` before forwarding to the
+  Wechat2RSS upstream.
+- Prefixed feed and image proxy paths are also forwarded after prefix stripping,
+  relying on Wechat2RSS token/HMAC behavior.
+
+Verification:
+
+- `docker compose run --rm nginx nginx -t` passed.
