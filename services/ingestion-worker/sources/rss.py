@@ -1,10 +1,13 @@
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import feedparser
 import trafilatura
 
+import config_loader
 from .base import BaseSource, RawItem
+
+RSS_LOOKBACK_DAYS = config_loader.get("ingestion.rss_lookback_days", 14)
 
 
 def _parse_struct_time(value) -> datetime | None:
@@ -24,12 +27,15 @@ class RSSSource(BaseSource):
     def fetch_new_items(self, last_fetched_at: datetime | None) -> list[RawItem]:
         feed = feedparser.parse(self.feed_url)
         items: list[RawItem] = []
+        cutoff = last_fetched_at - timedelta(days=RSS_LOOKBACK_DAYS) if last_fetched_at else None
 
         for entry in feed.entries:
             published_at = _parse_struct_time(entry.get("published_parsed"))
             updated_at = _parse_struct_time(entry.get("updated_parsed"))
             item_time = published_at or updated_at
-            if last_fetched_at and item_time and item_time <= last_fetched_at:
+            # RSS providers can publish an item to the feed after its pubDate.
+            # Keep a lookback window and rely on source_items uniqueness for dedupe.
+            if cutoff and item_time and item_time <= cutoff:
                 continue
 
             url = entry.get("link", "")
