@@ -151,7 +151,7 @@ async def layered_retrieval(
     emb_lit = "[" + ",".join(repr(x) for x in q_vec) + "]"
     excl_set = set(exclude_ids)
     excl_clause = (
-        "AND id NOT IN (" + ", ".join(f"'{i}'" for i in exclude_ids) + ")"
+        "AND kn.id NOT IN (" + ", ".join(f"'{i}'" for i in exclude_ids) + ")"
         if exclude_ids else ""
     )
 
@@ -159,27 +159,27 @@ async def layered_retrieval(
         types_str = ", ".join(f"'{t}'" for t in object_types)
         if object_types == ["summary"]:
             score_sql = (
-                "0.75 * (1-(COALESCE(sn.body_embedding, body_embedding, embedding)<=>'"
+                "0.75 * (1-(COALESCE(sn.body_embedding, kn.body_embedding, kn.embedding)<=>'"
                 + emb_lit
-                + "'::vector)) + 0.25 * (1-(COALESCE(sn.perspective_embedding, perspective_embedding, sn.body_embedding, body_embedding, embedding)<=>'"
+                + "'::vector)) + 0.25 * (1-(COALESCE(sn.perspective_embedding, kn.perspective_embedding, sn.body_embedding, kn.body_embedding, kn.embedding)<=>'"
                 + emb_lit
                 + "'::vector))"
             )
-            vector_filter = "(embedding IS NOT NULL OR body_embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)"
-            summary_join = "LEFT JOIN summary_nodes sn ON sn.node_id = knowledge_nodes.id"
+            vector_filter = "(kn.embedding IS NOT NULL OR kn.body_embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)"
+            summary_join = "LEFT JOIN summary_nodes sn ON sn.node_id = kn.id"
         else:
-            score_sql = f"1-(embedding<=>'{emb_lit}'::vector)"
-            vector_filter = "embedding IS NOT NULL"
+            score_sql = f"1-(kn.embedding<=>'{emb_lit}'::vector)"
+            vector_filter = "kn.embedding IS NOT NULL"
             summary_join = ""
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
-                SELECT id, {score_sql} AS sim
-                FROM knowledge_nodes
+                SELECT kn.id, {score_sql} AS sim
+                FROM knowledge_nodes kn
                 {summary_join}
-                WHERE user_id = '{user_id}'
+                WHERE kn.user_id = '{user_id}'
                   AND {vector_filter}
-                  AND object_type IN ({types_str})
+                  AND kn.object_type IN ({types_str})
                   {excl_clause}
                 ORDER BY sim DESC
                 LIMIT {top_k}
