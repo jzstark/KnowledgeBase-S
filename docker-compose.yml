@@ -27,6 +27,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
       INGESTION_WORKER_URL: http://ingestion-worker:8001
       FEEDBACK_WORKER_URL: http://feedback-worker:8002
       WECHAT2RSS_BASE_URL: http://wechat2rss:8080

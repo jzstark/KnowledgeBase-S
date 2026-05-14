@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 import database
 from auth import create_token, require_auth, verify_password
 from routers import briefing, chat, drafts, files, kb, settings, sources
+
+AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
 
 @asynccontextmanager
@@ -50,13 +53,14 @@ async def login(body: LoginRequest, response: Response):
         httponly=True,
         samesite="lax",
         max_age=7 * 24 * 3600,
+        domain=AUTH_COOKIE_DOMAIN,
     )
     return {"ok": True}
 
 
 @app.post("/api/auth/logout")
 async def logout(response: Response):
-    response.delete_cookie("token")
+    response.delete_cookie("token", domain=AUTH_COOKIE_DOMAIN)
     return {"ok": True}
 
 
