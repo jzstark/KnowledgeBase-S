@@ -83,6 +83,7 @@ def build_source(config: dict):
 
     if t == "rss":
         url = raw_config.get("url", "")
+        logger.info("构造 RSS source: %s -> %s", config["id"], url)
         return RSSSource(source_id=config["id"], feed_url=url)
     elif t == "url":
         url = raw_config.get("url", "")
@@ -96,6 +97,7 @@ def build_source(config: dict):
             logger.warning("跳过未配置 feed_id 的微信 source: %s", config["id"])
             return None
         feed_url = f"{WECHAT2RSS_FEED_BASE_URL.rstrip('/')}/feed/{quote(feed_id)}.xml"
+        logger.info("构造 Wechat2RSS source: %s feed_id=%s -> %s", config["id"], feed_id, feed_url)
         return RSSSource(source_id=config["id"], feed_url=feed_url)
     elif t in ("pdf", "image", "plaintext", "word"):
         uploads = raw_config.get("uploads", [])
