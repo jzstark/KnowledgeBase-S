@@ -1114,3 +1114,27 @@ Fix:
 Verification:
 
 - `docker compose run --rm nginx nginx -t` passed.
+
+## 2026-05-14 - Wechat2RSS dedicated host proxy
+
+Issue:
+
+- The `/wechat2rss/` path proxy still returned a blank management page even
+  though the Wechat2RSS root HTML returned HTTP 200.
+- The log showed only `GET /wechat2rss/` returning a very small HTML response,
+  with no successful Wechat2RSS asset/API sequence. This suggests the
+  management SPA is brittle under a subpath deployment.
+
+Fix:
+
+- Added a dedicated Nginx server block for
+  `wechat2rss.swanny.laughtale.co.uk`.
+- The dedicated host proxies Wechat2RSS at `/`, so the management SPA no
+  longer needs to run under the `/wechat2rss/` prefix.
+- Management routes remain protected by the KnowledgeBase-S login
+  `auth_request`; `/feed/` and `/img-proxy` stay token/HMAC-protected by
+  Wechat2RSS itself.
+
+Verification:
+
+- `docker compose run --rm nginx nginx -t` passed.
