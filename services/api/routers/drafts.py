@@ -7,6 +7,7 @@ GET  /api/drafts/{id}       — 单篇草稿详情（需认证）
 """
 
 import asyncio
+import json
 import os
 import secrets
 from pathlib import Path
@@ -113,6 +114,108 @@ def truncate_to_chars(text: str, max_chars: int) -> str:
     if max_chars <= 0:
         return ""
     return text[:max_chars] + ("..." if len(text) > max_chars else "")
+
+
+def _coerce_json_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _reference_url(raw_ref: dict, origin_ref: str | None) -> str:
+    raw_url = raw_ref.get("url") or raw_ref.get("href")
+    if isinstance(raw_url, str) and raw_url.startswith(("http://", "https://")):
+        return raw_url
+    if origin_ref and origin_ref.startswith(("http://", "https://")):
+        return origin_ref
+    return ""
+
+
+def format_reference_section(references: list[dict]) -> str:
+    if not references:
+        return ""
+
+    lines = ["", "---", "", "## 参考来源"]
+    for index, ref in enumerate(references, start=1):
+        title = ref.get("title") or ref.get("id") or "未命名来源"
+        url = ref.get("url") or ""
+        line = f"{index}. [{title}]({url})" if url else f"{index}. {title}"
+
+        details = []
+        if ref.get("source_name"):
+            details.append(ref["source_name"])
+        elif ref.get("source_type"):
+            details.append(ref["source_type"])
+        if ref.get("published_at"):
+            details.append(ref["published_at"][:10])
+        if details:
+            line += f"（{'，'.join(details)}）"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def fetch_reference_sources(node_ids: list[str], user_id: str = USER_ID) -> list[dict]:
+    seed_ids = list(dict.fromkeys(node_ids))
+    if not seed_ids:
+        return []
+
+    rows = await database.database.fetch_all(
+        """
+        WITH seed_nodes AS (
+            SELECT id, summary_of, source_node_ids
+            FROM knowledge_nodes
+            WHERE user_id = :user_id AND id = ANY(:seed_ids)
+        ),
+        expanded_ids AS (
+            SELECT id FROM seed_nodes
+            UNION
+            SELECT summary_of FROM seed_nodes WHERE summary_of IS NOT NULL
+            UNION
+            SELECT unnest(source_node_ids) FROM seed_nodes
+        )
+        SELECT n.id, n.title, n.object_type, n.source_type, n.raw_ref,
+               si.origin_ref, si.source_published_at,
+               s.name AS source_name
+        FROM expanded_ids e
+        JOIN knowledge_nodes n ON n.id = e.id
+        LEFT JOIN source_items si ON si.id = n.source_item_id
+        LEFT JOIN sources s ON s.id = COALESCE(si.source_id, n.source_id)
+        WHERE n.user_id = :user_id
+          AND n.object_type IN ('article', 'index')
+        ORDER BY COALESCE(n.effective_at, n.source_published_at, si.source_published_at, n.created_at) DESC
+        """,
+        {"user_id": user_id, "seed_ids": seed_ids},
+    )
+
+    references = []
+    seen_keys = set()
+    for row in rows:
+        item = dict(row)
+        raw_ref = _coerce_json_dict(item.get("raw_ref"))
+        url = _reference_url(raw_ref, item.get("origin_ref"))
+        key = url or item["id"]
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        published_at = item.get("source_published_at")
+        references.append(
+            {
+                "id": item["id"],
+                "title": item.get("title") or item["id"],
+                "url": url,
+                "source_name": item.get("source_name"),
+                "source_type": item.get("source_type") or item.get("object_type"),
+                "published_at": published_at.isoformat() if published_at else "",
+            }
+        )
+    return references
 
 
 # ── 分层检索 ──────────────────────────────────────────────────────────────────
@@ -506,6 +609,13 @@ async def generate_draft(body: GenerateRequest):
         messages=[{"role": "user", "content": prompt}],
     )
     draft_content = message.content[0].text.strip()
+    reference_node_ids = (
+        all_source_ids
+        + [node["id"] for node in retrieval["articles"]]
+        + [node["id"] for node in retrieval["entities"]]
+    )
+    references = await fetch_reference_sources(reference_node_ids)
+    draft_content += format_reference_section(references)
 
     # 9. 写入 drafts 表
     draft_id = f"draft_{secrets.token_hex(6)}"
