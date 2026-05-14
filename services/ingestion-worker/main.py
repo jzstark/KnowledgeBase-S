@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 API_BASE_URL = os.environ["API_BASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))
 WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "http://wechat2rss:8080")
-WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 
 
 # ── HTTP Trigger Server ───────────────────────────────────────────────────────
@@ -92,13 +91,10 @@ def build_source(config: dict):
             logger.warning("跳过无效微信 source 配置: %s", config["id"])
             return None
         feed_id = str(raw_config.get("feed_id") or "").strip()
-        if not feed_id or not WECHAT2RSS_TOKEN:
-            logger.warning("跳过未配置 feed_id/token 的微信 source: %s", config["id"])
+        if not feed_id:
+            logger.warning("跳过未配置 feed_id 的微信 source: %s", config["id"])
             return None
-        feed_url = (
-            f"{WECHAT2RSS_BASE_URL.rstrip('/')}/feed/{quote(feed_id)}.xml"
-            f"?k={quote(WECHAT2RSS_TOKEN)}"
-        )
+        feed_url = f"{WECHAT2RSS_BASE_URL.rstrip('/')}/feed/{quote(feed_id)}.xml"
         return RSSSource(source_id=config["id"], feed_url=feed_url)
     elif t in ("pdf", "image", "plaintext", "word"):
         uploads = raw_config.get("uploads", [])

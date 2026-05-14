@@ -26,6 +26,12 @@ class RSSSource(BaseSource):
 
     def fetch_new_items(self, last_fetched_at: datetime | None) -> list[RawItem]:
         feed = feedparser.parse(self.feed_url)
+        status = getattr(feed, "status", None)
+        if status and status >= 400:
+            raise RuntimeError(f"RSS feed returned HTTP {status}: {self.feed_url}")
+        if getattr(feed, "bozo", False) and not feed.entries:
+            raise RuntimeError(f"RSS feed parse failed: {getattr(feed, 'bozo_exception', 'unknown error')}")
+
         items: list[RawItem] = []
         cutoff = last_fetched_at - timedelta(days=RSS_LOOKBACK_DAYS) if last_fetched_at else None
 
