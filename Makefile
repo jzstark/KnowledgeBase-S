@@ -1,10 +1,10 @@
-.PHONY: dev dev-d build build-dev deploy down backup logs ps refactor-smoke
+.PHONY: dev dev-d build build-dev deploy down down-dev backup logs ps refactor-smoke
 
 dev:
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up --remove-orphans
 
 dev-d:
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up -d
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up -d --remove-orphans
 
 build:
 	docker compose build
@@ -17,6 +17,9 @@ deploy:
 
 down:
 	docker compose down
+
+down-dev:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers down --remove-orphans
 
 backup:
 	./scripts/backup.sh
