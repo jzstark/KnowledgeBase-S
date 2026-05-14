@@ -65,6 +65,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       API_BASE_URL: http://api:8000
       WECHAT2RSS_BASE_URL: http://wechat2rss:8080
+      WECHAT2RSS_FEED_BASE_URL: ${WECHAT2RSS_FEED_BASE_URL:-http://wechat2rss:8080}
       WECHAT2RSS_TOKEN: ${WECHAT2RSS_TOKEN}
     expose:
       - "8001"
