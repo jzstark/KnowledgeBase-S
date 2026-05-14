@@ -13,6 +13,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PenSquare,
+  Rss,
   Sun,
   UploadCloud,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const links = [
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
   { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/rules", "/settings"] },
   { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
+  { href: "https://wechat2rss.laughtale.co.uk/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
 ];
 
 const studioLinks = [
@@ -124,6 +126,7 @@ export default function Nav() {
         <nav className="space-y-0.5">
           {links.map(({ href, label, icon: Icon, key, match }) => {
             const active = match.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+            const isExternal = href.startsWith("http");
             return (
               <div key={href}>
                 <Button
@@ -138,6 +141,20 @@ export default function Nav() {
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   )}
                 >
+                  {isExternal ? (
+                    <a href={href} target="_blank" rel="noreferrer">
+                      <Icon className="h-3.5 w-3.5" />
+                      <span className={cn("hidden flex-1 text-left md:block", collapsed && "md:hidden")}>{label}</span>
+                      <kbd
+                        className={cn(
+                          "hidden rounded border border-border/80 bg-background/80 px-1 text-[10px] font-medium text-muted-foreground md:inline-flex",
+                          collapsed && "md:hidden"
+                        )}
+                      >
+                        {key}
+                      </kbd>
+                    </a>
+                  ) : (
                   <Link href={href}>
                     <Icon className="h-3.5 w-3.5" />
                     <span className={cn("hidden flex-1 text-left md:block", collapsed && "md:hidden")}>{label}</span>
@@ -150,6 +167,7 @@ export default function Nav() {
                       {key}
                     </kbd>
                   </Link>
+                  )}
                 </Button>
                 {label === "工作室" && active && !collapsed && (
                   <div className="ml-5 mt-1 hidden space-y-0.5 border-l border-sidebar-border pl-2 md:block">

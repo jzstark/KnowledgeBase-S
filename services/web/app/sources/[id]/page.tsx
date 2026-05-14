@@ -84,10 +84,45 @@ function Section({ title, children, badge }: { title: string; children: React.Re
 
 // ── 微信专属：连接配置 ─────────────────────────────────────────────────────────
 
-function WechatConfig({ source }: { source: Source }) {
+function WechatConfig({ source, onSourceUpdated }: { source: Source; onSourceUpdated: (source: Source) => void }) {
   const cfg = parseCfg(source);
   const [fetching, setFetching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [feedId, setFeedId] = useState(typeof cfg.feed_id === "string" ? cfg.feed_id : "");
   const [message, setMessage] = useState("");
+
+  async function saveFeedId() {
+    const nextFeedId = feedId.trim();
+    if (!nextFeedId) {
+      setMessage("Feed ID 不能为空。");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/sources/${source.id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: {
+            ...cfg,
+            feed_id: nextFeedId,
+          },
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(body.detail || `保存失败 (${res.status})`);
+        return;
+      }
+      onSourceUpdated({ ...source, ...(body as Source) });
+      setFeedId(nextFeedId);
+      setMessage("Feed ID 已保存。");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function triggerFetch() {
     setFetching(true);
@@ -111,9 +146,22 @@ function WechatConfig({ source }: { source: Source }) {
     <>
       <Section title="Wechat2RSS 订阅">
         <CopyRow label="Source ID" value={source.id} />
-        {typeof cfg.feed_id === "string" && (
-          <CopyRow label="Feed ID" value={cfg.feed_id} />
-        )}
+        <div className="flex items-center gap-3 py-2 border-b border-gray-100">
+          <label htmlFor="feed-id" className="text-sm text-gray-500 w-24 shrink-0">Feed ID</label>
+          <input
+            id="feed-id"
+            value={feedId}
+            onChange={(event) => setFeedId(event.target.value)}
+            className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-sm font-mono text-gray-800 outline-none focus:border-green-400 focus:ring-2 focus:ring-green-100"
+          />
+          <button
+            onClick={saveFeedId}
+            disabled={saving || feedId.trim() === (typeof cfg.feed_id === "string" ? cfg.feed_id : "")}
+            className="shrink-0 text-xs px-2 py-1 border border-green-200 text-green-700 rounded hover:bg-green-50 disabled:opacity-50"
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
+        </div>
         {typeof cfg.name === "string" && (
           <CopyRow label="公众号" value={cfg.name} mono={false} />
         )}
@@ -216,7 +264,7 @@ export default function SourceDetailPage() {
 
         {/* 类型专属内容 */}
         <div className="space-y-4">
-          {source.type === "wechat" && <WechatConfig source={source} />}
+          {source.type === "wechat" && <WechatConfig source={source} onSourceUpdated={setSource} />}
 
           {source.type !== "wechat" && (
             <Section title="基本信息">
