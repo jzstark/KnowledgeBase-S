@@ -2,7 +2,7 @@ import json
 import os
 import pathlib
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import anthropic
@@ -34,6 +34,9 @@ READ_ONLY_TOOLS: list[dict[str, Any]] = [
                 "source_type": {"type": "string"},
                 "since": {"type": "string", "description": "ISO date/datetime lower bound"},
                 "until": {"type": "string", "description": "ISO date/datetime upper bound"},
+                "lookback_hours": {"type": "integer", "minimum": 1, "maximum": 168, "description": "Relative time window ending now; use 24 for the past 24 hours."},
+                "time_basis": {"type": "string", "enum": ["knowledge", "published"], "description": "Use published to filter by source_published_at only; otherwise uses effective/source/captured/ingested knowledge time."},
+                "sort": {"type": "string", "enum": ["relevance", "time_desc"], "description": "Use time_desc when the user asks for latest/recent items to list."},
             },
             "required": ["query"],
         },
@@ -153,9 +156,55 @@ def _reference(node: dict[str, Any], score: float | None = None) -> dict[str, An
     return ref
 
 
-def _time_filter_clause(params: list[Any], since: str | None, until: str | None) -> str:
+def _time_expr(time_basis: str | None) -> str:
+    if time_basis == "published":
+        return "n.source_published_at"
+    return "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at)"
+
+
+def _parse_time_filter(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _resolve_time_filters(filters: dict[str, Any], now: datetime | None = None) -> tuple[datetime | None, datetime | None]:
+    now = now or datetime.now(timezone.utc)
+    since = _parse_time_filter(filters.get("since"))
+    until = _parse_time_filter(filters.get("until"))
+
+    if since is None:
+        try:
+            lookback_hours = int(filters.get("lookback_hours") or 0)
+        except (TypeError, ValueError):
+            lookback_hours = 0
+        if lookback_hours > 0:
+            since = now - timedelta(hours=min(lookback_hours, 168))
+
+    return since, until
+
+
+def _time_filter_clause(
+    params: list[Any],
+    since: datetime | str | None,
+    until: datetime | str | None,
+    time_basis: str | None = None,
+) -> str:
     clauses: list[str] = []
-    time_expr = "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at)"
+    time_expr = _time_expr(time_basis)
+    since = _parse_time_filter(since)
+    until = _parse_time_filter(until)
     if since:
         params.append(since)
         clauses.append(f"{time_expr} >= ${len(params)}::timestamptz")
@@ -170,8 +219,10 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
     limit = min(max(int(filters.get("limit") or 5), 1), 10)
     object_type = filters.get("object_type")
     source_type = filters.get("source_type")
-    since = filters.get("since")
-    until = filters.get("until")
+    time_basis = filters.get("time_basis")
+    sort = filters.get("sort") or "relevance"
+    since, until = _resolve_time_filters(filters)
+    time_expr = _time_expr(time_basis)
 
     params: list[Any] = [user_id]
     conditions = [
@@ -184,20 +235,23 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
     if source_type:
         params.append(source_type)
         conditions.append(f"n.source_type = ${len(params)}")
-    time_clause = _time_filter_clause(params, since, until)
+    time_clause = _time_filter_clause(params, since, until, time_basis)
     if time_clause:
         conditions.append(time_clause)
+    if time_basis == "published":
+        conditions.append("n.source_published_at IS NOT NULL")
 
     try:
         embedding = await _embed_query(query)
         embedding_literal = _vector_literal(embedding)
         limit_idx = len(params) + 1
+        order_by = "effective_time DESC NULLS LAST, score DESC" if sort == "time_desc" else "score DESC"
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
                 SELECT n.id, n.title, COALESCE(s.body, n.abstract) AS abstract,
                        n.source_type, n.tags, n.object_type,
-                       COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at) AS effective_time,
+                       {time_expr} AS effective_time,
                        CASE
                          WHEN n.object_type = 'summary' THEN
                            0.75 * (1 - (COALESCE(s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
@@ -208,7 +262,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
                 FROM knowledge_nodes n
                 LEFT JOIN summary_nodes s ON s.node_id = n.id
                 WHERE {" AND ".join(conditions)}
-                ORDER BY score DESC
+                ORDER BY {order_by}
                 LIMIT ${limit_idx}
                 """,
                 *params,
@@ -223,15 +277,17 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         if source_type:
             text_params.append(source_type)
             text_conditions.append(f"n.source_type = ${len(text_params)}")
-        time_clause = _time_filter_clause(text_params, since, until)
+        time_clause = _time_filter_clause(text_params, since, until, time_basis)
         if time_clause:
             text_conditions.append(time_clause)
+        if time_basis == "published":
+            text_conditions.append("n.source_published_at IS NOT NULL")
         limit_idx = len(text_params) + 1
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
                 SELECT n.id, n.title, n.abstract, n.source_type, n.tags, n.object_type,
-                       COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at) AS effective_time,
+                       {time_expr} AS effective_time,
                        NULL::float AS score
                 FROM knowledge_nodes n
                 WHERE {" AND ".join(text_conditions)}
