@@ -35,7 +35,7 @@ READ_ONLY_TOOLS: list[dict[str, Any]] = [
                 "since": {"type": "string", "description": "ISO date/datetime lower bound"},
                 "until": {"type": "string", "description": "ISO date/datetime upper bound"},
                 "lookback_hours": {"type": "integer", "minimum": 1, "maximum": 168, "description": "Relative time window ending now; use 24 for the past 24 hours."},
-                "time_basis": {"type": "string", "enum": ["knowledge", "published"], "description": "Use published to filter by source_published_at only; otherwise uses effective/source/captured/ingested knowledge time."},
+                "time_basis": {"type": "string", "enum": ["knowledge", "published", "captured"], "description": "Use published to filter by source_published_at; use captured for captured_at, such as articles captured/ingested into the system in the past N hours; otherwise uses effective/source/captured/ingested knowledge time."},
                 "sort": {"type": "string", "enum": ["relevance", "time_desc"], "description": "Use time_desc when the user asks for latest/recent items to list."},
             },
             "required": ["query"],
@@ -159,6 +159,8 @@ def _reference(node: dict[str, Any], score: float | None = None) -> dict[str, An
 def _time_expr(time_basis: str | None) -> str:
     if time_basis == "published":
         return "n.source_published_at"
+    if time_basis == "captured":
+        return "n.captured_at"
     return "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at)"
 
 

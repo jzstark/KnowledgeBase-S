@@ -19,6 +19,20 @@ class TimeFilterTests(unittest.TestCase):
         self.assertIsInstance(params[1], datetime)
         self.assertEqual(params[1].date().isoformat(), "2026-05-13")
 
+    def test_captured_time_basis_filters_by_captured_at(self):
+        params = ["default"]
+
+        clause = kb_tools._time_filter_clause(
+            params,
+            since="2026-05-14T16:00:00Z",
+            until=None,
+            time_basis="captured",
+        )
+
+        self.assertEqual(clause, "n.captured_at >= $2::timestamptz")
+        self.assertIsInstance(params[1], datetime)
+        self.assertEqual(params[1].isoformat(), "2026-05-14T16:00:00+00:00")
+
     def test_lookback_hours_uses_datetime_since_filter(self):
         since, until = kb_tools._resolve_time_filters(
             {"lookback_hours": 24},

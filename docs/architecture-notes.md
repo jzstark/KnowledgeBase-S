@@ -170,3 +170,55 @@ Upsert `entity_candidates` 表，追加一条 mention 记录 `{article_id, salie
 | 重新分析旧文章的 entity 归属 | 不存在。文章入库时的分析是一次性的 |
 
 > **设计取舍**：entity 页内容更新不是实时的，而是通过 Maintenance 批量处理。原因是每篇文章入库时同步更新所有相关 entity 页代价太高（一篇文章可能匹配十几个 entity，每个都要调一次 Claude）。
+
+---
+
+## 4. 待修复：dev / deploy 数据卷不一致
+
+### 现象
+
+在 VPS 上先用 `make dev` 运行系统，知识库正常；之后切换到 `make deploy` 后，知识库图谱和列表变空。检查当前 Postgres：
+
+```bash
+docker compose exec postgres psql -U postgres -d app -c "select count(*) from knowledge_nodes;"
+```
+
+返回 `0`。
+
+### 原因
+
+`make dev` 使用 `docker-compose.dev.yml` 覆盖了 Postgres 数据目录，实际数据在 named volume：
+
+```yaml
+postgres_dev:/var/lib/postgresql/data
+```
+
+`make deploy` 只使用基础 `docker-compose.yml`，Postgres 数据目录变成：
+
+```yaml
+./data/postgres:/var/lib/postgresql/data
+```
+
+所以切换运行方式后，API 连接到另一套空数据库，前端显示为空。
+
+### 临时恢复
+
+切回 dev compose：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up -d --remove-orphans
+```
+
+然后重新检查：
+
+```bash
+docker compose exec postgres psql -U postgres -d app -c "select count(*) from knowledge_nodes;"
+```
+
+### 后续改法
+
+需要统一 dev / deploy 的 Postgres 存储策略，避免同一个环境因为启动命令不同而连接到不同数据库。可选方向：
+
+- dev 和 deploy 使用同一个明确命名的 Postgres volume。
+- 或将 `postgres_dev` 数据迁移到 `./data/postgres`，并删除 dev overlay 对 Postgres volume 的覆盖。
+- 在 `make deploy` 或启动脚本中加入数据卷差异检查，发现 `knowledgebase-s_postgres_dev` 有数据但 `./data/postgres` 为空时给出明确提示。
