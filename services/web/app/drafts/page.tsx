@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { MarkdownView } from "../components/MarkdownView";
 
 interface DraftSummary {
   id: string;
@@ -26,6 +27,7 @@ export default function DraftsPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<DraftDetail | null>(null);
   const [copied, setCopied] = useState(false);
+  const [editingDraft, setEditingDraft] = useState(false);
 
   const [showFeedback, setShowFeedback] = useState(false);
   const [finalContent, setFinalContent] = useState("");
@@ -47,6 +49,7 @@ export default function DraftsPage() {
     if (r.ok) {
       const data = await r.json();
       setSelected(data);
+      setEditingDraft(false);
       setShowFeedback(false);
       setFinalContent("");
       setFeedbackResult(null);
@@ -159,20 +162,31 @@ export default function DraftsPage() {
                           </Badge>
                         )}
                       </div>
-                      <Button variant="outline" size="sm" onClick={copy}>
-                        {copied ? "已复制 ✓" : "复制"}
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => setEditingDraft((v) => !v)}>
+                          {editingDraft ? "预览" : "编辑"}
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={copy}>
+                          {copied ? "已复制 ✓" : "复制"}
+                        </Button>
+                      </div>
                     </div>
 
                     {/* 草稿正文编辑区 */}
-                    <Textarea
-                      value={selected.draft_content}
-                      onChange={(e) =>
-                        setSelected({ ...selected, draft_content: e.target.value })
-                      }
-                      className="h-[55vh] text-sm leading-relaxed resize-none border-0 shadow-none focus-visible:ring-0 p-0"
-                      spellCheck={false}
-                    />
+                    {editingDraft ? (
+                      <Textarea
+                        value={selected.draft_content}
+                        onChange={(e) =>
+                          setSelected({ ...selected, draft_content: e.target.value })
+                        }
+                        className="h-[55vh] text-sm leading-relaxed resize-none border-0 shadow-none focus-visible:ring-0 p-0"
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <div className="max-h-[55vh] overflow-y-auto rounded-md border border-border bg-background p-4">
+                        <MarkdownView content={selected.draft_content} />
+                      </div>
+                    )}
 
                     {/* 定稿反馈区 */}
                     <div className="mt-3 pt-3">

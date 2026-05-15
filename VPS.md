@@ -214,6 +214,38 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml \
 
 ### Common problems
 
+**Wechat2RSS feed returns HTTP 500 in `ingestion-worker`**
+
+Typical log:
+
+```text
+ingestion-worker | HTTP Request: GET https://wechat2rss.laughtale.co.uk/feed/3934979086.xml "HTTP/1.1 500 Internal Server Error"
+ingestion-worker | RuntimeError: RSS feed returned HTTP 500: https://wechat2rss.laughtale.co.uk/feed/3934979086.xml
+```
+
+This means the RSS endpoint itself returned `500`. It is usually a Wechat2RSS service/data/session/license issue, not a KnowledgeBase ingestion bug. One known cause is being logged out of the WeChat account inside Wechat2RSS; in that case, open the Wechat2RSS console and log in again.
+
+Important behavior: the worker treats this as a real failure and does **not** mark the feed as successfully fetched. It will not silently convert the failure into "0 new items".
+
+Preferred VPS setting for worker ingestion:
+
+```env
+WECHAT2RSS_FEED_BASE_URL=http://wechat2rss:8080
+```
+
+Use the public host for browser access, but let `ingestion-worker` fetch feeds through Docker's internal service name. This avoids Cloudflare/Nginx/public-loopback issues.
+
+Quick checks:
+
+```bash
+docker compose logs --tail=120 wechat2rss
+docker compose --profile workers logs --tail=120 ingestion-worker
+docker compose restart wechat2rss
+docker compose --profile workers restart ingestion-worker
+```
+
+If the internal feed also returns `500`, fix Wechat2RSS first. Once Wechat2RSS serves the feed with HTTP 200 again, click "立即抓取" or wait for the next worker poll.
+
 **`next: not found` on web container start**  
 Old cached image is being used. Force a clean rebuild:
 ```bash

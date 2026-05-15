@@ -4,7 +4,7 @@
 提供对 user_data 目录下三个区域的访问：
   - raw/   原始上传文件（只读列表 + 删除通过 kb.py 的节点删除接口）
   - wiki/  自动生成的 Markdown 笔记（只读导出）
-  - config/ 用户配置模板（可读写）
+  - config/ 用户配置文档（可读写）
 """
 
 import os
@@ -98,13 +98,16 @@ async def get_tree():
                     if f.is_file() and f.suffix == ".md":
                         wiki[subdir].append({"name": f.name, "rel_path": f"wiki/{subdir}/{f.name}"})
 
-    # ── config 区：templates/*.md ──
+    # ── config 区：topics.md + templates/*.md ──
     config: list[dict] = []
+    topics_file = base / "config" / "topics.md"
+    if topics_file.exists():
+        config.append({"name": "topics.md", "rel_path": "config/topics.md", "kind": "topics"})
     config_dir = base / "config" / "templates"
     if config_dir.exists():
         for f in sorted(config_dir.iterdir()):
             if f.is_file() and f.suffix == ".md":
-                config.append({"name": f.name, "rel_path": f"config/templates/{f.name}"})
+                config.append({"name": f.name, "rel_path": f"config/templates/{f.name}", "kind": "template"})
 
     return {"raw": raw, "wiki": wiki, "config": config}
 

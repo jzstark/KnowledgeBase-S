@@ -21,6 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { MarkdownView } from "../components/MarkdownView";
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
@@ -328,10 +329,12 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
     fetch("/api/files/tree")
       .then((r) => r.json())
       .then((data) => {
-        const custom = (data.config as { name: string; rel_path: string }[]).map((f) => {
-          const name = f.name.replace(/\.(md|txt)$/, "");
-          return { value: name, label: name };
-        });
+        const custom = (data.config as { name: string; rel_path: string; kind?: string }[])
+          .filter((f) => (f.kind ?? "template") === "template")
+          .map((f) => {
+            const name = f.name.replace(/\.(md|txt)$/, "");
+            return { value: name, label: name };
+          });
         setTemplates([{ value: "default", label: "默认模板" }, ...custom]);
       })
       .catch(() => {});
@@ -340,12 +343,14 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
   const [drafting, setDrafting] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [draft, setDraft] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState(false);
   const [copied, setCopied] = useState(false);
 
   async function handleGenerate() {
     if (selected.length === 0) return;
     setDrafting(true);
     setDraft(null);
+    setEditingDraft(false);
     setCopied(false);
     setDraftStatus("⏳ 正在检索知识库...");
 
@@ -407,9 +412,14 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
         <div className="px-4 py-2 border-b border-border flex items-center justify-between">
           <p className="text-xs text-muted-foreground">{draftStatus}</p>
           {draft && (
-            <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleCopy}>
-              {copied ? "已复制 ✓" : "复制全文"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setEditingDraft((v) => !v)}>
+                {editingDraft ? "预览" : "编辑"}
+              </Button>
+              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleCopy}>
+                {copied ? "已复制 ✓" : "复制全文"}
+              </Button>
+            </div>
           )}
         </div>
       )}
@@ -430,11 +440,17 @@ function DraftPanel({ selected }: { selected: Topic[] }) {
           </div>
         ) : (
           <div className="space-y-3">
-            <Textarea
-              value={draft ?? ""}
-              onChange={(e) => setDraft(e.target.value)}
-              className="h-[calc(100vh-220px)] text-sm leading-relaxed resize-none"
-            />
+            {editingDraft ? (
+              <Textarea
+                value={draft ?? ""}
+                onChange={(e) => setDraft(e.target.value)}
+                className="h-[calc(100vh-220px)] text-sm leading-relaxed resize-none"
+              />
+            ) : (
+              <div className="h-[calc(100vh-220px)] overflow-y-auto rounded-md border border-border bg-background p-4">
+                <MarkdownView content={draft ?? ""} />
+              </div>
+            )}
             <p className="text-xs text-muted-foreground/50 text-center">
               定稿后可提交反馈以改善未来草稿质量（第八步功能）
             </p>

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { MarkdownView } from "../components/MarkdownView";
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ interface RawFile {
 interface MdFile {
   name: string;
   rel_path: string;
+  kind?: string;
 }
 
 interface WikiSection {
@@ -625,13 +627,13 @@ function ExplorerPanel({
 
       <div className="border-t border-border my-2" />
 
-      {/* 配置模板 */}
+      {/* 配置文档 */}
       <div>
         <button
           onClick={() => toggle("config")}
           className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
         >
-          {chevron("config")} 配置模板
+          {chevron("config")} 配置文档
           <span className="ml-1 text-xs text-muted-foreground/40">({tree.config.length})</span>
         </button>
         {expanded.has("config") && (
@@ -643,16 +645,18 @@ function ExplorerPanel({
                   className="flex-1 min-w-0 text-left text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 truncate rounded px-1"
                   title={f.name}
                 >
-                  📄 {f.name}
+                  📄 {f.kind === "topics" ? "选题方向" : f.name}
                 </button>
-                <button
-                  onClick={() => handleDeleteConfig(f.rel_path, f.name)}
-                  disabled={deleting === f.rel_path}
-                  className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
-                  title="删除配置文件"
-                >
-                  {deleting === f.rel_path ? "…" : "✕"}
-                </button>
+                {f.kind !== "topics" && (
+                  <button
+                    onClick={() => handleDeleteConfig(f.rel_path, f.name)}
+                    disabled={deleting === f.rel_path}
+                    className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
+                    title="删除配置文件"
+                  >
+                    {deleting === f.rel_path ? "…" : "✕"}
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -749,9 +753,7 @@ function FilePanel({ file, onClose }: { file: OpenFile; onClose: () => void }) {
             spellCheck={false}
           />
         ) : (
-          <pre className="p-4 text-xs text-muted-foreground whitespace-pre-wrap font-mono leading-relaxed">
-            {content}
-          </pre>
+          <MarkdownView content={content} className="p-4" />
         )}
       </div>
     </div>
@@ -1060,9 +1062,7 @@ function WikiPanel({
       {/* Wiki 正文 */}
       <div className="flex-1 overflow-auto p-5">
         {detail.wiki_body ? (
-          <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono leading-relaxed">
-            {detail.wiki_body}
-          </pre>
+          <MarkdownView content={detail.wiki_body} />
         ) : (
           <p className="text-sm text-muted-foreground">暂无 Wiki 内容</p>
         )}
