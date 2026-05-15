@@ -166,3 +166,37 @@ Expected benefit:
 Cleaner Seam between HTTP and background execution. Job tests become direct and
 do not need FastAPI route modules.
 
+## Implementation note: Ingestion pipeline module
+
+Implemented on 2026-05-15 as a first pass on opportunity 1.
+
+Files:
+
+- `services/ingestion-worker/article_ingestion.py`
+- `services/ingestion-worker/pipeline.py`
+- `services/ingestion-worker/tests/test_article_ingestion.py`
+
+What changed:
+
+- Added `process_article_like_item()` as the Module Interface for turning one
+  extracted article-like item into knowledge effects.
+- Kept `run_pipeline()` and `run_book_pipeline()` responsible for source item
+  lifecycle: fetching pending items, extracting content, saving raw/extracted
+  files, updating source item status, and updating `last_fetched_at`.
+- Moved shared article/chapter effects behind `ArticleIngestionAdapters`:
+  article analysis, embedding, article/summary writes, wiki writes, entity
+  candidate processing, entity page generation, candidate promotion marking, and
+  wikilink backfill.
+- Preserved the book chapter behavior where chapter articles are written to the
+  wiki but summary wiki files are not generated.
+
+Verification:
+
+- `cd services/ingestion-worker && python -m unittest discover -s tests -p 'test_article_ingestion.py'`
+- `cd services/ingestion-worker && PYTHONPYCACHEPREFIX=/tmp/kbs_pycache python -m py_compile article_ingestion.py pipeline.py`
+
+Remaining follow-up:
+
+- The HTTP calls in `pipeline.py` are still concrete Adapters assembled locally.
+  A later pass can deepen the API client if more ingestion tests need to cover
+  source item status, source item materialization, or knowledge API failures.
