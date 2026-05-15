@@ -171,14 +171,14 @@ function SourceCitationLine({ text }: { text: string }) {
 
   if (refs.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground">
+      <p className="min-w-0 break-words text-xs text-muted-foreground">
         <InlineMarkdown text={text} />
       </p>
     );
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded border border-border bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded border border-border bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
       <BookOpen className="h-3 w-3 shrink-0" />
       <span>来源</span>
       {refs.map((ref, idx) => {
@@ -188,7 +188,7 @@ function SourceCitationLine({ text }: { text: string }) {
           <KnowledgeNodeLink
             key={`${nodeId}-${idx}`}
             nodeId={nodeId}
-            className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-medium text-foreground hover:text-primary"
+            className="min-w-0 max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-medium text-foreground hover:text-primary"
             title={title ? `${title} · ${nodeId}` : nodeId}
           >
             {title || nodeId}
@@ -213,7 +213,7 @@ function MarkdownTable({ lines }: { lines: string[] }) {
   const rows = lines.slice(2).map(parseTableRow);
 
   return (
-    <div className="overflow-x-auto rounded-md border border-border bg-background/70">
+    <div className="min-w-0 max-w-full overflow-x-auto rounded-md border border-border bg-background/70">
       <table className="w-full border-collapse text-left text-xs">
         <thead className="bg-muted">
           <tr>
@@ -244,7 +244,7 @@ function MarkdownMessage({ content }: { content: string }) {
   const blocks = content.split(/(```[\s\S]*?```)/g);
 
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 max-w-full space-y-2 break-words">
       {blocks.map((block, blockIndex) => {
         if (!block) return null;
         if (block.startsWith("```") && block.endsWith("```")) {
@@ -252,7 +252,7 @@ function MarkdownMessage({ content }: { content: string }) {
           return (
             <pre
               key={blockIndex}
-              className="overflow-x-auto rounded-md bg-background/80 p-2 text-xs leading-relaxed"
+              className="min-w-0 max-w-full overflow-x-auto rounded-md bg-background/80 p-2 text-xs leading-relaxed"
             >
               <code>{code}</code>
             </pre>
@@ -270,7 +270,7 @@ function MarkdownMessage({ content }: { content: string }) {
           nodes.push(
             <ListTag key={key} className={cn("ml-4 space-y-1", ordered ? "list-decimal" : "list-disc")}>
               {listItems.map((item, idx) => (
-                <li key={idx}>
+                <li key={idx} className="min-w-0 break-words">
                   <InlineMarkdown text={item.text} />
                 </li>
               ))}
@@ -340,7 +340,7 @@ function MarkdownMessage({ content }: { content: string }) {
           if (heading) {
             const HeadingTag = heading[1].length === 1 ? "h3" : "h4";
             nodes.push(
-              <HeadingTag key={`heading-${blockIndex}-${idx}`} className="font-semibold leading-snug">
+              <HeadingTag key={`heading-${blockIndex}-${idx}`} className="min-w-0 break-words font-semibold leading-snug">
                 <InlineMarkdown text={heading[2]} />
               </HeadingTag>
             );
@@ -348,14 +348,14 @@ function MarkdownMessage({ content }: { content: string }) {
           }
 
           nodes.push(
-            <p key={`p-${blockIndex}-${idx}`}>
+            <p key={`p-${blockIndex}-${idx}`} className="min-w-0 break-words">
               <InlineMarkdown text={trimmed} />
             </p>
           );
         }
         flushList(`list-${blockIndex}-end`);
 
-        return <div key={blockIndex} className="space-y-2">{nodes}</div>;
+        return <div key={blockIndex} className="min-w-0 max-w-full space-y-2">{nodes}</div>;
       })}
     </div>
   );
@@ -624,7 +624,7 @@ export default function ChatSidebar() {
 
   return (
     <div
-      className="relative flex h-full shrink-0 flex-col border-l border-border bg-background"
+      className="relative flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-l border-border bg-background"
       style={{ width: `min(${width}px, calc(100vw - 56px))` }}
     >
       <div
@@ -638,9 +638,9 @@ export default function ChatSidebar() {
       />
 
       {/* Header */}
-      <div className="h-14 shrink-0 flex items-center gap-2 px-3 border-b border-border">
+      <div className="flex h-14 min-w-0 shrink-0 items-center gap-2 border-b border-border px-3">
         <Select value={activeSessionId ?? ""} onValueChange={switchSession}>
-          <SelectTrigger className="h-8 flex-1 text-xs">
+          <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
             <SelectValue placeholder="选择会话" />
           </SelectTrigger>
           <SelectContent>
@@ -687,8 +687,8 @@ export default function ChatSidebar() {
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 px-3 py-3">
-        <div className="flex flex-col gap-3">
+      <ScrollArea className="min-w-0 flex-1 px-3 py-3">
+        <div className="flex min-w-0 flex-col gap-3">
           {messages.length === 0 && (
             <p className="text-xs text-muted-foreground text-center mt-8">
               开始一段新对话
@@ -698,7 +698,7 @@ export default function ChatSidebar() {
             <div
               key={i}
               className={cn(
-                "max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed break-words",
+                "min-w-0 max-w-[90%] overflow-hidden rounded-lg px-3 py-2 text-sm leading-relaxed break-words",
                 msg.role === "user"
                   ? "self-end whitespace-pre-wrap bg-primary text-primary-foreground"
                   : "self-start bg-muted text-foreground"
@@ -710,10 +710,10 @@ export default function ChatSidebar() {
                   {msg.toolEvents.map((event, idx) => (
                     <span
                       key={`${event.name}-${idx}`}
-                      className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground"
                     >
                       <Search className="h-3 w-3" />
-                      {toolLabel(event)}
+                      <span className="truncate">{toolLabel(event)}</span>
                     </span>
                   ))}
                 </div>
@@ -724,12 +724,12 @@ export default function ChatSidebar() {
                     <KnowledgeNodeLink
                       key={ref.id}
                       nodeId={ref.id}
-                      className="flex items-start gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px] leading-snug text-muted-foreground"
+                      className="flex min-w-0 max-w-full items-start gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px] leading-snug text-muted-foreground"
                     >
                       <BookOpen className="mt-0.5 h-3 w-3 shrink-0" />
                       <div className="min-w-0">
                         <div className="truncate text-foreground">{ref.title || ref.id}</div>
-                        <div className="font-mono text-[10px]">{ref.object_type || "node"} · {ref.id}</div>
+                        <div className="truncate font-mono text-[10px]">{ref.object_type || "node"} · {ref.id}</div>
                       </div>
                     </KnowledgeNodeLink>
                   ))}
@@ -745,14 +745,14 @@ export default function ChatSidebar() {
       </ScrollArea>
 
       {/* Input */}
-      <div className="shrink-0 p-3 border-t border-border flex gap-2 items-end">
+      <div className="flex min-w-0 shrink-0 items-end gap-2 border-t border-border p-3">
         <Textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="发送消息… (Enter 发送，Shift+Enter 换行)"
-          className="resize-none text-sm min-h-[60px] max-h-[160px]"
+          className="min-h-[60px] min-w-0 max-h-[160px] resize-none text-sm"
           disabled={isStreaming}
           rows={2}
         />
