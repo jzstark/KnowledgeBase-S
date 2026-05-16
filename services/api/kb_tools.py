@@ -183,6 +183,8 @@ def _parse_time_filter(value: Any) -> datetime | None:
 
 def _resolve_time_filters(filters: dict[str, Any], now: datetime | None = None) -> tuple[datetime | None, datetime | None]:
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     since = _parse_time_filter(filters.get("since"))
     until = _parse_time_filter(filters.get("until"))
 
@@ -193,6 +195,8 @@ def _resolve_time_filters(filters: dict[str, Any], now: datetime | None = None) 
             lookback_hours = 0
         if lookback_hours > 0:
             since = now - timedelta(hours=min(lookback_hours, 168))
+            if until is None:
+                until = now
 
     return since, until
 
@@ -218,12 +222,13 @@ def _time_filter_clause(
 
 async def search(query: str, filters: dict[str, Any] | None = None, user_id: str = USER_ID) -> dict[str, Any]:
     filters = filters or {}
+    now = datetime.now(timezone.utc)
     limit = min(max(int(filters.get("limit") or 5), 1), 10)
     object_type = filters.get("object_type")
     source_type = filters.get("source_type")
     time_basis = filters.get("time_basis")
     sort = filters.get("sort") or "relevance"
-    since, until = _resolve_time_filters(filters)
+    since, until = _resolve_time_filters(filters, now=now)
     time_expr = _time_expr(time_basis)
 
     params: list[Any] = [user_id]
@@ -316,6 +321,12 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
     return {
         "tool": "kb_search",
         "query": query,
+        "resolved_time": {
+            "now_utc": now.isoformat(),
+            "since": since.isoformat() if since else None,
+            "until": until.isoformat() if until else None,
+            "time_basis": time_basis or "knowledge",
+        },
         "results": results,
         "references": [_reference(r, r.get("score")) for r in results],
     }

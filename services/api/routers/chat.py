@@ -11,6 +11,8 @@ POST   /api/chat/sessions/{id}/messages    — 发送消息，SSE 流式返回 C
 import json
 import os
 import secrets
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +22,7 @@ from pydantic import BaseModel
 import database
 import config_loader
 import kb_tools
+import prompt_loader
 from auth import require_auth
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -30,12 +33,28 @@ MAX_TOOL_ROUNDS = int(config_loader.get("chat.max_tool_rounds", 5))
 
 claude = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
-SYSTEM_PROMPT = f"""你是一个知识库助手，在个人知识管理系统中协助用户。
+def _chat_timezone() -> tuple[str, timezone | ZoneInfo]:
+    tz_name = os.environ.get("APP_TIMEZONE") or config_loader.get("chat.timezone", "UTC")
+    try:
+        return tz_name, ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        return "UTC", timezone.utc
 
-你可以使用只读知识库工具搜索、打开节点、查看邻居和来源。回答涉及知识库内容时优先使用工具，并在回答中引用节点标题或节点 id。
-当前阶段禁止创建、修改或删除 summary、index、tags、entity 或任何知识库内容。
 
-工具预算：每次回答最多 {MAX_TOOL_ROUNDS} 轮工具调用。优先先搜索，再打开最相关的少量节点；不要为了穷尽所有材料而反复扩大搜索。如果证据不完整，基于已检索内容回答并说明限制。"""
+def build_system_prompt(now_utc: datetime | None = None) -> str:
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    tz_name, tz = _chat_timezone()
+    local_now = now_utc.astimezone(tz)
+    return prompt_loader.fill(
+        "chat_system",
+        max_tool_rounds=str(MAX_TOOL_ROUNDS),
+        now_utc=now_utc.isoformat(),
+        timezone=tz_name,
+        local_time=local_now.isoformat(),
+        local_date=local_now.date().isoformat(),
+    )
 
 
 class CreateSessionRequest(BaseModel):
@@ -168,6 +187,7 @@ async def send_message(
         {"sid": session_id, "n": CONTEXT_WINDOW},
     )
     messages = [{"role": r["role"], "content": r["content"]} for r in reversed(history)]
+    system_prompt = build_system_prompt()
 
     async def stream_response():
         full_text = ""
@@ -178,7 +198,7 @@ async def send_message(
                 response = await claude.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=2048,
-                    system=SYSTEM_PROMPT,
+                    system=system_prompt,
                     messages=tool_messages,
                     tools=kb_tools.READ_ONLY_TOOLS,
                 )
