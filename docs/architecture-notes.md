@@ -1,43 +1,6 @@
 # 系统架构说明
 
-## 1. 与 RAG 的异同
-
-### 相同点
-
-| 要素 | 标准 RAG | KnowledgeBase-S |
-|------|---------|-----------------|
-| Embedding 向量化 | chunks → embedding | `abstract` → embedding（text-embedding-3-small, 1536d） |
-| 向量数据库 | pgvector / Chroma 等 | pgvector |
-| 检索增强生成 | 检索 top-k → 喂给 LLM | 草稿生成时从 KB 检索相关节点喂给 Claude |
-| LLM 生成 | GPT / Claude | Claude（Haiku / Sonnet） |
-
-### 本质差异
-
-**RAG 是检索机制，KnowledgeBase-S 是知识培育 + 内容生产系统，RAG 只是其中一个组件。**
-
-**1. 知识表示不同**
-- RAG：文本切块（chunks），扁平、无结构
-- 本系统：Article / Entity / Summary 三类一等对象，通过 wikilink `[[entity_id|text]]` 构成图谱，Entity 有 `canonical_name`、`aliases`、`salience` 等结构化属性
-
-**2. 知识是动态演化的，不是静态快照**
-- RAG：一次性入库，不主动更新
-- 本系统：Entity 通过累积 mentions/salience 按阈值"晋升"，每次新文章进来 entity page 会增量更新，还有矛盾检测机制
-
-**3. 目的是内容生产，不是问答**
-- RAG 的目标：回答用户的问题
-- 本系统：每日从新增文章提炼"选题" → 用户选择角度 → 生成草稿 → 用户修改反馈 → 系统学习写作偏好 → 下次草稿更符合个人风格
-
-**4. 有持续的个性化反馈环**
-- RAG：无此机制
-- 本系统：`feedback-worker` 分析草稿 diff，提炼写作偏好规则，注入后续草稿生成
-
-**5. 检索粒度不同**
-- RAG：检索"文本片段"
-- 本系统：检索已经过 LLM 提炼和结构化的知识单元（article abstract、entity page、summary），信息密度更高
-
----
-
-## 2. 新文章入库后的完整流程
+## 1. 新文章入库后的完整流程
 
 ### 步骤概览
 
@@ -149,7 +112,7 @@ Upsert `entity_candidates` 表，追加一条 mention 记录 `{article_id, salie
 
 ---
 
-## 3. 旧有文章的 entity 调整
+## 2. 旧有文章的 entity 调整
 
 ### 有的调整
 
@@ -172,53 +135,3 @@ Upsert `entity_candidates` 表，追加一条 mention 记录 `{article_id, salie
 > **设计取舍**：entity 页内容更新不是实时的，而是通过 Maintenance 批量处理。原因是每篇文章入库时同步更新所有相关 entity 页代价太高（一篇文章可能匹配十几个 entity，每个都要调一次 Claude）。
 
 ---
-
-## 4. 待修复：dev / deploy 数据卷不一致
-
-### 现象
-
-在 VPS 上先用 `make dev` 运行系统，知识库正常；之后切换到 `make deploy` 后，知识库图谱和列表变空。检查当前 Postgres：
-
-```bash
-docker compose exec postgres psql -U postgres -d app -c "select count(*) from knowledge_nodes;"
-```
-
-返回 `0`。
-
-### 原因
-
-`make dev` 使用 `docker-compose.dev.yml` 覆盖了 Postgres 数据目录，实际数据在 named volume：
-
-```yaml
-postgres_dev:/var/lib/postgresql/data
-```
-
-`make deploy` 只使用基础 `docker-compose.yml`，Postgres 数据目录变成：
-
-```yaml
-./data/postgres:/var/lib/postgresql/data
-```
-
-所以切换运行方式后，API 连接到另一套空数据库，前端显示为空。
-
-### 临时恢复
-
-切回 dev compose：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up -d --remove-orphans
-```
-
-然后重新检查：
-
-```bash
-docker compose exec postgres psql -U postgres -d app -c "select count(*) from knowledge_nodes;"
-```
-
-### 后续改法
-
-需要统一 dev / deploy 的 Postgres 存储策略，避免同一个环境因为启动命令不同而连接到不同数据库。可选方向：
-
-- dev 和 deploy 使用同一个明确命名的 Postgres volume。
-- 或将 `postgres_dev` 数据迁移到 `./data/postgres`，并删除 dev overlay 对 Postgres volume 的覆盖。
-- 在 `make deploy` 或启动脚本中加入数据卷差异检查，发现 `knowledgebase-s_postgres_dev` 有数据但 `./data/postgres` 为空时给出明确提示。
