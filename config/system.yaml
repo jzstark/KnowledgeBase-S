@@ -62,6 +62,7 @@ briefing:
 
 chat:
   max_tool_rounds:              5     # 每次 chat 回复最多允许几轮知识库工具调用
+  timezone:                     "UTC"  # Chat 解释“今天/昨天/最近”等相对时间时使用的默认时区；可用 APP_TIMEZONE 覆盖
 
 llm_output_tokens:
   article_analysis:             2048

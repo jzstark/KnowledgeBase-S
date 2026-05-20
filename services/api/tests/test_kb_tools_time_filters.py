@@ -40,7 +40,7 @@ class TimeFilterTests(unittest.TestCase):
         )
 
         self.assertEqual(since.isoformat(), "2026-05-14T11:26:00+00:00")
-        self.assertIsNone(until)
+        self.assertEqual(until.isoformat(), "2026-05-15T11:26:00+00:00")
 
 
 if __name__ == "__main__":
