@@ -26,7 +26,7 @@ const links = [
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
   { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/rules", "/settings"] },
   { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
-  { href: "https://wechat2rss.laughtale.co.uk/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
+  { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
 ];
 
 const studioLinks = [

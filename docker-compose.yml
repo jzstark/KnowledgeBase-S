@@ -30,7 +30,7 @@ services:
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
       INGESTION_WORKER_URL: http://ingestion-worker:8001
       FEEDBACK_WORKER_URL: http://feedback-worker:8002
-      WECHAT2RSS_BASE_URL: http://wechat2rss:8080
+      WECHAT2RSS_BASE_URL: ${WECHAT2RSS_BASE_URL:-https://rss.laughtale.co.uk/wechat-api}
       WECHAT2RSS_TOKEN: ${WECHAT2RSS_TOKEN}
     depends_on:
       postgres:
@@ -64,8 +64,8 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       API_BASE_URL: http://api:8000
-      WECHAT2RSS_BASE_URL: http://wechat2rss:8080
-      WECHAT2RSS_FEED_BASE_URL: ${WECHAT2RSS_FEED_BASE_URL:-http://wechat2rss:8080}
+      WECHAT2RSS_BASE_URL: ${WECHAT2RSS_BASE_URL:-https://rss.laughtale.co.uk/wechat-api}
+      WECHAT2RSS_FEED_BASE_URL: ${WECHAT2RSS_FEED_BASE_URL:-https://rss.laughtale.co.uk/wechat}
       WECHAT2RSS_TOKEN: ${WECHAT2RSS_TOKEN}
     expose:
       - "8001"
@@ -73,8 +73,6 @@ services:
       api:
         condition: service_healthy
       rsshub:
-        condition: service_started
-      wechat2rss:
         condition: service_started
     profiles: ["workers"]
 
@@ -148,20 +146,6 @@ services:
   rsshub:
     image: diygod/rsshub:latest
     restart: unless-stopped
-
-  wechat2rss:
-    image: ttttmr/wechat2rss:latest
-    restart: unless-stopped
-    volumes:
-      - ./data/wechat2rss:/app/data
-    environment:
-      LIC_EMAIL: ${WECHAT2RSS_LIC_EMAIL}
-      LIC_CODE: ${WECHAT2RSS_LIC_CODE}
-      RSS_HOST: ${WECHAT2RSS_RSS_HOST}
-      RSS_HTTPS: ${WECHAT2RSS_RSS_HTTPS:-0}
-      RSS_TOKEN: ${WECHAT2RSS_TOKEN}
-    expose:
-      - "8080"
 
   watchtower:
     image: containrrr/watchtower

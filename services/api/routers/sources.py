@@ -18,7 +18,7 @@ from auth import require_auth
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 INGESTION_WORKER_URL = os.environ.get("INGESTION_WORKER_URL", "http://ingestion-worker:8001")
-WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "http://wechat2rss:8080")
+WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "https://rss.laughtale.co.uk/wechat-api")
 WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"

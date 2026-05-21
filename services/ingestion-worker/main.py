@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))
-WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "http://wechat2rss:8080")
-WECHAT2RSS_FEED_BASE_URL = os.environ.get("WECHAT2RSS_FEED_BASE_URL", WECHAT2RSS_BASE_URL)
+WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "https://rss.laughtale.co.uk/wechat-api")
+WECHAT2RSS_FEED_BASE_URL = os.environ.get("WECHAT2RSS_FEED_BASE_URL", "https://rss.laughtale.co.uk/wechat")
 
 
 # ── HTTP Trigger Server ───────────────────────────────────────────────────────
