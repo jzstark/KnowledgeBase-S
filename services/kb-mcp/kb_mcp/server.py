@@ -5,9 +5,16 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+except ImportError:
+    _security = None
+
 KB_API_BASE = os.environ.get("KB_API_BASE", "http://api:8000").rstrip("/")
 
-mcp = FastMCP("knowledgebase")
+mcp = FastMCP("knowledgebase", transport_security=_security) if _security else FastMCP("knowledgebase")
 
 _client = httpx.AsyncClient(base_url=KB_API_BASE, timeout=30.0)
 

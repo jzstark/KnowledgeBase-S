@@ -7,6 +7,13 @@ interface:
   termsOfService:
     externalUrl: ''
 
+mcpSettings:
+  # 允许内网 docker 服务名作为 MCP server origin（默认 SSRF 保护会拒绝私网地址）
+  allowedDomains:
+    - kb-mcp
+    - http://kb-mcp:7878
+    - localhost
+
 mcpServers:
   knowledgebase:
     type: sse
