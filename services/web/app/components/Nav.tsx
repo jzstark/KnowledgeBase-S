@@ -76,7 +76,7 @@ export default function Nav() {
         )}
       >
         <Link href="/" className="grid h-10 w-10 shrink-0 place-items-center" aria-label="返回主页">
-          <img src="/logo.svg" alt="Swanny" className="h-9 w-9" />
+          <img src="/logo.svg" alt="Swanny" className="h-9 w-9 dark:invert" />
         </Link>
         <div className={cn("hidden min-w-0 flex-1 md:block", collapsed && "md:hidden")}>
           <div className="truncate text-[15px] font-semibold leading-tight tracking-tight">Swanny</div>
