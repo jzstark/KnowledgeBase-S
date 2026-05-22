@@ -18,8 +18,9 @@ endpoints:
     apiKey: '${ANTHROPIC_API_KEY}'
     models:
       default:
-        - claude-sonnet-4-5
         - claude-opus-4-7
+        - claude-sonnet-4-6
+        - claude-haiku-4-5-20251001
   openAI:
     apiKey: '${OPENAI_API_KEY}'
     models:
