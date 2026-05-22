@@ -1,0 +1,28 @@
+version: 1.2.1
+cache: true
+
+interface:
+  privacyPolicy:
+    externalUrl: ''
+  termsOfService:
+    externalUrl: ''
+
+mcpServers:
+  knowledgebase:
+    type: streamable-http
+    url: http://kb-mcp:7878/mcp
+    timeout: 30000
+
+endpoints:
+  anthropic:
+    apiKey: '${ANTHROPIC_API_KEY}'
+    models:
+      default:
+        - claude-sonnet-4-5
+        - claude-opus-4-7
+  openAI:
+    apiKey: '${OPENAI_API_KEY}'
+    models:
+      default:
+        - gpt-4o
+        - gpt-4o-mini

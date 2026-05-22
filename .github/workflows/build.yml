@@ -14,6 +14,7 @@ jobs:
       ingestion: ${{ steps.filter.outputs.ingestion }}
       summarizer: ${{ steps.filter.outputs.summarizer }}
       feedback: ${{ steps.filter.outputs.feedback }}
+      kb_mcp: ${{ steps.filter.outputs.kb_mcp }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -30,6 +31,8 @@ jobs:
               - 'services/summarizer-worker/**'
             feedback:
               - 'services/feedback-worker/**'
+            kb_mcp:
+              - 'services/kb-mcp/**'
 
   build-web:
     needs: changes
@@ -130,3 +133,23 @@ jobs:
           context: services/feedback-worker
           push: true
           tags: ghcr.io/jzstark/feedback-worker:latest
+
+  build-kb-mcp:
+    needs: changes
+    if: needs.changes.outputs.kb_mcp == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: services/kb-mcp
+          push: true
+          tags: ghcr.io/jzstark/kb-mcp:latest

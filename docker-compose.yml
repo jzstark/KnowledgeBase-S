@@ -156,6 +156,65 @@ services:
       DOCKER_API_VERSION: "1.41"
     command: --interval 3600
 
+  # ── LibreChat 栈 ───────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      - ./data/mongo:/data/db
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.7
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - ./data/meili:/meili_data
+
+  kb-mcp:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:latest
+    build:
+      context: ./services/kb-mcp
+    restart: unless-stopped
+    environment:
+      KB_API_BASE: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat:v0.7.6
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3080
+      MONGO_URI: mongodb://mongodb:27017/LibreChat
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      JWT_SECRET: ${LIBRECHAT_JWT_SECRET}
+      JWT_REFRESH_SECRET: ${LIBRECHAT_JWT_REFRESH_SECRET}
+      CREDS_KEY: ${LIBRECHAT_CREDS_KEY}
+      CREDS_IV: ${LIBRECHAT_CREDS_IV}
+      DOMAIN_CLIENT: ${LIBRECHAT_DOMAIN_CLIENT:-https://chat.laughtale.co.uk}
+      DOMAIN_SERVER: ${LIBRECHAT_DOMAIN_SERVER:-https://chat.laughtale.co.uk}
+      ALLOW_REGISTRATION: "false"
+      ALLOW_EMAIL_LOGIN: "true"
+      ALLOW_SOCIAL_LOGIN: "false"
+      ANTHROPIC_API_KEY: ${CLAUDE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./config/librechat.yaml:/app/librechat.yaml:ro
+      - ./data/librechat/images:/app/client/public/images
+      - ./data/librechat/logs:/app/api/logs
+    depends_on:
+      - mongodb
+      - meilisearch
+      - kb-mcp
+
   nginx:
     image: nginx:alpine
     restart: unless-stopped
@@ -168,3 +227,4 @@ services:
     depends_on:
       - web
       - api
+      - librechat

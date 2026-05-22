@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   BookOpen,
+  Bot,
   FileText,
   MessageSquare,
   Moon,
@@ -26,6 +27,7 @@ const links = [
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
   { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/rules", "/settings"] },
   { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
+  { href: "https://chat.laughtale.co.uk/", label: "LibreChat", icon: Bot, key: "C", match: [] },
   { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
 ];
 
