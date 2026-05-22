@@ -9,8 +9,8 @@ interface:
 
 mcpServers:
   knowledgebase:
-    type: streamable-http
-    url: http://kb-mcp:7878/mcp
+    type: sse
+    url: http://kb-mcp:7878/sse
     timeout: 30000
 
 endpoints:

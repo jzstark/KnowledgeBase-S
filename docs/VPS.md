@@ -152,8 +152,12 @@ make dev
 make dev-d
 
 # Stop
-make down
+make down-dev
 ```
+
+Use the matching dev command pair on a VPS: `make dev` / `make dev-d`
+start with the dev Compose overlay and worker profile, so stop that stack with
+`make down-dev`. Plain `make down` uses only the base Compose file.
 
 ### Rebuild after Dockerfile or dependency changes
 
@@ -254,6 +258,17 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache 
 
 **Postgres permission error on first run**  
 Use `make build-dev` then `make dev` — the named volume (`postgres_dev`) avoids bind-mount permission issues on Docker Desktop (Mac/Windows).
+
+**`network ... not found` when starting dev containers**
+The dev stack has stale Compose containers that still point at a Docker network
+which no longer exists. Recreate the dev containers with the same dev overlay
+and worker profile used by `make dev`:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  --profile workers up -d --force-recreate --remove-orphans
+```
+This recreates containers but keeps the dev named volumes and bind-mounted data.
+After recovery, stop dev mode with `make down-dev`, not plain `make down`.
 
 **API changes not reflecting**  
 The api container runs with `--reload`, so Python file changes apply automatically. If you changed `requirements.txt`, rebuild the image:
