@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -52,6 +53,24 @@ async def kb_get_node(node_id: str) -> dict[str, Any]:
     r = await _client.get(f"/api/kb/node/{node_id}")
     r.raise_for_status()
     return r.json()
+
+
+@mcp.tool()
+async def get_current_time() -> dict[str, str]:
+    """Return the current date and time in UTC.
+
+    Use this whenever the user asks about today's date, the current time, or
+    anything time-sensitive (e.g. "what's new this week", "how old is X").
+    The container clock is UTC; convert locally if the user asks for another
+    timezone.
+    """
+    now = datetime.now(timezone.utc)
+    return {
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "time_utc": now.strftime("%H:%M:%S UTC"),
+        "weekday": now.strftime("%A"),
+    }
 
 
 @mcp.tool()
