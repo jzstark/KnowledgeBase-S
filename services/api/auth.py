@@ -1,11 +1,13 @@
 import os
+import hmac
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Cookie, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 from jose import JWTError, jwt
 
 AUTH_PASSWORD = os.environ["AUTH_PASSWORD"]
 AUTH_SECRET = os.environ["AUTH_SECRET"]
+KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_DAYS = 7
 
@@ -33,3 +35,37 @@ def require_auth(token: str | None = Cookie(default=None)) -> dict:
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return verify_token(token)
+
+
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    if not isinstance(authorization, str) or not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not value.strip():
+        return None
+    return value.strip()
+
+
+def verify_service_token(token: str | None) -> dict | None:
+    if not KB_SERVICE_TOKEN or not isinstance(token, str) or not token:
+        return None
+    if hmac.compare_digest(token, KB_SERVICE_TOKEN):
+        return {"sub": "service", "scope": "kb:read"}
+    return None
+
+
+def require_auth_or_service_token(
+    token: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
+    x_kb_service_token: str | None = Header(default=None),
+) -> dict:
+    if isinstance(token, str) and token:
+        return verify_token(token)
+
+    service_identity = verify_service_token(x_kb_service_token) or verify_service_token(
+        _extract_bearer_token(authorization)
+    )
+    if service_identity:
+        return service_identity
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)

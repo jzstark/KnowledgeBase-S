@@ -45,12 +45,14 @@ OPENAI_API_KEY=sk-...
 
 AUTH_PASSWORD=your_login_password
 AUTH_SECRET=any_random_32_char_string
+KB_SERVICE_TOKEN=generate_a_strong_token_for_kb_chat
 
 NEXTAUTH_URL=http://YOUR_EC2_PUBLIC_IP   # or https://yourdomain.com
 GITHUB_OWNER=your_github_username
 ```
 
 > **DB_PASSWORD** and the password inside **DATABASE_URL** must be identical.
+> **KB_SERVICE_TOKEN** must match the value configured on the `kb-chat` VPS.
 
 ### 5. Open EC2 Security Group ports
 

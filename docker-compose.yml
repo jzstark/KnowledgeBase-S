@@ -28,6 +28,7 @@ services:
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       INGESTION_WORKER_URL: http://ingestion-worker:8001
       FEEDBACK_WORKER_URL: http://feedback-worker:8002
       WECHAT2RSS_BASE_URL: ${WECHAT2RSS_BASE_URL:-https://rss.laughtale.co.uk/wechat-api}
@@ -104,6 +105,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET}
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       USER_DATA_DIR: /app/user_data
     depends_on:
       api:

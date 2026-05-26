@@ -19,7 +19,7 @@ import index_structure
 import jobs
 import object_nodes
 import prompt_loader
-from auth import require_auth
+from auth import require_auth, require_auth_or_service_token
 
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 RAW_CAP_BYTES = 512 * 1024 * 1024  # 512 MB
@@ -596,8 +596,9 @@ async def search(
     limit: int = Query(10, ge=1, le=50),
     tags: str | None = None,
     type: str | None = None,          # article | entity | summary
+    _: dict = Depends(require_auth_or_service_token),
 ):
-    """语义搜索（RAG 核心调用），无需认证。"""
+    """语义搜索（RAG 核心调用）。"""
     embedding = await _embed_query(q)
     embedding_literal = _vector_literal(embedding)
 
@@ -662,8 +663,8 @@ async def search(
 # ── 单节点详情 ─────────────────────────────────────────────────────────────────
 
 @router.get("/node/{node_id}")
-async def get_node(node_id: str):
-    """获取单个节点及其所有边，无需认证。"""
+async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token)):
+    """获取单个节点及其所有边。"""
     node = await object_nodes.fetch_node_with_object_fields(node_id)
     if not node:
         raise HTTPException(404, "节点不存在")
@@ -938,7 +939,7 @@ async def get_object_parents(object_id: str):
 
 
 @router.get("/objects/{object_id}/ancestors")
-async def get_object_ancestors(object_id: str):
+async def get_object_ancestors(object_id: str, _: dict = Depends(require_auth_or_service_token)):
     return {"ancestors": _serialize_index_rows(await index_structure.get_ancestors(object_id, USER_ID))}
 
 
