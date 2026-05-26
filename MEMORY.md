@@ -19,7 +19,9 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 5. 用户选择一个或多个选题，系统通过分层检索从知识库拼装上下文，调用 Claude 生成草稿。
 6. 用户提交定稿后，feedback-worker 从 diff 中提炼写作偏好，写回 `writing_memory`。
 
-另外，前端带有一个持久化聊天侧栏，但它目前是 **普通 Claude 会话**，并没有接入知识图谱检索。
+前端不再内置聊天能力。原 ChatSidebar / chat router / `chat_sessions`、`chat_messages` 表已全部移除；
+聊天工作流外包给独立部署的 LibreChat（导航里 "LibreChat" 链接到 `https://chat.laughtale.co.uk/`）。
+仓库里有一个空的 `services/kb-mcp/` 占位目录，是为将来通过 MCP 把 KB 暴露给 LibreChat 准备的，但尚未实现。
 
 ---
 
@@ -29,8 +31,8 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 
 | 服务 | 作用 | 备注 |
 | --- | --- | --- |
-| `web` | Next.js 14 前端 | 主 UI，含知识库、来源、选题、草稿、设置、聊天侧栏 |
-| `api` | FastAPI 主后端 | 认证、sources、kb、briefing、drafts、chat、settings、files |
+| `web` | Next.js 14 前端 | 主 UI，含知识库、来源、选题、草稿、偏好规则、设置 |
+| `api` | FastAPI 主后端 | 认证、sources、kb、briefing、drafts、settings、files |
 | `ingestion-worker` | 内容抓取与入库 | 支持 HTTP trigger 和轮询模式 |
 | `feedback-worker` | 草稿 diff 分析 | 提炼写作偏好规则 |
 | `summarizer-worker` | 定时触发简报生成 | 只负责调用 API，不承担摘要逻辑 |
@@ -149,8 +151,9 @@ job-worker
 | 应用入口 | `main.py` | FastAPI app、router 注册、auth/health |
 | 基础设施 | `database.py`、`auth.py` | schema/init、JWT 认证 |
 | 配置加载 | `config_loader.py`、`prompt_loader.py` | 读取 `config/` 挂载内容 |
-| 业务路由 | `routers/*.py` | sources、kb、briefing、drafts、files、settings、chat |
-| 脚本模块 | `maintenance.py` | 图谱维护、恢复/重建 |
+| 业务路由 | `routers/*.py` | sources、kb、briefing、drafts、files、settings |
+| 领域辅助模块 | `entity_insights.py`、`index_structure.py`、`object_nodes.py`、`jobs.py`、`kb_tools.py` | entity facts/profile/relatedness；`index_children` CRUD 与 ancestors/descendants；object-specific tables 读写；jobs 队列辅助；KB 只读检索工具集 |
+| 脚本模块 | `maintenance.py`、`job_worker.py` | 图谱维护、恢复/重建；job 队列消费 |
 
 当前 router 的业务分工是：
 
@@ -162,7 +165,6 @@ job-worker
 | `drafts.py` | 分层检索、草稿生成、草稿历史、反馈提交 |
 | `settings.py` | 用户设置、topics/schema、模板、导出 |
 | `files.py` | `user_data/wiki` 与 `user_data/config` 文件读写 |
-| `chat.py` | 聊天会话和 SSE 消息流 |
 
 两个需要特别记住的事实：
 
@@ -214,19 +216,22 @@ job-worker
 
 | 模块 | 作用 |
 | --- | --- |
-| `layout.tsx` | 全局 layout、主题、导航、聊天侧栏、GA |
-| `middleware.ts` | 页面保护，拿 cookie 去 API 验证 |
-| `components/Nav.tsx` | 顶部导航、主题切换、聊天开关 |
-| `components/ChatContext.tsx` | 聊天侧栏状态 |
-| `components/ChatSidebar.tsx` | 会话列表、消息 SSE 渲染、Chat 工具调用与引用展示 |
+| `layout.tsx` | 全局 layout、主题、GA、`AppFrame` 包裹 |
+| `middleware.ts` | 页面保护：除 `/`、`/login`、`/api/auth/login` 外都要 token；通过 `${API_URL}/api/auth/me` 校验 |
+| `components/AppFrame.tsx` | 客户端壳层；`/` 与 `/login` 走 bare 布局，其它路由渲染 `Nav` + main 容器 |
+| `components/Nav.tsx` | 左侧可折叠侧栏（Cmd/Ctrl+`\` 切换）；含主题切换、主导航、"工作室" 子菜单、外链 LibreChat / Wechat2RSS、KB 与图谱快捷入口 |
+| `components/MemoryRulesPanel.tsx` | `writing_memory` 偏好规则的查看与管理面板，挂在 `/rules` 与设置页 |
+| `components/MarkdownView.tsx` / `StarfieldCanvas.tsx` | 通用 Markdown 渲染；首页星空背景画布 |
 
 页面层大致分 3 组：
 
 | 组 | 页面 |
 | --- | --- |
-| 内容生产 | `/briefing`、`/drafts`、`/instructions` |
+| 内容生产 | `/briefing`、`/drafts`、`/instructions`、`/rules` |
 | 知识库管理 | `/sources`、`/sources/[id]`、`/knowledge` |
 | 系统壳层 | `/`、`/login`、`/settings` |
+
+侧栏里的 "工作室" 入口下嵌套四个子项：`/drafts`（草稿历史）、`/instructions#templates`（写作模板）、`/rules`（偏好规则）、`/settings`（系统设置）。
 
 其中 `/knowledge/page.tsx` 是当前前端最重的聚合页面，它同时承载：
 
@@ -444,8 +449,6 @@ Index 结构不再写入 `knowledge_edges.part_of`。API 图谱会把
 | `drafts` | 生成草稿与用户定稿 |
 | `user_settings` | 简报窗口、简报时间等设置 |
 | `briefings` | 已建表，但 **当前基本未被业务使用** |
-| `chat_sessions` | 聊天会话 |
-| `chat_messages` | 聊天消息 |
 
 ---
 
@@ -699,16 +702,15 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 | `/sources/[id]` | 单个 source 详情，尤其是微信推送配置 |
 | `/knowledge` | 四面板知识库 IDE：资源树、wiki/detail、图谱、列表 |
 | `/instructions` | 选题方向、模板、schema 文本编辑 |
+| `/rules` | 偏好规则（`writing_memory`）管理面板 |
 | `/settings` | 系统节奏、偏好规则、wiki 重建、数据导出 |
 
-全局还有一个 `ChatSidebar`：
-
-- 会话持久化到 `chat_sessions` / `chat_messages`
-- SSE 返回 Claude 回复、工具调用状态和工具引用
-- Phase 10 后通过 `services/api/kb_tools.py` 访问只读知识库工具：
-  `kb_search`、`kb_get_node`、`kb_get_neighbors`、`kb_get_sources`
-- 当前阶段不暴露 Chat 写工具；Chat 不能创建、修改或删除 summary /
-  index / tags / entity
+聊天能力已外置：
+- 仓库不再包含内置聊天 UI、聊天 API 或 chat 会话表。
+- 导航的 "LibreChat" 链接指向独立部署的 `https://chat.laughtale.co.uk/`。
+- `services/api/kb_tools.py` 仍然存在，提供只读工具 `search` /
+  `get_node` / `get_neighbors` / `get_sources`，未来计划通过
+  `services/kb-mcp/`（当前目录为空，仅占位）以 MCP 暴露给 LibreChat。
 
 ---
 
@@ -718,16 +720,16 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 
 当前维护任务包括：
 
-1. `cleanup_legacy_llm_edges()`
-2. `migrate_wikilink_edges()`
-3. `promote_entity_candidates()`
-4. `backfill_wikilinks_for_entity()` for all entities
-5. `backfill_entity_facts_from_mentions()`
-6. `refresh_stale_entity_profiles()`
-7. `rebuild_entity_pair_signals()`
-8. `cleanup_orphan_entities()`
-9. `backfill_summarizes_edges()`
-10. `aggregate_index_abstracts()`
+1. `cleanup_legacy_llm_edges()`（`maintenance`）
+2. `migrate_wikilink_edges()`（`maintenance`）
+3. `promote_entity_candidates()`（`maintenance`）
+4. `backfill_wikilinks_for_entity()` for all entities（`maintenance`）
+5. `entity_insights.backfill_entity_facts_from_mentions()`
+6. `entity_insights.refresh_stale_entity_profiles()`
+7. `entity_insights.rebuild_entity_pair_signals()`
+8. `cleanup_orphan_entities()`（`maintenance`）
+9. `backfill_summarizes_edges()`（`maintenance`）
+10. `aggregate_index_abstracts()`（`maintenance`）
 
 Phase 5 后，maintenance 不再做 LLM semantic edge inference；保留的 LLM
 调用只用于 entity page / index abstract 等内容生成，不再生成
@@ -853,6 +855,8 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 多视角 summary：API、双向量检索、`summary_nodes` 已落地；旧
   `knowledge_nodes` 字段仍保留兼容
 - wiki：Phase 2 后是只读导出，不再作为日常可编辑知识源
+- 聊天：内置 ChatSidebar 已下线，外部 LibreChat 已通过外链接入，但
+  `services/kb-mcp/` MCP bridge 还未实现
 
 ### 尚未完成或与计划不一致
 
@@ -860,6 +864,9 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务
+- `services/kb-mcp/` 仅有空目录骨架，server 代码与 docker-compose 集成
+  都尚未编写；docker-compose 中也没有 `librechat` / `mongodb` /
+  `meilisearch` 服务
 
 ---
 
