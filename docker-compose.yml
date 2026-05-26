@@ -73,8 +73,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      rsshub:
-        condition: service_started
     profiles: ["workers"]
 
   summarizer-worker:
@@ -144,10 +142,6 @@ services:
     depends_on:
       - api
     profiles: ["maintenance"]
-
-  rsshub:
-    image: diygod/rsshub:latest
-    restart: unless-stopped
 
   watchtower:
     image: containrrr/watchtower

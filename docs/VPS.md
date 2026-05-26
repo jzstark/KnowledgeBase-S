@@ -69,7 +69,7 @@ In the AWS console, add inbound rules to the instance's Security Group:
 # Pull all pre-built images from ghcr.io
 docker compose pull
 
-# Start core services (postgres, api, web, nginx, rsshub, watchtower)
+# Start core services (postgres, api, web, nginx, watchtower)
 docker compose up -d
 
 # Start workers (ingestion, summarizer, feedback)

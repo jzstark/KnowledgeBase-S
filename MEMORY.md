@@ -21,7 +21,9 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 
 前端不再内置聊天能力。原 ChatSidebar / chat router / `chat_sessions`、`chat_messages` 表已全部移除；
 聊天工作流外包给独立部署的 LibreChat（导航里 "LibreChat" 链接到 `https://chat.laughtale.co.uk/`）。
-仓库里有一个空的 `services/kb-mcp/` 占位目录，是为将来通过 MCP 把 KB 暴露给 LibreChat 准备的，但尚未实现。
+LibreChat 通过一个 **仓库外部** 的 MCP adapter 访问知识库：KnowledgeBase-S 本身不是 MCP server，
+只是暴露被 MCP adapter 包装的 HTTP 端点（例如 `/api/kb/search`、`/api/kb/node/{id}`、
+`/api/kb/objects/{id}/ancestors`）。仓库里的 `services/kb-mcp/` 只是早期规划留下的空目录占位。
 
 ---
 
@@ -39,7 +41,6 @@ KnowledgeBase-S 是一个 **单用户** 的个人知识库与 AI 辅助写作系
 | `job-worker` | Postgres job 队列消费者 | 消费 `jobs` 表中的 LLM / rebuild / rollup 派生任务 |
 | `maintenance-worker` | 周期维护 | 复用 `api` 镜像执行 `maintenance.py` |
 | `postgres` | 主数据库 | `pgvector/pgvector:pg16` |
-| `rsshub` | RSSHub | 供微信等订阅源使用 |
 | `nginx` | 反向代理 | 代理前端、API，并转发 `/agent/` 到宿主机 18789 |
 | `watchtower` | 镜像自动更新 | 生产用 |
 
@@ -708,9 +709,14 @@ Phase 6 后，entity 不再只是一次性生成的 wiki 页面：
 聊天能力已外置：
 - 仓库不再包含内置聊天 UI、聊天 API 或 chat 会话表。
 - 导航的 "LibreChat" 链接指向独立部署的 `https://chat.laughtale.co.uk/`。
-- `services/api/kb_tools.py` 仍然存在，提供只读工具 `search` /
-  `get_node` / `get_neighbors` / `get_sources`，未来计划通过
-  `services/kb-mcp/`（当前目录为空，仅占位）以 MCP 暴露给 LibreChat。
+- LibreChat 已经能调到知识库，但 MCP server / adapter 跑在 **本仓库之外**；
+  KnowledgeBase-S 这一侧只提供被 MCP 包装的 HTTP 端点（`/api/kb/search`、
+  `/api/kb/node/{id}`、`/api/kb/objects/{id}/ancestors` 等）。
+- 仓库里的 `services/api/kb_tools.py` 仍然存在，提供只读工具 `search` /
+  `get_node` / `get_neighbors` / `get_sources`；这是历史内置聊天时代留下
+  的代码，目前不再被 web 端使用，但仍可作为内部 KB 查询库。
+- `services/kb-mcp/` 是早期规划在 repo 内自建 MCP server 时留下的空目录，
+  当前 MCP adapter 在外部，repo 内并未启用这一服务。
 
 ---
 
@@ -855,8 +861,8 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 多视角 summary：API、双向量检索、`summary_nodes` 已落地；旧
   `knowledge_nodes` 字段仍保留兼容
 - wiki：Phase 2 后是只读导出，不再作为日常可编辑知识源
-- 聊天：内置 ChatSidebar 已下线，外部 LibreChat 已通过外链接入，但
-  `services/kb-mcp/` MCP bridge 还未实现
+- 聊天：内置 ChatSidebar 已下线；外部 LibreChat 已通过一个
+  仓库外的 MCP adapter 调用 KB 的 HTTP 端点，repo 这一侧不承担 MCP server 角色
 
 ### 尚未完成或与计划不一致
 
@@ -864,9 +870,9 @@ Phase 1 已移除旧 `scheduler` 空壳。Phase 8 后新增了基于 Postgres
 - 独立 scheduler 空壳已在 Phase 1 移除
 - URL 批量队列接口与 worker 实现未完全对齐
 - `briefings` 表已建但目前未承担核心业务
-- `services/kb-mcp/` 仅有空目录骨架，server 代码与 docker-compose 集成
-  都尚未编写；docker-compose 中也没有 `librechat` / `mongodb` /
-  `meilisearch` 服务
+- `services/kb-mcp/` 仅有空目录骨架，是早期想在 repo 内自建 MCP server
+  时留下的占位；当前 MCP adapter 在仓库外，repo 内不需要这个服务，
+  docker-compose 也没有 `librechat` / `mongodb` / `meilisearch` 等条目
 
 ---
 
