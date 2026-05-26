@@ -8,7 +8,6 @@ import {
   BookOpen,
   Bot,
   FileText,
-  MessageSquare,
   Moon,
   Newspaper,
   PanelLeftClose,
@@ -20,7 +19,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useChatContext } from "./ChatContext";
 
 const links = [
   { href: "/briefing", label: "简报", icon: Newspaper, key: "B", match: ["/briefing"] },
@@ -43,7 +41,6 @@ const sidebarShortcutLabel = "⌘\\";
 export default function Nav() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
-  const { isOpen, toggleChat } = useChatContext();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -99,21 +96,6 @@ export default function Nav() {
             {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
           </Button>
         </div>
-      </div>
-
-      <div className={cn("px-2 py-2.5 md:px-3", collapsed && "hidden")}>
-        <button
-          className={cn(
-            "flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-card px-0 text-[13px] text-muted-foreground transition-colors hover:bg-accent md:justify-start md:px-2.5"
-          )}
-          type="button"
-          onClick={toggleChat}
-          aria-label="Ask knowledge base"
-        >
-          <MessageSquare className="h-3.5 w-3.5" />
-          <span className="hidden flex-1 text-left md:block">Ask knowledge base</span>
-          <kbd className="hidden rounded border border-border bg-background px-1 text-[10px] text-muted-foreground md:inline-flex">⌘K</kbd>
-        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-2 py-1 md:px-3">
@@ -219,19 +201,6 @@ export default function Nav() {
             <FileText className="h-3 w-3" />
             <span className={cn("hidden flex-1 truncate md:block", collapsed && "md:hidden")}>Wiki 与图谱</span>
           </Link>
-          <button
-            type="button"
-            onClick={toggleChat}
-            aria-label="Chat toolset"
-            className={cn(
-              "flex h-9 w-full items-center justify-center gap-2 rounded-md px-0 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:h-7 md:px-2",
-              collapsed ? "md:justify-center" : "md:justify-start",
-              isOpen && "bg-sidebar-accent text-sidebar-accent-foreground"
-            )}
-          >
-            <MessageSquare className="h-3 w-3" />
-            <span className={cn("hidden flex-1 truncate text-left md:block", collapsed && "md:hidden")}>Chat toolset</span>
-          </button>
         </nav>
       </div>
 
@@ -248,15 +217,6 @@ export default function Nav() {
           <div className="truncate font-medium">KnowledgeBase-S</div>
           <div className="truncate text-[10px] text-muted-foreground">local workspace</div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn("h-7 w-7", isOpen && "bg-accent")}
-          onClick={toggleChat}
-          aria-label="打开对话"
-        >
-          <MessageSquare className="h-3.5 w-3.5" />
-        </Button>
         <Button
           variant="ghost"
           size="icon"

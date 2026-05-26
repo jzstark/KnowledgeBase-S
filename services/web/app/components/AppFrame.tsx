@@ -1,7 +1,6 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import ChatSidebar from "./ChatSidebar";
 import Nav from "./Nav";
 
 export default function AppFrame({ children }: { children: React.ReactNode }) {
@@ -15,7 +14,6 @@ export default function AppFrame({ children }: { children: React.ReactNode }) {
       <div className="flex h-full min-h-0">
         <Nav />
         <main className="min-w-0 flex-1 overflow-auto">{children}</main>
-        <ChatSidebar />
       </div>
     </div>
   );
