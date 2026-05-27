@@ -102,7 +102,6 @@ class IngestRequest(BaseModel):
     source_id: str
     raw_ref: dict[str, Any] = {}
     tags: list[str] = []
-    is_primary: bool = True
     object_type: str = "article"
     source_node_ids: list[str] = []
     summary_of: str | None = None
@@ -153,9 +152,16 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             return {"id": existing["id"], "duplicate": True}
 
     # Dedup for entities: skip if canonical_name already exists
+    # canonical_name 已不在 knowledge_nodes，改读 entity_nodes
     if body.object_type == "entity" and body.canonical_name:
         existing_ent = await database.database.fetch_one(
-            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'entity' AND canonical_name = :name",
+            """
+            SELECT n.id
+            FROM knowledge_nodes n
+            JOIN entity_nodes en ON en.node_id = n.id
+            WHERE n.user_id = :uid AND n.object_type = 'entity'
+              AND en.canonical_name = :name
+            """,
             {"uid": body.user_id, "name": body.canonical_name},
         )
         if existing_ent:
@@ -225,18 +231,14 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
-           perspective, perspective_label, perspective_instruction, perspective_embedding,
-           body_embedding, is_default, source_published_at, source_updated_at, captured_at,
+           tags, object_type, source_node_ids,
+           source_published_at, source_updated_at, captured_at,
            effective_at, source_item_id, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
-           :source_type, :source_id, :raw_ref, :tags, :is_primary,
-           :object_type, :source_node_ids, :summary_of, :canonical_name, :aliases,
-           :perspective, :perspective_label, :perspective_instruction,
-           {f"'{perspective_embedding_literal}'::vector" if perspective_embedding_literal else "NULL"},
-           {f"'{body_embedding_literal}'::vector" if body_embedding_literal else "NULL"},
-           :is_default, :source_published_at, :source_updated_at, :captured_at,
+           :source_type, :source_id, :raw_ref, :tags,
+           :object_type, :source_node_ids,
+           :source_published_at, :source_updated_at, :captured_at,
            :effective_at, :source_item_id, :doc_kind, :embedding_model)
         """,
         {
@@ -248,16 +250,8 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "source_id": body.source_id,
             "raw_ref": database.jsonb(body.raw_ref),
             "tags": body.tags,
-            "is_primary": body.is_primary,
             "object_type": body.object_type,
             "source_node_ids": body.source_node_ids,
-            "summary_of": body.summary_of,
-            "canonical_name": body.canonical_name,
-            "aliases": body.aliases,
-            "perspective": body.perspective,
-            "perspective_label": perspective_label,
-            "perspective_instruction": perspective_instruction,
-            "is_default": is_default,
             "source_published_at": body.source_published_at,
             "source_updated_at": body.source_updated_at,
             "captured_at": body.captured_at or datetime.now(timezone.utc),
@@ -636,7 +630,7 @@ async def search(
 
     tag_list: list[str] = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    conditions = ["(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL OR n.body_embedding IS NOT NULL)"]
+    conditions = ["(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL)"]
     extra_params: list = []
 
     if tag_list:
@@ -656,13 +650,13 @@ async def search(
         sql = f"""
             SELECT n.id, n.user_id, n.title, COALESCE(s.body, n.abstract) AS abstract,
                    n.source_type, n.tags, n.object_type, n.created_at,
-                   COALESCE(s.perspective_label, n.perspective_label) AS perspective_label,
-                   COALESCE(s.perspective_instruction, n.perspective_instruction) AS perspective_instruction,
-                   COALESCE(s.is_default, n.is_default) AS is_default,
+                   s.perspective_label AS perspective_label,
+                   s.perspective_instruction AS perspective_instruction,
+                   s.is_default AS is_default,
                    CASE
                      WHEN n.object_type = 'summary' THEN
-                       0.75 * (1 - (COALESCE(s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
-                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, n.perspective_embedding, s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       0.75 * (1 - (COALESCE(s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
                      ELSE
                        1 - (n.embedding <=> '{embedding_literal}'::vector)
                    END AS score
@@ -844,10 +838,10 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, is_primary, object_type)
+           tags, object_type)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
-           'manual', :source_id, :raw_ref, :tags, false, 'index')
+           'manual', :source_id, :raw_ref, :tags, 'index')
         """,
         {
             "id": index_id,
@@ -1053,16 +1047,11 @@ async def generate_summary_job(
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, is_primary, object_type, source_node_ids, summary_of, perspective,
-           perspective_label, perspective_instruction, perspective_embedding,
-           body_embedding, is_default)
+           tags, object_type, source_node_ids)
         VALUES
           (:id, :user_id, :title, :abstract, '{body_embedding_literal}'::vector,
-           :source_type, :source_id, :raw_ref, :tags, :is_primary,
-           :object_type, :source_node_ids, :summary_of, :perspective,
-           :perspective_label, :perspective_instruction,
-           '{perspective_embedding_literal}'::vector, '{body_embedding_literal}'::vector,
-           :is_default)
+           :source_type, :source_id, :raw_ref, :tags,
+           :object_type, :source_node_ids)
         """,
         {
             "id": summary_id,
@@ -1073,14 +1062,8 @@ async def generate_summary_job(
             "source_id": node_id,
             "raw_ref": database.jsonb({}),
             "tags": [],
-            "is_primary": False,
             "object_type": "summary",
             "source_node_ids": [node_id],
-            "summary_of": node_id,
-            "perspective": None if is_default else perspective_label,
-            "perspective_label": perspective_label,
-            "perspective_instruction": perspective_instruction,
-            "is_default": is_default,
         },
     )
     await object_nodes.upsert_object_node(
@@ -1979,17 +1962,23 @@ async def list_entity_facts(entity_id: str, limit: int = Query(50, ge=1, le=200)
 
 @router.get("/entities/{entity_id}/timeline")
 async def get_entity_timeline(entity_id: str, limit: int = Query(50, ge=1, le=200)):
+    """返回 entity 的 facts 时间序列。
+
+    历史上还会返回 entity_profiles 的 timeline_summary / status / refreshed_at，
+    该表已删除——entity 描述统一回 nodes.abstract，按需可由
+    POST /api/kb/entities/{id}/regenerate 触发更新。
+    """
     facts = await list_entity_facts(entity_id, limit)
-    profile = await database.database.fetch_one(
-        "SELECT timeline_summary, status, refreshed_at FROM entity_profiles WHERE entity_id = :id",
+    abstract_row = await database.database.fetch_one(
+        "SELECT abstract, updated_at FROM knowledge_nodes WHERE id = :id",
         {"id": entity_id},
     )
     return {
         "entity_id": entity_id,
-        "timeline_summary": profile["timeline_summary"] if profile else "",
-        "profile_status": profile["status"] if profile else "missing",
-        "profile_refreshed_at": (
-            profile["refreshed_at"].isoformat() if profile and profile["refreshed_at"] else None
+        "abstract": abstract_row["abstract"] if abstract_row else "",
+        "abstract_updated_at": (
+            abstract_row["updated_at"].isoformat()
+            if abstract_row and abstract_row["updated_at"] else None
         ),
         "facts": facts,
     }
@@ -2001,7 +1990,7 @@ async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=1
         """
         SELECT eps.*,
                other.id AS related_entity_id,
-               COALESCE(en.canonical_name, other.canonical_name, other.title) AS related_title
+               COALESCE(en.canonical_name, other.title) AS related_title
         FROM entity_pair_signals eps
         JOIN knowledge_nodes other ON other.id = CASE
           WHEN eps.entity_a_id = :entity_id THEN eps.entity_b_id

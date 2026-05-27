@@ -170,8 +170,8 @@ async def search(
                    COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at,
                    CASE
                      WHEN n.object_type = 'summary' THEN
-                       0.75 * (1 - (COALESCE(s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
-                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, n.perspective_embedding, s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       0.75 * (1 - (COALESCE(s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
                      ELSE
                        1 - (n.embedding <=> '{embedding_literal}'::vector)
                    END AS vector_score,

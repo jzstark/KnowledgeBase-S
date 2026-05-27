@@ -743,13 +743,11 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                 f"""
                 INSERT INTO knowledge_nodes
                   (id, user_id, title, abstract, embedding, source_type, source_id,
-                   raw_ref, tags, is_primary, object_type, source_node_ids,
-                   summary_of, canonical_name, aliases, perspective, created_at)
+                   raw_ref, tags, object_type, source_node_ids, created_at)
                 VALUES
                   (:id, :uid, :title, :abstract, '{emb_lit}'::vector,
-                   :source_type, :source_id, :raw_ref, :tags, true,
-                   :object_type, :source_node_ids, :summary_of,
-                   :canonical_name, :aliases, :perspective, :created_at)
+                   :source_type, :source_id, :raw_ref, :tags,
+                   :object_type, :source_node_ids, :created_at)
                 """,
                 {
                     "id": node_id, "uid": user_id,
@@ -761,10 +759,6 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "tags": tags,
                     "object_type": object_type,
                     "source_node_ids": source_node_ids,
-                    "summary_of": summary_of,
-                    "canonical_name": canonical_name,
-                    "aliases": aliases,
-                    "perspective": perspective,
                     "created_at": created_at,
                 },
             )
@@ -1208,9 +1202,7 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     facts_result = await entity_insights.backfill_entity_facts_from_mentions(user_id)
     print(f"[maintenance] Entity facts backfill: {facts_result}", flush=True)
 
-    profiles_result = await entity_insights.refresh_stale_entity_profiles(user_id)
-    print(f"[maintenance] Entity profiles refresh: {profiles_result}", flush=True)
-
+    # entity_profiles 表已删除；entity 描述统一回到 nodes.abstract（regenerate 端点按需更新）
     relatedness_result = await entity_insights.rebuild_entity_pair_signals(user_id)
     print(f"[maintenance] Entity relatedness refresh: {relatedness_result}", flush=True)
 
@@ -1233,7 +1225,6 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "entity_promotion": promote_result,
         "wikilink_backfill": wikilink_result,
         "entity_facts": facts_result,
-        "entity_profiles": profiles_result,
         "entity_relatedness": relatedness_result,
         "orphan_entities": orphan_result,
         "index_abstract": index_abstract_result,

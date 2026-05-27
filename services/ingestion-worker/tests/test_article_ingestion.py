@@ -157,7 +157,6 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
                 text="Article text",
                 raw_ref={"type": "url", "url": "https://example.com", "cached": "/tmp/raw.html"},
                 time_payload={"captured_at": "2026-05-15T10:00:00+00:00"},
-                is_primary=True,
                 use_entity_context=True,
             ),
             fake.adapters(),
@@ -169,7 +168,6 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake.context_calls), 1)
         self.assertEqual(fake.analyze_calls[0][1], [{"id": "ent_old", "title": "Old Entity"}])
         self.assertEqual(fake.posted[0]["object_type"], "article")
-        self.assertEqual(fake.posted[0]["is_primary"], True)
         self.assertEqual(fake.posted[0]["captured_at"], "2026-05-15T10:00:00+00:00")
         self.assertEqual(fake.posted[1]["summary_of"], "art_1")
         self.assertEqual(fake.posted[2]["object_type"], "entity")
@@ -205,7 +203,6 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.analyze_calls[0][0], "Truncated chapter text")
         self.assertEqual(fake.analyze_calls[0][1], [])
         self.assertEqual(fake.posted[0]["parent_index_id"], "idx_1")
-        self.assertNotIn("is_primary", fake.posted[0])
         self.assertEqual(fake.posted[0]["raw_ref"]["type"], "book_chapter")
         self.assertEqual(fake.wiki_articles[0][5], "book_chapter")
         self.assertEqual(fake.wiki_summaries, [])

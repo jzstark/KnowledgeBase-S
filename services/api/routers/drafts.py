@@ -436,14 +436,14 @@ async def layered_retrieval(
                 async with database.database.connection() as conn:
                     child_summary_sims = await conn.raw_connection.fetch(
                         f"""
-                        SELECT COALESCE(sn.summary_of, kn.summary_of) AS child_id,
-                               0.75 * (1-(COALESCE(sn.body_embedding, kn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector))
-                               + 0.25 * (1-(COALESCE(sn.perspective_embedding, kn.perspective_embedding, sn.body_embedding, kn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector)) AS sim
+                        SELECT sn.summary_of AS child_id,
+                               0.75 * (1-(COALESCE(sn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector))
+                               + 0.25 * (1-(COALESCE(sn.perspective_embedding, sn.body_embedding, kn.embedding)<=>'{emb_lit}'::vector)) AS sim
                         FROM knowledge_nodes kn
-                        LEFT JOIN summary_nodes sn ON sn.node_id = kn.id
-                        WHERE COALESCE(sn.summary_of, kn.summary_of) IN ({child_ids_str})
+                        JOIN summary_nodes sn ON sn.node_id = kn.id
+                        WHERE sn.summary_of IN ({child_ids_str})
                           AND kn.object_type = 'summary'
-                          AND (kn.embedding IS NOT NULL OR kn.body_embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)
+                          AND (kn.embedding IS NOT NULL OR sn.body_embedding IS NOT NULL)
                         ORDER BY sim DESC
                         LIMIT {len(child_ids)}
                         """

@@ -18,7 +18,6 @@ class ArticleIngestionInput:
     text: str
     raw_ref: dict
     time_payload: dict
-    is_primary: bool | None = None
     parent_index_id: str | None = None
     analysis_text: str | None = None
     use_entity_context: bool = True
@@ -98,8 +97,6 @@ async def process_article_like_item(
         # doc_kind 不在此显式提供——API 层 ingest() 会沿 source_items → sources → default cascade 自动填充
         **data.time_payload,
     }
-    if data.is_primary is not None:
-        article_payload["is_primary"] = data.is_primary
     if data.parent_index_id:
         article_payload["parent_index_id"] = data.parent_index_id
 

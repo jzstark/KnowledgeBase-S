@@ -8,19 +8,6 @@ def _ordered_pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
-async def mark_profile_stale(entity_id: str) -> None:
-    await database.database.execute(
-        """
-        INSERT INTO entity_profiles (entity_id, status, updated_at)
-        VALUES (:entity_id, 'stale', NOW())
-        ON CONFLICT (entity_id) DO UPDATE SET
-          status = 'stale',
-          updated_at = NOW()
-        """,
-        {"entity_id": entity_id},
-    )
-
-
 async def upsert_entity_fact(
     entity_id: str,
     article_id: str,
@@ -102,7 +89,6 @@ async def upsert_entity_fact(
             "confidence": max(0.0, min(float(confidence), 1.0)),
         },
     )
-    await mark_profile_stale(entity_id)
     return existing is None
 
 
@@ -119,7 +105,7 @@ async def upsert_fact_from_mention(
     if not canonical_name:
         entity = await database.database.fetch_one(
             """
-            SELECT COALESCE(en.canonical_name, n.canonical_name, n.title) AS name
+            SELECT COALESCE(en.canonical_name, n.title) AS name
             FROM knowledge_nodes n
             LEFT JOIN entity_nodes en ON en.node_id = n.id
             WHERE n.id = :entity_id
@@ -154,7 +140,7 @@ async def backfill_entity_facts_from_mentions(user_id: str = "default") -> dict[
     rows = await database.database.fetch_all(
         """
         SELECT ke.from_node_id AS article_id, ke.to_node_id AS entity_id,
-               ke.weight, COALESCE(en.canonical_name, n.canonical_name, n.title) AS canonical_name
+               ke.weight, COALESCE(en.canonical_name, n.title) AS canonical_name
         FROM knowledge_edges ke
         JOIN knowledge_nodes article ON article.id = ke.from_node_id
         JOIN knowledge_nodes n ON n.id = ke.to_node_id
@@ -181,9 +167,14 @@ async def backfill_entity_facts_from_mentions(user_id: str = "default") -> dict[
 
 
 async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
+    """重新生成 entity 描述并写入 knowledge_nodes.abstract。
+
+    确定性摘要：取近期 entity_facts 拼接，无 LLM 调用。Phase E / 后续批次可改为
+    通过 entity_page prompt 调 Claude，对齐 ingestion 时的生成路径。
+    """
     entity = await database.database.fetch_one(
         """
-        SELECT n.id, COALESCE(en.canonical_name, n.canonical_name, n.title) AS canonical_name
+        SELECT n.id, COALESCE(en.canonical_name, n.title) AS canonical_name
         FROM knowledge_nodes n
         LEFT JOIN entity_nodes en ON en.node_id = n.id
         WHERE n.id = :entity_id AND n.object_type = 'entity'
@@ -210,64 +201,21 @@ async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
     facts_count = int(facts_count_row["count"] if facts_count_row else 0)
     name = entity["canonical_name"] or entity_id
     if facts:
-        profile_text = f"{name} appears in {facts_count} source-grounded facts. " + " ".join(
+        new_abstract = f"{name} appears in {facts_count} source-grounded facts. " + " ".join(
             f["fact_text"] for f in facts[:3]
         )
-        timeline_items = []
-        for f in reversed(facts[:6]):
-            prefix = f["fact_time"].date().isoformat() if f["fact_time"] else "undated"
-            timeline_items.append(f"{prefix}: {f['fact_text']}")
-        timeline_summary = "\n".join(timeline_items)
     else:
-        profile_text = f"{name} has no extracted source-grounded facts yet."
-        timeline_summary = ""
+        new_abstract = f"{name} has no extracted source-grounded facts yet."
 
     await database.database.execute(
         """
-        INSERT INTO entity_profiles
-          (entity_id, profile_text, timeline_summary, status, facts_count,
-           refreshed_at, updated_at)
-        VALUES
-          (:entity_id, :profile_text, :timeline_summary, 'fresh', :facts_count,
-           NOW(), NOW())
-        ON CONFLICT (entity_id) DO UPDATE SET
-          profile_text = EXCLUDED.profile_text,
-          timeline_summary = EXCLUDED.timeline_summary,
-          status = 'fresh',
-          facts_count = EXCLUDED.facts_count,
-          refreshed_at = NOW(),
-          updated_at = NOW()
+        UPDATE knowledge_nodes
+        SET abstract = :abstract, updated_at = NOW()
+        WHERE id = :entity_id
         """,
-        {
-            "entity_id": entity_id,
-            "profile_text": profile_text,
-            "timeline_summary": timeline_summary,
-            "facts_count": facts_count,
-        },
+        {"abstract": new_abstract, "entity_id": entity_id},
     )
     return {"entity_id": entity_id, "refreshed": True, "facts_count": facts_count}
-
-
-async def refresh_stale_entity_profiles(user_id: str = "default", limit: int = 200) -> dict[str, int]:
-    rows = await database.database.fetch_all(
-        """
-        SELECT n.id
-        FROM knowledge_nodes n
-        LEFT JOIN entity_profiles ep ON ep.entity_id = n.id
-        WHERE n.user_id = :user_id
-          AND n.object_type = 'entity'
-          AND (ep.entity_id IS NULL OR ep.status = 'stale')
-        ORDER BY n.updated_at DESC
-        LIMIT :limit
-        """,
-        {"user_id": user_id, "limit": limit},
-    )
-    refreshed = 0
-    for row in rows:
-        result = await refresh_entity_profile(row["id"])
-        if result.get("refreshed"):
-            refreshed += 1
-    return {"profiles_checked": len(rows), "profiles_refreshed": refreshed}
 
 
 async def rebuild_entity_pair_signals(user_id: str = "default") -> dict[str, int]:

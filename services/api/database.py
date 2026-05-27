@@ -25,22 +25,13 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     source_id VARCHAR,
     raw_ref JSONB,
     tags TEXT[],
-    is_primary BOOLEAN DEFAULT true,
     object_type VARCHAR(16) NOT NULL DEFAULT 'article',
     source_node_ids TEXT[] DEFAULT '{}',
-    summary_of VARCHAR,
-    canonical_name TEXT,
-    aliases TEXT[] DEFAULT '{}',
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
     source_published_at TIMESTAMPTZ,
     source_updated_at TIMESTAMPTZ,
     captured_at TIMESTAMPTZ,
     effective_at TIMESTAMPTZ,
-    perspective_label TEXT,
-    perspective_instruction TEXT,
-    perspective_embedding vector(1536),
-    body_embedding vector(1536),
-    is_default BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -192,17 +183,6 @@ CREATE TABLE IF NOT EXISTS entity_facts (
     UNIQUE (entity_id, article_id, fact_text)
 );
 
-CREATE TABLE IF NOT EXISTS entity_profiles (
-    entity_id VARCHAR PRIMARY KEY REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
-    profile_text TEXT,
-    timeline_summary TEXT,
-    status VARCHAR DEFAULT 'stale',
-    facts_count INT DEFAULT 0,
-    refreshed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS entity_pair_signals (
     entity_a_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
     entity_b_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
@@ -275,22 +255,13 @@ CREATE TABLE IF NOT EXISTS user_settings (
 ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS object_type VARCHAR(16) NOT NULL DEFAULT 'article';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_node_ids TEXT[] DEFAULT '{}';
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS summary_of VARCHAR;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS canonical_name TEXT;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective TEXT;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_label TEXT;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_instruction TEXT;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective_embedding vector(1536);
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS body_embedding vector(1536);
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_item_id VARCHAR;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS embedding_model VARCHAR;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
@@ -307,6 +278,31 @@ DROP INDEX IF EXISTS idx_knowledge_nodes_priority;
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS priority_score;
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS last_accessed_at;
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS access_count;
+
+-- 延后项 1：node 级 is_primary 删除（保留 sources.is_primary）
+-- briefing 改为 JOIN sources.is_primary 过滤
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS is_primary;
+
+-- 延后项 2：entity_profiles 表删除（entity 描述统一回到 nodes.abstract）
+DROP TABLE IF EXISTS entity_profiles CASCADE;
+
+-- 延后项 3：knowledge_nodes 对象专属字段裁剪
+-- summary 专属：perspective_* / body_embedding / is_default / summary_of / perspective (legacy alias)
+-- entity 专属：canonical_name / aliases
+-- 这些字段的权威值已在 object tables（summary_nodes / entity_nodes），DROP 后 fetch_node_with_object_fields 仍正常工作
+DROP INDEX IF EXISTS idx_knowledge_nodes_summary_of;
+DROP INDEX IF EXISTS idx_knowledge_nodes_body_embedding;
+DROP INDEX IF EXISTS idx_knowledge_nodes_perspective_embedding;
+ALTER TABLE IF EXISTS knowledge_nodes DROP CONSTRAINT IF EXISTS fk_summary_of;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS summary_of;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS canonical_name;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS aliases;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS perspective;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS perspective_label;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS perspective_instruction;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS perspective_embedding;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS body_embedding;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS is_default;
 
 -- Phase A 第三批：删除所有 summarizes 边（由 summary_nodes.summary_of FK 替代）
 -- 幂等：再次执行 DELETE 影响零行
@@ -379,12 +375,6 @@ ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS source_published_at 
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS evidence_span TEXT;
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS confidence FLOAT DEFAULT 0.5;
 ALTER TABLE IF EXISTS entity_facts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS profile_text TEXT;
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS timeline_summary TEXT;
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'stale';
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS facts_count INT DEFAULT 0;
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS entity_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS co_occurrence_count INT DEFAULT 0;
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS co_occurrence_score FLOAT DEFAULT 0;
 ALTER TABLE IF EXISTS entity_pair_signals ADD COLUMN IF NOT EXISTS embedding_similarity FLOAT DEFAULT 0;
@@ -414,63 +404,10 @@ SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
     captured_at = COALESCE(captured_at, created_at, ingested_at, NOW())
 WHERE ingested_at IS NULL OR captured_at IS NULL;
 
-UPDATE knowledge_nodes
-SET perspective_label = COALESCE(NULLIF(perspective_label, ''), NULLIF(perspective, ''), 'default'),
-    perspective_instruction = COALESCE(NULLIF(perspective_instruction, ''), NULLIF(perspective, ''), '默认摘要'),
-    is_default = COALESCE(is_default, false) OR perspective IS NULL OR perspective = '' OR perspective = 'default',
-    body_embedding = COALESCE(body_embedding, embedding),
-    perspective_embedding = COALESCE(perspective_embedding, body_embedding, embedding)
-WHERE object_type = 'summary';
-
-INSERT INTO article_nodes
-  (node_id, source_item_id, raw_ref, source_type, source_published_at,
-   source_updated_at, captured_at, effective_at, tags, status, created_at, updated_at)
-SELECT id, source_item_id, raw_ref, source_type, source_published_at,
-       source_updated_at, captured_at, effective_at, COALESCE(tags, '{}'),
-       'active', created_at, updated_at
-FROM knowledge_nodes
-WHERE object_type = 'article'
-ON CONFLICT (node_id) DO UPDATE SET
-  source_item_id = EXCLUDED.source_item_id,
-  raw_ref = EXCLUDED.raw_ref,
-  source_type = EXCLUDED.source_type,
-  source_published_at = EXCLUDED.source_published_at,
-  source_updated_at = EXCLUDED.source_updated_at,
-  captured_at = EXCLUDED.captured_at,
-  effective_at = EXCLUDED.effective_at,
-  tags = EXCLUDED.tags,
-  updated_at = NOW();
-
-INSERT INTO summary_nodes
-  (node_id, summary_of, perspective_label, perspective_instruction,
-   perspective_embedding, body, body_embedding, is_default, source, created_at, updated_at)
-SELECT id, summary_of, perspective_label, perspective_instruction,
-       perspective_embedding, abstract, COALESCE(body_embedding, embedding),
-       COALESCE(is_default, false),
-       jsonb_build_object('source_node_ids', COALESCE(source_node_ids, '{}'), 'legacy_perspective', perspective),
-       created_at, updated_at
-FROM knowledge_nodes
-WHERE object_type = 'summary'
-ON CONFLICT (node_id) DO UPDATE SET
-  summary_of = EXCLUDED.summary_of,
-  perspective_label = EXCLUDED.perspective_label,
-  perspective_instruction = EXCLUDED.perspective_instruction,
-  perspective_embedding = EXCLUDED.perspective_embedding,
-  body = EXCLUDED.body,
-  body_embedding = EXCLUDED.body_embedding,
-  is_default = EXCLUDED.is_default,
-  source = EXCLUDED.source,
-  updated_at = NOW();
-
-INSERT INTO entity_nodes
-  (node_id, canonical_name, aliases, created_at, updated_at)
-SELECT id, canonical_name, COALESCE(aliases, '{}'), created_at, updated_at
-FROM knowledge_nodes
-WHERE object_type = 'entity'
-ON CONFLICT (node_id) DO UPDATE SET
-  canonical_name = EXCLUDED.canonical_name,
-  aliases = EXCLUDED.aliases,
-  updated_at = NOW();
+-- Phase 0 backfill INSERT...SELECT into object tables 已经执行过；
+-- 延后项 3 之后，knowledge_nodes 上的对象专属字段（summary_of / canonical_name /
+-- aliases / perspective_* / body_embedding / is_default）全部被 DROP，再次执行此类
+-- backfill 会因列缺失失败。object_nodes 模块的 upsert 已是这些字段的权威写入路径。
 
 INSERT INTO index_nodes
   (node_id, description, abstract_stale, created_at, updated_at)
@@ -499,14 +436,13 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_i
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
+-- idx_knowledge_nodes_summary_of 已删除（列同时随延后项 3 DROP）；
+-- summary_nodes 自带 idx_summary_nodes_summary_of 索引覆盖该路径
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_knowledge_time ON knowledge_nodes(
     COALESCE(effective_at, source_published_at, captured_at, ingested_at)
 );
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_body_embedding ON knowledge_nodes
-    USING ivfflat (body_embedding vector_cosine_ops) WITH (lists = 100);
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_perspective_embedding ON knowledge_nodes
-    USING ivfflat (perspective_embedding vector_cosine_ops) WITH (lists = 100);
+-- idx_knowledge_nodes_{body,perspective}_embedding 已删除（列同时随延后项 3 DROP）；
+-- summary_nodes 自带 idx_summary_nodes_body_embedding / idx_summary_nodes_perspective_embedding 覆盖该路径
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user_id ON sources(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_source_items_user_source_origin
@@ -530,7 +466,6 @@ CREATE INDEX IF NOT EXISTS idx_index_children_child_id ON index_children(child_i
 CREATE INDEX IF NOT EXISTS idx_entity_facts_entity_time ON entity_facts(entity_id, fact_time DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_facts_article ON entity_facts(article_id);
 CREATE INDEX IF NOT EXISTS idx_entity_facts_source_item ON entity_facts(source_item_id);
-CREATE INDEX IF NOT EXISTS idx_entity_profiles_status ON entity_profiles(status);
 CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_a_score ON entity_pair_signals(entity_a_id, relatedness_score DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_pair_signals_b_score ON entity_pair_signals(entity_b_id, relatedness_score DESC);
 DROP INDEX IF EXISTS uq_jobs_user_idempotency_key;
@@ -570,16 +505,8 @@ async def init():
         else:
             await database.execute("ALTER TABLE knowledge_nodes RENAME COLUMN summary TO abstract")
 
-    # Add FK constraint for summary_of self-reference (idempotent)
-    row = await database.fetch_one(
-        "SELECT 1 FROM information_schema.table_constraints "
-        "WHERE constraint_name='fk_summary_of' AND table_name='knowledge_nodes'"
-    )
-    if not row:
-        await database.execute(
-            "ALTER TABLE knowledge_nodes ADD CONSTRAINT fk_summary_of "
-            "FOREIGN KEY (summary_of) REFERENCES knowledge_nodes(id) ON DELETE CASCADE"
-        )
+    # （延后项 3 之前曾在此添加 fk_summary_of FK；summary_of 列已从 knowledge_nodes
+    # 删除，约束随 DROP COLUMN 一并消失，无需再添加）
 
     # Phase A 第三批：entity_candidates.mentions JSONB → source_article_ids TEXT[]
     # 条件迁移：先 backfill 再 DROP（DO 块在 SCHEMA_SQL split-by-; 的拆分中无法直接用）
@@ -588,6 +515,7 @@ async def init():
         "WHERE table_name='entity_candidates' AND column_name='mentions'"
     )
     if has_mentions:
+        # 一次性把 JSONB mentions 浓缩为 source_article_ids + 计数器（在 DROP 之前）
         await database.execute(
             """
             UPDATE entity_candidates
@@ -600,7 +528,33 @@ async def init():
               AND jsonb_array_length(COALESCE(mentions, '[]'::jsonb)) > 0
             """
         )
+        await database.execute(
+            """
+            UPDATE entity_candidates
+            SET mention_count = jsonb_array_length(COALESCE(mentions, '[]'::jsonb)),
+                max_salience = COALESCE(
+                    (SELECT MAX((elem->>'salience')::float)
+                     FROM jsonb_array_elements(COALESCE(mentions, '[]'::jsonb)) AS elem),
+                    0
+                )
+            WHERE COALESCE(mention_count, 0) = 0
+              AND jsonb_array_length(COALESCE(mentions, '[]'::jsonb)) > 0
+            """
+        )
         await database.execute("ALTER TABLE entity_candidates DROP COLUMN mentions")
+
+    # 兜底：若历史迁移漏掉计数器（mention_count=0 但 source_article_ids 已有内容），
+    # 用数组长度补 mention_count；max_salience 丢失，给一个保守默认 0.5
+    await database.execute(
+        """
+        UPDATE entity_candidates
+        SET mention_count = cardinality(source_article_ids),
+            max_salience = GREATEST(COALESCE(max_salience, 0), 0.5)
+        WHERE COALESCE(mention_count, 0) = 0
+          AND source_article_ids IS NOT NULL
+          AND cardinality(source_article_ids) > 0
+        """
+    )
 
     # Phase A 第三批：knowledge_edges 唯一约束 UNIQUE(from_node_id, to_node_id, relation_type)
     # 去重 DELETE 已在 SCHEMA_SQL 中执行，此处仅添加约束（幂等）

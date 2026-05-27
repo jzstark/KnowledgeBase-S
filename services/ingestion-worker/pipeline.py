@@ -591,7 +591,6 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     text=text,
                     raw_ref=raw_ref,
                     time_payload=_time_payload(item),
-                    is_primary=source_config.get("is_primary", True),
                     use_entity_context=True,
                 ),
                 _article_ingestion_adapters(),

@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 BATCH_SIZE = 12  # 初始批次大小；命中 max_tokens 时会自动对半拆分递归重试
-KNOWLEDGE_TIME_SQL = "COALESCE(effective_at, source_published_at, captured_at, ingested_at)"
+KNOWLEDGE_TIME_SQL = "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at)"
 
 
 # ── 获取今日选题 ─────────────────────────────────────────────────────────────
@@ -111,20 +111,24 @@ async def generate_briefing(
         if last_topic:
             # 增量：只取上次生成之后新入库的节点
             since_dt = last_topic["created_at"]
-            node_cutoff = f"created_at > '{since_dt.strftime('%Y-%m-%d %H:%M:%S')}'::timestamptz"
+            node_cutoff = f"n.created_at > '{since_dt.strftime('%Y-%m-%d %H:%M:%S')}'::timestamptz"
         else:
             # 今日首次生成：取最近 N 小时
             since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
             node_cutoff = f"{KNOWLEDGE_TIME_SQL} >= '{since}'::timestamptz"
 
+    # 文章是否进入 briefing 取决于 source.is_primary（来源级配置），不再读 node.is_primary
+    # KNOWLEDGE_TIME_SQL 与 node_cutoff 中的列名（effective_at / source_published_at / captured_at /
+    # ingested_at / created_at）只在 knowledge_nodes 出现，sources 表无同名列，PG 会自动绑定到 n.*
     rows = await database.database.fetch_all(
         f"""
-        SELECT id, title, abstract, tags, created_at,
+        SELECT n.id, n.title, n.abstract, n.tags, n.created_at,
                {KNOWLEDGE_TIME_SQL} AS knowledge_time
-        FROM knowledge_nodes
-        WHERE user_id = :user_id
-          AND is_primary = true
-          AND object_type = 'article'
+        FROM knowledge_nodes n
+        JOIN sources s ON s.id = n.source_id
+        WHERE n.user_id = :user_id
+          AND s.is_primary = true
+          AND n.object_type = 'article'
           AND {node_cutoff}
         ORDER BY knowledge_time DESC
         """,

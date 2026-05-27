@@ -234,7 +234,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
     params: list[Any] = [user_id]
     conditions = [
         "n.user_id = $1",
-        "(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL OR n.body_embedding IS NOT NULL)",
+        "(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL)",
     ]
     if object_type:
         params.append(object_type)
@@ -261,8 +261,8 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
                        {time_expr} AS effective_time,
                        CASE
                          WHEN n.object_type = 'summary' THEN
-                           0.75 * (1 - (COALESCE(s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
-                           + 0.25 * (1 - (COALESCE(s.perspective_embedding, n.perspective_embedding, s.body_embedding, n.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                           0.75 * (1 - (COALESCE(s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                           + 0.25 * (1 - (COALESCE(s.perspective_embedding, s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
                          ELSE
                            1 - (n.embedding <=> '{embedding_literal}'::vector)
                        END AS score

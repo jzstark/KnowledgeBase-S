@@ -730,3 +730,120 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - `entity_candidates`：JSONB `mentions` 完全消失；保留 `mention_count / max_salience / source_article_ids` 三列
 - `knowledge_edges`：UNIQUE(from, to, type) 强制约束；`summarizes` 边永久清空
 - 其余表保持原状
+
+### 延后项 1：knowledge_nodes.is_primary 删除 · ✅
+
+- `database.py`：CREATE TABLE 去 `is_primary BOOLEAN`；`SCHEMA_SQL` 加 `DROP COLUMN IF EXISTS is_primary`。`sources.is_primary` 保留
+- `briefing.py`：搜索 article 时 JOIN `sources s ON s.id = n.source_id`，过滤改为 `s.is_primary = true`；`KNOWLEDGE_TIME_SQL` 和 `node_cutoff` 改用 `n.` 前缀避免与 sources 字段歧义
+- `kb.py`：删除 `IngestRequest.is_primary`；3 处 INSERT INTO knowledge_nodes 去掉 `is_primary` 列与参数
+- `maintenance.py restore_from_wiki`：INSERT 去掉 `is_primary`
+- `ingestion-worker`：`ArticleIngestionInput.is_primary` 删除；`pipeline.run_pipeline` 不再透传 `source_config.is_primary`；测试 fixture 同步
+
+### 延后项 2：entity_profiles 表删除 · ✅
+
+- `database.py`：CREATE TABLE 删除；6 行 ALTER ADD COLUMN 清除；`idx_entity_profiles_status` 索引声明删除；加 `DROP TABLE IF EXISTS entity_profiles CASCADE`
+- `entity_insights.py`：
+  - 删除 `mark_profile_stale`、`refresh_stale_entity_profiles`
+  - `refresh_entity_profile` 改为直接 `UPDATE knowledge_nodes SET abstract = ...` —— entity 描述统一回到 `nodes.abstract`
+  - `upsert_entity_fact` 不再调用 `mark_profile_stale`
+- `maintenance.py`：`run_maintenance` 去掉 `refresh_stale_entity_profiles` 调用与 `entity_profiles` 输出字段；顶部 docstring 已在 Phase A 第三批同步
+- `kb.py get_entity_timeline`：不再 SELECT `entity_profiles`；返回字段从 `timeline_summary / profile_status / profile_refreshed_at` 改为 `abstract / abstract_updated_at`（更贴近"description 即 nodes.abstract"的新模型）
+- `/entities/{id}/regenerate` 端点：通过 `refresh_entity_profile` 重算 abstract（确定性 fact-summary，无 LLM 调用）。Phase E / 后续批次可改为 Claude `entity_page` prompt
+
+### 延后项 3：knowledge_nodes 对象专属字段裁剪 · ✅
+
+**删除的 9 个对象专属字段**
+
+| 字段 | 归属 | 权威来源 |
+|---|---|---|
+| `summary_of` | summary | `summary_nodes.summary_of` |
+| `perspective` (legacy alias) | summary | `summary_nodes.perspective_label` |
+| `perspective_label` | summary | `summary_nodes.perspective_label` |
+| `perspective_instruction` | summary | `summary_nodes.perspective_instruction` |
+| `perspective_embedding` | summary | `summary_nodes.perspective_embedding` |
+| `body_embedding` | summary | `summary_nodes.body_embedding` |
+| `is_default` | summary | `summary_nodes.is_default` |
+| `canonical_name` | entity | `entity_nodes.canonical_name` |
+| `aliases` | entity | `entity_nodes.aliases` |
+
+**database.py 改动**
+
+- CREATE TABLE `knowledge_nodes` 同步去除 9 列
+- 删除 19 行无用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（这些列在 DROP 之前曾被加，现已 DROP）
+- 新增 `DROP CONSTRAINT IF EXISTS fk_summary_of`
+- 新增 `DROP INDEX IF EXISTS idx_knowledge_nodes_summary_of / idx_knowledge_nodes_body_embedding / idx_knowledge_nodes_perspective_embedding`
+- 新增 9 行 `ALTER TABLE ... DROP COLUMN IF EXISTS`
+- 删除 Phase 0 的 `INSERT INTO {summary,entity}_nodes SELECT ... FROM knowledge_nodes` 一次性 backfill 块（依赖已删字段，且 object_nodes 模块已是权威写入路径）
+- `init()` 移除 `fk_summary_of` 添加块（约束随 DROP COLUMN 消失）
+
+**写入清理（3 处 INSERT INTO knowledge_nodes）**
+
+- `kb.py ingest()`：INSERT 列表删除 9 字段；本地 `perspective_label / perspective_instruction / is_default / body_embedding_literal / perspective_embedding_literal` 计算保留供 `upsert_object_node`（object 表权威写入）
+- `kb.py generate_summary_job`：INSERT 列表删除 7 个 summary 字段（perspective/body_embedding/is_default 等）；保留 `upsert_object_node` 调用
+- `maintenance.py restore_from_wiki`：INSERT 列表删除 `summary_of / canonical_name / aliases / perspective`；dict 参数同步删除
+
+**读取清理（COALESCE 链精简）**
+
+- `kb.py /search`：drop 三条 COALESCE 中的 `n.*` 回退（`COALESCE(s.body_embedding, n.body_embedding, n.embedding)` → `COALESCE(s.body_embedding, n.embedding)`）；perspective/is_default 三列直接读 `s.*`；filter 条件去掉 `n.body_embedding IS NOT NULL`
+- `kb_tools.py search`：同样处理
+- `kb_public.py search`：同样处理
+- `entity_insights.py`（3 处）：`COALESCE(en.canonical_name, n.canonical_name, n.title)` → `COALESCE(en.canonical_name, n.title)`
+- `kb.py get_related_entities`：`COALESCE(en.canonical_name, other.canonical_name, other.title)` → `COALESCE(en.canonical_name, other.title)`
+- `drafts.py` Phase 3 child summary expansion：`COALESCE(sn.summary_of, kn.summary_of)` → `sn.summary_of`；查询条件简化为 `JOIN summary_nodes`
+- `kb.py ingest()` 实体去重：`SELECT id FROM knowledge_nodes WHERE canonical_name = :name` → 改为 `JOIN entity_nodes en` 后比 `en.canonical_name`
+
+**保留未删的字段**（设计列表里曾标记为"对象专属"但实际仍在 `knowledge_nodes` 中）
+
+| 字段 | 保留原因 |
+|---|---|
+| `raw_ref` | 现仍有 100+ 直接 SELECT 路径（去重、wiki 文件生成、jobs payload）；切走代价大 |
+| `source_type` | ingest 时区分 article/summary/entity 子类型；source / source_items 不能完全替代 |
+| `source_node_ids` | summary / entity 的来源 article 列表，无单独表承载；object table 的 `source` JSONB 是镜像但未用作权威读 |
+| `source_published_at / source_updated_at / captured_at / effective_at` | 主时间索引（`idx_knowledge_nodes_knowledge_time` COALESCE 这四列），全库时间过滤都依赖；object 表里也有但 JOIN 代价大 |
+
+这 7 个字段未来再做权衡（涉及大量 SELECT 路径切换 + 索引迁移），属于结构性大改造，不在本批次范围。
+
+**所有可校验项**
+- `python3 -c "import ast; ..."` 通过 11 个文件
+- `grep -E "n\.(canonical_name|aliases|perspective|...|summary_of)"` 返回空（无直接读取残留）
+- 3 处 `INSERT INTO knowledge_nodes` 列清单全部不含被删字段
+
+### 端到端 Docker 验证 · ✅
+
+2026-05-27 在 `make dev` 栈上（postgres_dev 命名卷，含 292 历史节点）执行完整迁移。
+
+**前置坑**：原 deploy 栈用 `./data/postgres` bind mount，实际数据在 `postgres_dev` 命名卷里（TODO.md 已记录的 dev/deploy 分裂）。先 `docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile workers up -d` 切回 dev 才能看到真实数据。
+
+**修复**：发现 `entity_candidates.mention_count / max_salience` 没被回填（Phase D 的 backfill UPDATE 被 Phase A 第三批的注释覆盖了）。补救：
+- `database.py init()` 在 `if has_mentions:` 块里加 mention_count/max_salience UPDATE（DROP COLUMN 之前）
+- 加兜底 UPDATE：若 `mention_count=0` 但 `source_article_ids` 非空，用 `cardinality(source_article_ids)` 补 count，`max_salience=0.5` 默认值
+
+**Schema 验证（dev DB, 292 节点 / 326 候选 / 1363 边）**
+
+| 检查项 | 结果 |
+|---|---|
+| 9 个对象专属字段 + is_primary + 3 个 app 字段 | DROP 0 行（全删除）|
+| `knowledge_nodes` 当前列数 | 21 列（21=正确精简后规模）|
+| `entity_candidates` 当前列 | mention_count / max_salience / source_article_ids 全在；mentions JSONB 消失 |
+| `entity_profiles` 表 | DROP 完成（pg_tables 0 行）|
+| `uq_edges_from_to_type` UNIQUE 约束 | 存在 |
+| `summarizes` 边数 | 0 |
+| 数据保留 | 全 292 节点 / 92 article_nodes / 94 summary_nodes / 104 entity_nodes / 326 candidates 完整 |
+| candidates 计数器回填 | 326/326 with mention_count > 0；max_count=8，max_salience=0.5（fallback）|
+
+**端点验证（dev mode, /api/kb/v1/）**
+
+| 端点 | 结果 |
+|---|---|
+| `GET /openapi.json` | 8 端点全部可见 |
+| `GET /search` | 中文 query 返回 entity 节点 + score + why_matched=vector |
+| `GET /nodes/{id}` | 节点详情 + summaries[] + outline[] + doc_kind |
+| `POST /nodes/batch` | 批量返回 |
+| `GET /nodes/{id}/related` (mentioned_by) | 实际 article 列表 + weight |
+| `GET /timeline?entity_id=...` | 按时间排序的文章列表 |
+| `POST /api/kb/entities/{id}/regenerate` | 成功更新 `nodes.abstract`（确认 entity_profiles 删除后 regenerate 走新路径）|
+| `POST /api/briefing/generate` | sources.is_primary JOIN 路径不报错 |
+
+**未端到端验证**（需要真实 LLM 调用 + ingestion 完整链）
+- `POST /compare / /cite / /summarize_corpus` —— 接口存在、参数验证通过；实际 LLM 行为留待真实使用时检验
+- doc_kind 继承链 / embedding_model 标记 / tag 收敛 —— 新文章入库后才能填充，需要 ingestion-worker 重启后验证。当前 292 节点这两字段均为 NULL（预期；未做历史 backfill）
