@@ -156,6 +156,7 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
           source_updated_at = COALESCE(EXCLUDED.source_updated_at, source_items.source_updated_at),
           captured_at = COALESCE(EXCLUDED.captured_at, source_items.captured_at),
           effective_at = COALESCE(EXCLUDED.effective_at, source_items.effective_at),
+          doc_kind = COALESCE(EXCLUDED.doc_kind, source_items.doc_kind),
           raw_retention_policy = COALESCE(EXCLUDED.raw_retention_policy, source_items.raw_retention_policy),
           status = CASE
             WHEN source_items.status = 'succeeded' THEN source_items.status
@@ -239,6 +240,7 @@ async def _wechat2rss_source_map() -> dict[str, dict[str, Any]]:
         FROM sources
         WHERE type = 'wechat'
           AND config->>'provider' = 'wechat2rss'
+          AND deleted_at IS NULL
         """
     )
     result: dict[str, dict[str, Any]] = {}
@@ -289,6 +291,7 @@ async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depen
         WHERE type = 'wechat'
           AND config->>'provider' = 'wechat2rss'
           AND config->>'feed_id' = :feed_id
+          AND deleted_at IS NULL
         """,
         {"feed_id": feed_id},
     )
@@ -338,7 +341,7 @@ async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depen
         },
     )
     row = await database.database.fetch_one(
-        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     d = dict(row)
     if d.get("created_at"):
@@ -350,7 +353,8 @@ async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depen
 @router.get("/{source_id}/source-items")
 async def list_source_items(source_id: str, status: str | None = None, limit: int = 100):
     row = await database.database.fetch_one(
-        "SELECT id FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL",
+        {"id": source_id},
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -375,7 +379,8 @@ async def list_source_items(source_id: str, status: str | None = None, limit: in
 @router.post("/{source_id}/source-items", status_code=status.HTTP_201_CREATED)
 async def create_source_items(source_id: str, body: SourceItemsCreate):
     row = await database.database.fetch_one(
-        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id, user_id, type FROM sources WHERE id = :id AND deleted_at IS NULL",
+        {"id": source_id},
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -447,7 +452,7 @@ async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
 async def get_source(source_id: str):
     """获取单个 source 详情（含文章数）。"""
     row = await database.database.fetch_one(
-        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -461,6 +466,8 @@ async def get_source(source_id: str):
         d["last_fetched_at"] = d["last_fetched_at"].isoformat()
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
+    if d.get("deleted_at"):
+        d["deleted_at"] = d["deleted_at"].isoformat()
     return d
 
 
@@ -468,7 +475,7 @@ async def get_source(source_id: str):
 async def list_sources():
     """列出所有 sources（附带每个 source 的文章数）。"""
     rows = await database.database.fetch_all(
-        "SELECT * FROM sources ORDER BY created_at DESC"
+        "SELECT * FROM sources WHERE deleted_at IS NULL ORDER BY created_at DESC"
     )
     counts = await database.database.fetch_all(
         "SELECT source_id, COUNT(*) AS cnt FROM knowledge_nodes"
@@ -483,6 +490,8 @@ async def list_sources():
             d["last_fetched_at"] = d["last_fetched_at"].isoformat()
         if d.get("created_at"):
             d["created_at"] = d["created_at"].isoformat()
+        if d.get("deleted_at"):
+            d["deleted_at"] = d["deleted_at"].isoformat()
         result.append(d)
     return result
 
@@ -516,7 +525,7 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
         },
     )
     row = await database.database.fetch_one(
-        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     d = dict(row)
     if d.get("created_at"):
@@ -537,7 +546,8 @@ async def upload_to_source(
     """向已有 source 上传一批文件（支持多文件），存储并触发 ingestion-worker 处理。
     Source 是持久渠道，可随时追加内容。"""
     row = await database.database.fetch_one(
-        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id, user_id, type FROM sources WHERE id = :id AND deleted_at IS NULL",
+        {"id": source_id},
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -596,7 +606,8 @@ async def add_url_to_source(
 ):
     """向已有 URL source 追加一条或多条 URL，触发 ingestion-worker 处理。"""
     row = await database.database.fetch_one(
-        "SELECT id, user_id, type FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id, user_id, type FROM sources WHERE id = :id AND deleted_at IS NULL",
+        {"id": source_id},
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -639,7 +650,7 @@ async def add_url_to_source(
 async def trigger_fetch(source_id: str, _: dict = Depends(require_auth)):
     """触发 ingestion-worker 立即抓取指定 source。"""
     row = await database.database.fetch_one(
-        "SELECT id FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -656,7 +667,7 @@ async def trigger_fetch(source_id: str, _: dict = Depends(require_auth)):
 @router.put("/{source_id}")
 async def update_source(source_id: str, body: SourceUpdate):
     row = await database.database.fetch_one(
-        "SELECT id FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     if not row:
         raise HTTPException(404, "source 不存在")
@@ -686,20 +697,25 @@ async def update_source(source_id: str, body: SourceUpdate):
         )
 
     row = await database.database.fetch_one(
-        "SELECT * FROM sources WHERE id = :id", {"id": source_id}
+        "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
     d = dict(row)
     if d.get("last_fetched_at"):
         d["last_fetched_at"] = d["last_fetched_at"].isoformat()
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
+    if d.get("deleted_at"):
+        d["deleted_at"] = d["deleted_at"].isoformat()
     return d
 
 
 @router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_source(source_id: str, _: dict = Depends(require_auth)):
-    result = await database.database.execute(
-        "DELETE FROM sources WHERE id = :id", {"id": source_id}
+    row = await database.database.fetch_one(
+        "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
-    if result == 0:
+    if not row:
         raise HTTPException(404, "source 不存在")
+    await database.database.execute(
+        "UPDATE sources SET deleted_at = NOW() WHERE id = :id", {"id": source_id}
+    )

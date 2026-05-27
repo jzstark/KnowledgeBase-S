@@ -80,6 +80,9 @@ maintenance:
 
 briefing:
   topics_count:                 5
+  hours_back:                   24
+  batch_size:                   12
+  summary_chars:                150
 
 llm_output_tokens:
   article_analysis:             2048
@@ -88,6 +91,7 @@ llm_output_tokens:
   summary_gen:                  1024
   index_summary:                512
   hyde_abstract:                200
+  briefing_topics:              8192
   draft_generation:             4096
   compare:                      2048
   cite:                         2048
@@ -98,6 +102,7 @@ kb_public:
   search_top_k:                 10
   search_top_k_max:             50
   fetch_max_batch:              20
+  fetch_body_chars:             100000
   related_default_limit:        20
   related_limit_max:            100
   timeline_default_limit:       50

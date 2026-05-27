@@ -57,7 +57,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     captured_at = node["captured_at"].isoformat() if node.get("captured_at") else ""
     effective_at = node["effective_at"].isoformat() if node.get("effective_at") else ""
 
-    raw_ref = node["raw_ref"]
+    raw_ref = node.get("raw_ref") or {}
     if isinstance(raw_ref, str):
         raw_ref = json.loads(raw_ref)
     raw_ref_str = ""
@@ -101,7 +101,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     perspective_label = node.get("perspective_label") or perspective_val
     perspective_instruction = node.get("perspective_instruction") or perspective_val
     is_default = "true" if node.get("is_default") else "false"
-    extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}"
+    extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nraw_ref: {raw_ref_str}"
     if object_type == "entity":
         extra_fm = f"\ncanonical_name: {node.get('canonical_name') or title}\naliases: {aliases_yaml}\nsources: {sources_yaml}"
     elif object_type == "summary":
@@ -111,7 +111,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
             f"\nperspective_instruction: {perspective_instruction}\nis_default: {is_default}"
         )
     elif object_type == "index":
-        extra_fm = f"\nsource_type: {node['source_type'] or ''}\nraw_ref: {raw_ref_str}\nperspective: {perspective_val}"
+        extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nraw_ref: {raw_ref_str}\nperspective: {perspective_val}"
 
     content = f"""---
 id: {node_id}
@@ -143,7 +143,7 @@ updated_at: {updated_at}{relations_yaml}
 async def write_wiki_index(user_id: str) -> None:
     rows = await database.database.fetch_all(
         """
-        SELECT id, title, source_type, tags, object_type, created_at
+        SELECT id, title, tags, object_type, created_at
         FROM knowledge_nodes WHERE user_id = :user_id
         ORDER BY object_type, created_at DESC
         """,

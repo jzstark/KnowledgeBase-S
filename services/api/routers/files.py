@@ -64,7 +64,12 @@ async def get_tree():
     if raw_dir.exists():
         # 批量查出所有 raw_ref path → node_id 的映射
         rows = await database.database.fetch_all(
-            "SELECT id, raw_ref->>'path' AS path FROM knowledge_nodes WHERE user_id = :uid",
+            """
+            SELECT n.id, an.raw_ref->>'path' AS path
+            FROM knowledge_nodes n
+            JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.user_id = :uid
+            """,
             {"uid": USER_ID},
         )
         path_to_node: dict[str, str] = {r["path"]: r["id"] for r in rows if r["path"]}

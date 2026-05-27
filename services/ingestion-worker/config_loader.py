@@ -7,6 +7,24 @@ from pathlib import Path
 
 _PATH = Path("/app/shared_config/system.yaml")
 
+REQUIRED_KEYS = (
+    "doc_kind.values",
+    "doc_kind.default",
+    "ingestion.max_text_chars",
+    "ingestion.max_entity_page_sources",
+    "ingestion.rss_lookback_days",
+    "ingestion.context_nearby_entities",
+    "ingestion.context_top_candidates",
+    "ingestion.context_popular_tags",
+    "models.article_analysis",
+    "models.entity_page",
+    "embedding.model",
+    "embedding.dimensions",
+    "embedding.max_chars",
+    "llm_output_tokens.article_analysis",
+    "llm_output_tokens.entity_page",
+)
+
 try:
     _cfg: dict = yaml.safe_load(_PATH.read_text(encoding="utf-8")) or {}
 except FileNotFoundError:
@@ -26,3 +44,10 @@ def get(path: str, default=None):
         if v is None:
             return default
     return v
+
+
+def validate_required_keys() -> None:
+    """Fail startup if required system.yaml keys are missing."""
+    missing = [path for path in REQUIRED_KEYS if get(path, None) is None]
+    if missing:
+        raise RuntimeError(f"Missing required config keys in {_PATH}: {', '.join(missing)}")

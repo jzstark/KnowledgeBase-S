@@ -241,7 +241,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         conditions.append(f"n.object_type = ${len(params)}")
     if source_type:
         params.append(source_type)
-        conditions.append(f"n.source_type = ${len(params)}")
+        conditions.append(f"COALESCE(an.source_type, n.object_type) = ${len(params)}")
     time_clause = _time_filter_clause(params, since, until, time_basis)
     if time_clause:
         conditions.append(time_clause)
@@ -257,7 +257,8 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
             rows = await conn.raw_connection.fetch(
                 f"""
                 SELECT n.id, n.title, COALESCE(s.body, n.abstract) AS abstract,
-                       n.source_type, n.tags, n.object_type,
+                       COALESCE(an.source_type, n.object_type) AS source_type,
+                       n.tags, n.object_type,
                        {time_expr} AS effective_time,
                        CASE
                          WHEN n.object_type = 'summary' THEN
@@ -268,6 +269,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
                        END AS score
                 FROM knowledge_nodes n
                 LEFT JOIN summary_nodes s ON s.node_id = n.id
+                LEFT JOIN article_nodes an ON an.node_id = n.id
                 WHERE {" AND ".join(conditions)}
                 ORDER BY {order_by}
                 LIMIT ${limit_idx}
@@ -283,7 +285,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
             text_conditions.append(f"n.object_type = ${len(text_params)}")
         if source_type:
             text_params.append(source_type)
-            text_conditions.append(f"n.source_type = ${len(text_params)}")
+            text_conditions.append(f"COALESCE(an.source_type, n.object_type) = ${len(text_params)}")
         time_clause = _time_filter_clause(text_params, since, until, time_basis)
         if time_clause:
             text_conditions.append(time_clause)
@@ -293,10 +295,13 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
-                SELECT n.id, n.title, n.abstract, n.source_type, n.tags, n.object_type,
+                SELECT n.id, n.title, n.abstract,
+                       COALESCE(an.source_type, n.object_type) AS source_type,
+                       n.tags, n.object_type,
                        {time_expr} AS effective_time,
                        NULL::float AS score
                 FROM knowledge_nodes n
+                LEFT JOIN article_nodes an ON an.node_id = n.id
                 WHERE {" AND ".join(text_conditions)}
                 ORDER BY effective_time DESC
                 LIMIT ${limit_idx}
@@ -361,9 +366,12 @@ async def get_neighbors(node_id: str, depth: int = 1, user_id: str = USER_ID) ->
         visited_nodes.add(current_id)
         row = await database.database.fetch_one(
             """
-            SELECT id, title, abstract, source_type, tags, object_type, created_at
-            FROM knowledge_nodes
-            WHERE id = :id AND user_id = :user_id
+            SELECT n.id, n.title, n.abstract,
+                   COALESCE(an.source_type, n.object_type) AS source_type,
+                   n.tags, n.object_type, n.created_at
+            FROM knowledge_nodes n
+            LEFT JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.id = :id AND n.user_id = :user_id
             """,
             {"id": current_id, "user_id": user_id},
         )
@@ -426,9 +434,10 @@ async def get_neighbors(node_id: str, depth: int = 1, user_id: str = USER_ID) ->
 async def get_sources(node_id: str, user_id: str = USER_ID) -> dict[str, Any]:
     row = await database.database.fetch_one(
         """
-        SELECT id, title, object_type, source_item_id, source_node_ids, summary_of
-        FROM knowledge_nodes
-        WHERE id = :id AND user_id = :user_id
+        SELECT n.id, n.title, n.object_type, sn.summary_of, sn.source
+        FROM knowledge_nodes n
+        LEFT JOIN summary_nodes sn ON sn.node_id = n.id
+        WHERE n.id = :id AND n.user_id = :user_id
         """,
         {"id": node_id, "user_id": user_id},
     )
@@ -438,18 +447,30 @@ async def get_sources(node_id: str, user_id: str = USER_ID) -> dict[str, Any]:
     source_node_ids = [node_id]
     if row["summary_of"]:
         source_node_ids.append(row["summary_of"])
-    source_node_ids.extend(row["source_node_ids"] or [])
+    summary_source = row["source"]
+    if isinstance(summary_source, str) and summary_source:
+        summary_source = json.loads(summary_source)
+    if isinstance(summary_source, dict):
+        source_node_ids.extend(summary_source.get("source_node_ids") or [])
+    if row["object_type"] == "entity":
+        fact_rows = await database.database.fetch_all(
+            "SELECT article_id FROM entity_facts WHERE entity_id = :id AND article_id IS NOT NULL",
+            {"id": node_id},
+        )
+        source_node_ids.extend(r["article_id"] for r in fact_rows)
     source_node_ids = list(dict.fromkeys(source_node_ids))
 
     rows = await database.database.fetch_all(
         """
-        SELECT n.id AS node_id, n.title AS node_title, n.object_type, n.source_type,
-               n.raw_ref, n.source_item_id,
+        SELECT n.id AS node_id, n.title AS node_title, n.object_type,
+               COALESCE(an.source_type, n.object_type) AS source_type,
+               an.raw_ref, COALESCE(an.source_item_id, n.source_item_id) AS source_item_id,
                si.origin_ref, si.origin_ref_type, si.raw_snapshot_ref,
                si.extracted_text_ref, si.source_published_at,
                s.id AS source_id, s.name AS source_name, s.type AS configured_source_type
         FROM knowledge_nodes n
-        LEFT JOIN source_items si ON si.id = n.source_item_id
+        LEFT JOIN article_nodes an ON an.node_id = n.id
+        LEFT JOIN source_items si ON si.id = COALESCE(an.source_item_id, n.source_item_id)
         LEFT JOIN sources s ON s.id = COALESCE(si.source_id, n.source_id)
         WHERE n.user_id = :user_id AND n.id = ANY(:source_node_ids)
         ORDER BY n.created_at DESC

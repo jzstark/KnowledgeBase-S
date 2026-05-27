@@ -16,6 +16,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
+import config_loader
 from pipeline import run_book_pipeline, run_pipeline
 from sources.book import BookSource
 from sources.image import ImageSource
@@ -31,6 +32,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+config_loader.validate_required_keys()
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))

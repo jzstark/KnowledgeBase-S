@@ -154,6 +154,15 @@ async def promote_entity_candidates(user_id: str) -> dict:
                 "UPDATE entity_candidates SET promoted_entity_id = :eid WHERE id = :cid",
                 {"eid": entity_node_id, "cid": row["id"]},
             )
+            for article_id in source_ids:
+                await entity_insights.upsert_fact_from_mention(
+                    entity_node_id,
+                    article_id,
+                    canonical_name=row["canonical_name"],
+                    salience=max_salience or 0.5,
+                    user_id=user_id,
+                )
+            await entity_insights.refresh_entity_profile(entity_node_id)
             promoted_count += 1
         except Exception as e:
             print(f"[maintenance] failed to ingest entity {row['canonical_name']}: {e}")
@@ -172,7 +181,12 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
     import pathlib as _pathlib
 
     entity_row = await database.database.fetch_one(
-        "SELECT canonical_name, aliases FROM knowledge_nodes WHERE id = :id",
+        """
+        SELECT en.canonical_name, en.aliases
+        FROM knowledge_nodes n
+        JOIN entity_nodes en ON en.node_id = n.id
+        WHERE n.id = :id AND n.object_type = 'entity'
+        """,
         {"id": entity_id},
     )
     if not entity_row:
@@ -242,6 +256,7 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             """
             INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
             VALUES (:from_id, :to_id, 'mentions', :weight, 'backfill')
+            ON CONFLICT DO NOTHING
             """,
             {"from_id": art["id"], "to_id": entity_id, "weight": salience},
         )
@@ -253,17 +268,6 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             user_id=user_id,
         )
 
-        # Append article to entity's source_node_ids
-        await database.database.execute(
-            """
-            UPDATE knowledge_nodes
-            SET source_node_ids = array_append(COALESCE(source_node_ids, '{}'), :art_id),
-                updated_at = NOW()
-            WHERE id = :eid
-              AND NOT (:art_id = ANY(COALESCE(source_node_ids, '{}')))
-            """,
-            {"eid": entity_id, "art_id": art["id"]},
-        )
         wikilinks_added += 1
 
     return {"articles_scanned": len(articles), "wikilinks_added": wikilinks_added}
@@ -379,13 +383,16 @@ async def detect_embedding_model_drift(user_id: str = USER_ID) -> dict:
 
 
 async def cleanup_orphan_entities(user_id: str) -> dict:
-    """找出 source_node_ids 为空的 entity 节点，标记为待审核（打 tag: orphan）。"""
+    """找出没有 source-grounded facts 的 entity 节点，标记为待审核（打 tag: orphan）。"""
     rows = await database.database.fetch_all(
         """
-        SELECT id, title, tags FROM knowledge_nodes
-        WHERE user_id = :uid
-          AND object_type = 'entity'
-          AND (source_node_ids IS NULL OR source_node_ids = '{}')
+        SELECT n.id, n.title, n.tags
+        FROM knowledge_nodes n
+        LEFT JOIN entity_facts ef ON ef.entity_id = n.id
+        WHERE n.user_id = :uid
+          AND n.object_type = 'entity'
+        GROUP BY n.id
+        HAVING COUNT(ef.id) = 0
         """,
         {"uid": user_id},
     )
@@ -742,23 +749,20 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
             await database.database.execute(
                 f"""
                 INSERT INTO knowledge_nodes
-                  (id, user_id, title, abstract, embedding, source_type, source_id,
-                   raw_ref, tags, object_type, source_node_ids, created_at)
+                  (id, user_id, title, abstract, embedding, source_id,
+                   tags, object_type, created_at)
                 VALUES
                   (:id, :uid, :title, :abstract, '{emb_lit}'::vector,
-                   :source_type, :source_id, :raw_ref, :tags,
-                   :object_type, :source_node_ids, :created_at)
+                   :source_id, :tags,
+                   :object_type, :created_at)
                 """,
                 {
                     "id": node_id, "uid": user_id,
                     "title": str(m.get("title") or node_id),
                     "abstract": abstract,
-                    "source_type": source_type,
                     "source_id": source_id,
-                    "raw_ref": database.jsonb(raw_ref_dict),
                     "tags": tags,
                     "object_type": object_type,
-                    "source_node_ids": source_node_ids,
                     "created_at": created_at,
                 },
             )
@@ -964,22 +968,30 @@ async def rebuild_from_raw(
     base_ids = {r["id"] for r in node_rows}
     summary_rows = await database.database.fetch_all(
         """
-        SELECT id
-        FROM knowledge_nodes
-        WHERE user_id = :uid
-          AND object_type = 'summary'
-          AND summary_of = ANY(:base_ids)
+        SELECT n.id
+        FROM knowledge_nodes n
+        JOIN summary_nodes sn ON sn.node_id = n.id
+        WHERE n.user_id = :uid
+          AND n.object_type = 'summary'
+          AND sn.summary_of = ANY(:base_ids)
         """,
         {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
     )
     summary_ids = {r["id"] for r in summary_rows}
     entity_rows = await database.database.fetch_all(
         """
-        SELECT id
-        FROM knowledge_nodes
-        WHERE user_id = :uid
-          AND object_type = 'entity'
-          AND source_node_ids && :base_ids
+        SELECT DISTINCT n.id
+        FROM knowledge_nodes n
+        LEFT JOIN entity_facts ef ON ef.entity_id = n.id
+        LEFT JOIN knowledge_edges ke
+          ON ke.to_node_id = n.id
+         AND ke.relation_type IN ('mentions', 'wikilink')
+        WHERE n.user_id = :uid
+          AND n.object_type = 'entity'
+          AND (
+            ef.article_id = ANY(:base_ids)
+            OR ke.from_node_id = ANY(:base_ids)
+          )
         """,
         {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
     )

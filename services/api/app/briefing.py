@@ -18,6 +18,7 @@ import anthropic
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+import config_loader
 import database
 import prompt_loader
 from auth import require_auth
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
-BATCH_SIZE = 12  # 初始批次大小；命中 max_tokens 时会自动对半拆分递归重试
+BATCH_SIZE = config_loader.get("briefing.batch_size", 12)
 KNOWLEDGE_TIME_SQL = "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at)"
 
 
@@ -89,7 +90,7 @@ async def generate_briefing(
       - 删除今日已有选题，从最近 N 小时节点重新生成
     """
     settings = await get_settings_dict()
-    hours_back = int(settings.get("briefing_hours_back", 24))
+    hours_back = int(settings.get("briefing_hours_back", config_loader.get("briefing.hours_back", 24)))
     topics_setting = settings.get("topics", "")
     today = date.today()
 
@@ -182,7 +183,7 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
         return []
 
     summaries = "\n".join(
-        f"[{i+1}] {n['title']}：{n.get('summary', '')[:150]}"
+        f"[{i+1}] {n['title']}：{n.get('summary', '')[:config_loader.get('briefing.summary_chars', 150)]}"
         for i, n in enumerate(batch)
     )
     prompt = prompt_loader.fill(
@@ -191,8 +192,8 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
         summaries=summaries,
     )
     message = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=8192,
+        model=config_loader.get("models.briefing_topics", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.briefing_topics", 8192),
         messages=[{"role": "user", "content": prompt}],
     )
 

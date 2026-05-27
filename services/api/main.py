@@ -18,6 +18,7 @@ AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    config_loader.validate_required_keys()
     await database.init()
     yield
     await database.database.disconnect()

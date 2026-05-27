@@ -111,7 +111,12 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     raw_path = (body.raw_ref or {}).get("path")
     if raw_path:
         existing = await database.database.fetch_one(
-            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND raw_ref->>'path' = :path",
+            """
+            SELECT n.id
+            FROM knowledge_nodes n
+            JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.user_id = :uid AND an.raw_ref->>'path' = :path
+            """,
             {"uid": body.user_id, "path": raw_path},
         )
         if existing:
@@ -119,7 +124,12 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     raw_url = (body.raw_ref or {}).get("url")
     if raw_url:
         existing = await database.database.fetch_one(
-            "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND raw_ref->>'url' = :url",
+            """
+            SELECT n.id
+            FROM knowledge_nodes n
+            JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.user_id = :uid AND an.raw_ref->>'url' = :url
+            """,
             {"uid": body.user_id, "url": raw_url},
         )
         if existing:
@@ -204,14 +214,14 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
-          (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, object_type, source_node_ids,
+          (id, user_id, title, abstract, embedding, source_id,
+           tags, object_type,
            source_published_at, source_updated_at, captured_at,
            effective_at, source_item_id, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
-           :source_type, :source_id, :raw_ref, :tags,
-           :object_type, :source_node_ids,
+           :source_id, :tags,
+           :object_type,
            :source_published_at, :source_updated_at, :captured_at,
            :effective_at, :source_item_id, :doc_kind, :embedding_model)
         """,
@@ -220,12 +230,9 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "user_id": body.user_id,
             "title": body.title,
             "abstract": body.abstract,
-            "source_type": body.source_type,
             "source_id": body.source_id,
-            "raw_ref": database.jsonb(body.raw_ref),
             "tags": body.tags,
             "object_type": body.object_type,
-            "source_node_ids": body.source_node_ids,
             "source_published_at": body.source_published_at,
             "source_updated_at": body.source_updated_at,
             "captured_at": body.captured_at or datetime.now(timezone.utc),
@@ -455,7 +462,8 @@ async def search(
     async with database.database.connection() as conn:
         sql = f"""
             SELECT n.id, n.user_id, n.title, COALESCE(s.body, n.abstract) AS abstract,
-                   n.source_type, n.tags, n.object_type, n.created_at,
+                   COALESCE(an.source_type, n.object_type) AS source_type,
+                   n.tags, n.object_type, n.created_at,
                    s.perspective_label AS perspective_label,
                    s.perspective_instruction AS perspective_instruction,
                    s.is_default AS is_default,
@@ -468,6 +476,7 @@ async def search(
                    END AS score
             FROM knowledge_nodes n
             LEFT JOIN summary_nodes s ON s.node_id = n.id
+            LEFT JOIN article_nodes an ON an.node_id = n.id
             WHERE {where}
             ORDER BY score DESC
             LIMIT ${limit_idx}
@@ -643,11 +652,11 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
-          (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
+          (id, user_id, title, abstract, embedding, source_id,
            tags, object_type)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
-           'manual', :source_id, :raw_ref, :tags, 'index')
+           :source_id, :tags, 'index')
         """,
         {
             "id": index_id,
@@ -655,7 +664,6 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
             "title": title,
             "abstract": description,
             "source_id": index_id,
-            "raw_ref": database.jsonb({}),
             "tags": body.tags,
         },
     )
@@ -852,24 +860,21 @@ async def generate_summary_job(
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
-          (id, user_id, title, abstract, embedding, source_type, source_id, raw_ref,
-           tags, object_type, source_node_ids)
+          (id, user_id, title, abstract, embedding, source_id,
+           tags, object_type)
         VALUES
           (:id, :user_id, :title, :abstract, '{body_embedding_literal}'::vector,
-           :source_type, :source_id, :raw_ref, :tags,
-           :object_type, :source_node_ids)
+           :source_id, :tags,
+           :object_type)
         """,
         {
             "id": summary_id,
             "user_id": user_id,
             "title": summary_title,
             "abstract": summary_content,
-            "source_type": "summary",
             "source_id": node_id,
-            "raw_ref": database.jsonb({}),
             "tags": [],
             "object_type": "summary",
-            "source_node_ids": [node_id],
         },
     )
     await object_nodes.upsert_object_node(
@@ -952,10 +957,12 @@ async def revise_summary_job(
 
     summary = await database.database.fetch_one(
         """
-        SELECT id, user_id, title, abstract, object_type, summary_of, perspective,
-               perspective_label, perspective_instruction, is_default
-        FROM knowledge_nodes
-        WHERE id = :id AND user_id = :user_id
+        SELECT n.id, n.user_id, n.title, COALESCE(s.body, n.abstract) AS abstract,
+               n.object_type, s.summary_of, s.perspective_label,
+               s.perspective_instruction, s.is_default
+        FROM knowledge_nodes n
+        LEFT JOIN summary_nodes s ON s.node_id = n.id
+        WHERE n.id = :id AND n.user_id = :user_id
         """,
         {"id": node_id, "user_id": user_id},
     )
@@ -999,44 +1006,26 @@ async def revise_summary_job(
     body_embedding = await _embed_text(revised_content)
     body_embedding_literal = _vector_literal(body_embedding)
     perspective_changed = perspective_label_input is not None or perspective_instruction_input is not None
-    perspective_label = summary["perspective_label"] or summary["perspective"] or None
-    perspective_instruction = summary["perspective_instruction"] or summary["perspective"] or None
+    perspective_label = summary["perspective_label"] or None
+    perspective_instruction = summary["perspective_instruction"] or None
     is_default = bool(summary["is_default"])
-    perspective_update_sql = ""
     params = {"id": node_id, "abstract": revised_content}
     perspective_embedding_literal = None
     if perspective_changed:
         perspective_label, perspective_instruction, is_default = _summary_perspective(
             perspective_label_input,
             perspective_instruction_input,
-            summary["perspective"],
+            None,
         )
         perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
         perspective_embedding_literal = _vector_literal(perspective_embedding)
-        perspective_update_sql = f""",
-            perspective = :perspective,
-            perspective_label = :perspective_label,
-            perspective_instruction = :perspective_instruction,
-            perspective_embedding = '{perspective_embedding_literal}'::vector,
-            is_default = :is_default
-        """
-        params.update(
-            {
-                "perspective": None if is_default else perspective_label,
-                "perspective_label": perspective_label,
-                "perspective_instruction": perspective_instruction,
-                "is_default": is_default,
-            }
-        )
 
     await database.database.execute(
         f"""
         UPDATE knowledge_nodes
         SET abstract = :abstract,
             embedding = '{body_embedding_literal}'::vector,
-            body_embedding = '{body_embedding_literal}'::vector,
             updated_at = NOW()
-            {perspective_update_sql}
         WHERE id = :id
         """,
         params,
@@ -1090,8 +1079,7 @@ async def revise_summary(
 
     summary = await database.database.fetch_one(
         """
-        SELECT id, user_id, title, abstract, object_type, summary_of, perspective,
-               perspective_label, perspective_instruction, is_default
+        SELECT id, user_id, object_type
         FROM knowledge_nodes WHERE id = :id
         """,
         {"id": node_id},
@@ -1168,7 +1156,14 @@ async def get_graph(root: str, depth: int = Query(2, ge=1, le=3)):
         visited_nodes.add(node_id)
 
         row = await database.database.fetch_one(
-            "SELECT id, title, abstract, source_type, tags, object_type, created_at FROM knowledge_nodes WHERE id = :id",
+            """
+            SELECT n.id, n.title, n.abstract,
+                   COALESCE(an.source_type, n.object_type) AS source_type,
+                   n.tags, n.object_type, n.created_at
+            FROM knowledge_nodes n
+            LEFT JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.id = :id
+            """,
             {"id": node_id},
         )
         if not row:
@@ -1236,22 +1231,22 @@ async def list_nodes(
     """分页列出节点，支持文本搜索、标签和类型过滤，无需认证。"""
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
-    conditions = ["user_id = $1"]
+    conditions = ["n.user_id = $1"]
     params: list = [USER_ID]
 
     if tag_list:
         placeholders = ", ".join(f"${i + 2}" for i in range(len(tag_list)))
-        conditions.append(f"tags && ARRAY[{placeholders}]::text[]")
+        conditions.append(f"n.tags && ARRAY[{placeholders}]::text[]")
         params.extend(tag_list)
 
     if q and q.strip():
         qi = len(params) + 1
-        conditions.append(f"(title ILIKE ${qi} OR abstract ILIKE ${qi})")
+        conditions.append(f"(n.title ILIKE ${qi} OR n.abstract ILIKE ${qi})")
         params.append(f"%{q.strip()}%")
 
     if type:
         ti = len(params) + 1
-        conditions.append(f"object_type = ${ti}")
+        conditions.append(f"n.object_type = ${ti}")
         params.append(type)
 
     where = " AND ".join(conditions)
@@ -1260,14 +1255,17 @@ async def list_nodes(
 
     async with database.database.connection() as conn:
         total = await conn.raw_connection.fetchval(
-            f"SELECT COUNT(*) FROM knowledge_nodes WHERE {where}", *params
+            f"SELECT COUNT(*) FROM knowledge_nodes n WHERE {where}", *params
         )
         rows = await conn.raw_connection.fetch(
             f"""
-            SELECT id, title, abstract, source_type, tags, object_type, created_at
-            FROM knowledge_nodes
+            SELECT n.id, n.title, n.abstract,
+                   COALESCE(an.source_type, n.object_type) AS source_type,
+                   n.tags, n.object_type, n.created_at
+            FROM knowledge_nodes n
+            LEFT JOIN article_nodes an ON an.node_id = n.id
             WHERE {where}
-            ORDER BY created_at DESC
+            ORDER BY n.created_at DESC
             LIMIT ${limit_idx} OFFSET ${offset_idx}
             """,
             *params, limit, offset,
@@ -1305,14 +1303,16 @@ async def get_full_graph(
     async with database.database.connection() as conn:
         node_rows = await conn.raw_connection.fetch(
             f"""
-            SELECT n.id, n.title, n.source_type, n.tags, n.object_type,
+            SELECT n.id, n.title, COALESCE(an.source_type, n.object_type) AS source_type,
+                   n.tags, n.object_type,
                    COUNT(e.id) FILTER (
                      WHERE e.relation_type NOT IN ('extends', 'background_of', 'supports', 'contradicts', 'part_of')
                    )::int AS degree
             FROM knowledge_nodes n
+            LEFT JOIN article_nodes an ON an.node_id = n.id
             LEFT JOIN knowledge_edges e ON e.from_node_id = n.id OR e.to_node_id = n.id
             WHERE n.user_id = $1 {type_filter}
-            GROUP BY n.id
+            GROUP BY n.id, an.source_type
             ORDER BY n.created_at DESC
             LIMIT ${limit_idx}
             """,
@@ -1394,10 +1394,11 @@ async def entity_analyze_context(body: dict):
     async with database.database.connection() as conn:
         entity_rows = await conn.raw_connection.fetch(
             f"""
-            SELECT id, title, canonical_name
-            FROM knowledge_nodes
-            WHERE user_id = $1 AND object_type = 'entity' AND embedding IS NOT NULL
-            ORDER BY embedding <=> '{embedding_literal}'::vector
+            SELECT n.id, n.title, COALESCE(en.canonical_name, n.title) AS canonical_name
+            FROM knowledge_nodes n
+            LEFT JOIN entity_nodes en ON en.node_id = n.id
+            WHERE n.user_id = $1 AND n.object_type = 'entity' AND n.embedding IS NOT NULL
+            ORDER BY n.embedding <=> '{embedding_literal}'::vector
             LIMIT {nearby_limit}
             """,
             USER_ID,
@@ -1465,20 +1466,6 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
 
     for ent in body.entities:
         if ent.matches_existing_entity_id:
-            # Append article to existing entity's source list
-            await database.database.execute(
-                """
-                UPDATE knowledge_nodes
-                SET source_node_ids = array_append(
-                    COALESCE(source_node_ids, '{}'),
-                    :article_id
-                ),
-                updated_at = NOW()
-                WHERE id = :eid
-                  AND NOT (:article_id = ANY(COALESCE(source_node_ids, '{}')))
-                """,
-                {"eid": ent.matches_existing_entity_id, "article_id": body.article_id},
-            )
             await entity_insights.upsert_fact_from_mention(
                 ent.matches_existing_entity_id,
                 body.article_id,

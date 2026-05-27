@@ -64,23 +64,36 @@ async def fetch_reference_sources(node_ids: list[str], user_id: str = USER_ID) -
     rows = await database.database.fetch_all(
         """
         WITH seed_nodes AS (
-            SELECT id, summary_of, source_node_ids
-            FROM knowledge_nodes
-            WHERE user_id = :user_id AND id = ANY(:seed_ids)
+            SELECT n.id, n.object_type, sn.summary_of, sn.source
+            FROM knowledge_nodes n
+            LEFT JOIN summary_nodes sn ON sn.node_id = n.id
+            WHERE n.user_id = :user_id AND n.id = ANY(:seed_ids)
         ),
         expanded_ids AS (
             SELECT id FROM seed_nodes
             UNION
             SELECT summary_of FROM seed_nodes WHERE summary_of IS NOT NULL
             UNION
-            SELECT unnest(source_node_ids) FROM seed_nodes
+            SELECT jsonb_array_elements_text(
+                COALESCE(COALESCE(source, '{}'::jsonb)->'source_node_ids', '[]'::jsonb)
+            )
+            FROM seed_nodes
+            WHERE object_type = 'summary'
+            UNION
+            SELECT ef.article_id
+            FROM entity_facts ef
+            JOIN seed_nodes sn ON sn.id = ef.entity_id
+            WHERE sn.object_type = 'entity' AND ef.article_id IS NOT NULL
         )
-        SELECT n.id, n.title, n.object_type, n.source_type, n.raw_ref,
+        SELECT n.id, n.title, n.object_type,
+               COALESCE(an.source_type, n.object_type) AS source_type,
+               an.raw_ref,
                si.origin_ref, si.source_published_at,
                s.name AS source_name
         FROM expanded_ids e
         JOIN knowledge_nodes n ON n.id = e.id
-        LEFT JOIN source_items si ON si.id = n.source_item_id
+        LEFT JOIN article_nodes an ON an.node_id = n.id
+        LEFT JOIN source_items si ON si.id = COALESCE(an.source_item_id, n.source_item_id)
         LEFT JOIN sources s ON s.id = COALESCE(si.source_id, n.source_id)
         WHERE n.user_id = :user_id
           AND n.object_type IN ('article', 'index')
@@ -364,7 +377,12 @@ async def layered_retrieval(
     if top_entity_ids:
         ids_str = ", ".join(f"'{i}'" for i in top_entity_ids)
         rows = await database.database.fetch_all(
-            f"SELECT id, title, canonical_name, abstract, tags FROM knowledge_nodes WHERE id IN ({ids_str})"
+            f"""
+            SELECT n.id, n.title, en.canonical_name, n.abstract, n.tags
+            FROM knowledge_nodes n
+            LEFT JOIN entity_nodes en ON en.node_id = n.id
+            WHERE n.id IN ({ids_str})
+            """
         )
         node_map = {r["id"]: dict(r) for r in rows}
         for eid in top_entity_ids:

@@ -21,12 +21,9 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     title TEXT,
     abstract TEXT,
     embedding vector(1536),
-    source_type VARCHAR,
     source_id VARCHAR,
-    raw_ref JSONB,
     tags TEXT[],
     object_type VARCHAR(16) NOT NULL DEFAULT 'article',
-    source_node_ids TEXT[] DEFAULT '{}',
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
     source_published_at TIMESTAMPTZ,
     source_updated_at TIMESTAMPTZ,
@@ -253,8 +250,8 @@ CREATE TABLE IF NOT EXISTS user_settings (
 );
 
 ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
+ALTER TABLE IF EXISTS topics ADD COLUMN IF NOT EXISTS source_node_ids TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS object_type VARCHAR(16) NOT NULL DEFAULT 'article';
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_node_ids TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW();
@@ -504,6 +501,67 @@ async def init():
             await database.execute("ALTER TABLE knowledge_nodes DROP COLUMN summary")
         else:
             await database.execute("ALTER TABLE knowledge_nodes RENAME COLUMN summary TO abstract")
+
+    has_node_source_type = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='source_type'"
+    )
+    has_node_raw_ref = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='raw_ref'"
+    )
+    has_node_source_node_ids = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='source_node_ids'"
+    )
+    if has_node_source_type or has_node_raw_ref:
+        source_type_expr = "source_type" if has_node_source_type else "object_type"
+        raw_ref_expr = "raw_ref" if has_node_raw_ref else "'{}'::jsonb"
+        await database.execute(
+            f"""
+            INSERT INTO article_nodes
+              (node_id, source_item_id, raw_ref, source_type, source_published_at,
+               source_updated_at, captured_at, effective_at, tags, status)
+            SELECT id, source_item_id, {raw_ref_expr}, {source_type_expr}, source_published_at,
+                   source_updated_at, captured_at, effective_at, tags, 'active'
+            FROM knowledge_nodes
+            WHERE object_type = 'article'
+            ON CONFLICT (node_id) DO UPDATE SET
+              source_item_id = COALESCE(article_nodes.source_item_id, EXCLUDED.source_item_id),
+              raw_ref = CASE
+                WHEN article_nodes.raw_ref IS NULL OR article_nodes.raw_ref = '{{}}'::jsonb
+                THEN EXCLUDED.raw_ref
+                ELSE article_nodes.raw_ref
+              END,
+              source_type = COALESCE(article_nodes.source_type, EXCLUDED.source_type),
+              source_published_at = COALESCE(article_nodes.source_published_at, EXCLUDED.source_published_at),
+              source_updated_at = COALESCE(article_nodes.source_updated_at, EXCLUDED.source_updated_at),
+              captured_at = COALESCE(article_nodes.captured_at, EXCLUDED.captured_at),
+              effective_at = COALESCE(article_nodes.effective_at, EXCLUDED.effective_at),
+              tags = COALESCE(article_nodes.tags, EXCLUDED.tags),
+              updated_at = NOW()
+            """
+        )
+    if has_node_source_node_ids:
+        await database.execute(
+            """
+            UPDATE summary_nodes sn
+            SET source = COALESCE(sn.source, '{}'::jsonb)
+              || jsonb_build_object('source_node_ids', kn.source_node_ids)
+            FROM knowledge_nodes kn
+            WHERE kn.id = sn.node_id
+              AND kn.source_node_ids IS NOT NULL
+              AND cardinality(kn.source_node_ids) > 0
+            """
+        )
+    for column in ("source_type", "raw_ref", "source_node_ids"):
+        exists = await database.fetch_one(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='knowledge_nodes' AND column_name=:column",
+            {"column": column},
+        )
+        if exists:
+            await database.execute(f"ALTER TABLE knowledge_nodes DROP COLUMN {column}")
 
     # （延后项 3 之前曾在此添加 fk_summary_of FK；summary_of 列已从 knowledge_nodes
     # 删除，约束随 DROP COLUMN 一并消失，无需再添加）

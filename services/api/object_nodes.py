@@ -1,6 +1,60 @@
+import json
 from typing import Any
 
 import database
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+async def fetch_source_node_ids(node_id: str, object_type: str) -> list[str]:
+    if object_type == "summary":
+        row = await database.database.fetch_one(
+            "SELECT summary_of, source FROM summary_nodes WHERE node_id = :node_id",
+            {"node_id": node_id},
+        )
+        if not row:
+            return []
+        source = _json_dict(row["source"])
+        ids = [row["summary_of"]] if row["summary_of"] else []
+        ids.extend(source.get("source_node_ids") or [])
+        return list(dict.fromkeys(str(i) for i in ids if i))
+
+    if object_type == "entity":
+        rows = await database.database.fetch_all(
+            """
+            SELECT article_id
+            FROM entity_facts
+            WHERE entity_id = :node_id AND article_id IS NOT NULL
+            ORDER BY fact_time DESC NULLS LAST, updated_at DESC
+            """,
+            {"node_id": node_id},
+        )
+        ids = [r["article_id"] for r in rows if r["article_id"]]
+        if not ids:
+            edge_rows = await database.database.fetch_all(
+                """
+                SELECT from_node_id
+                FROM knowledge_edges
+                WHERE to_node_id = :node_id
+                  AND relation_type IN ('mentions', 'wikilink')
+                ORDER BY id DESC
+                """,
+                {"node_id": node_id},
+            )
+            ids = [r["from_node_id"] for r in edge_rows if r["from_node_id"]]
+        return list(dict.fromkeys(ids))
+
+    return []
 
 
 async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, Any]) -> None:
@@ -161,21 +215,29 @@ async def fetch_node_with_object_fields(node_id: str) -> dict[str, Any] | None:
                 node[key] = extra[key]
         node["article_status"] = extra.get("status")
     elif object_type == "summary":
-        node["summary_of"] = extra.get("summary_of") or node.get("summary_of")
-        node["perspective_label"] = extra.get("perspective_label") or node.get("perspective_label")
-        node["perspective_instruction"] = extra.get("perspective_instruction") or node.get("perspective_instruction")
-        node["is_default"] = extra.get("is_default") if extra.get("is_default") is not None else node.get("is_default")
+        node["source_type"] = "summary"
+        node["raw_ref"] = {}
+        node["summary_of"] = extra.get("summary_of")
+        node["perspective_label"] = extra.get("perspective_label")
+        node["perspective_instruction"] = extra.get("perspective_instruction")
+        node["is_default"] = extra.get("is_default") if extra.get("is_default") is not None else False
         if extra.get("body") is not None:
             node["abstract"] = extra["body"]
         node["summary_source"] = extra.get("source")
     elif object_type == "entity":
-        node["canonical_name"] = extra.get("canonical_name") or node.get("canonical_name")
-        node["aliases"] = extra.get("aliases") if extra.get("aliases") is not None else node.get("aliases")
+        node["source_type"] = "entity"
+        node["raw_ref"] = {}
+        node["canonical_name"] = extra.get("canonical_name") or node.get("title")
+        node["aliases"] = extra.get("aliases") if extra.get("aliases") is not None else []
         node["entity_type"] = extra.get("entity_type")
         node["merged_into"] = extra.get("merged_into")
     elif object_type == "index":
+        node["source_type"] = "index"
+        node["raw_ref"] = {}
         node["description"] = extra.get("description")
         node["rollup_instruction"] = extra.get("rollup_instruction")
         node["abstract_stale"] = extra.get("abstract_stale")
+
+    node["source_node_ids"] = await fetch_source_node_ids(node_id, object_type)
 
     return node
