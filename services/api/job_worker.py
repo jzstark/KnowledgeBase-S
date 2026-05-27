@@ -15,7 +15,7 @@ async def run_job(job: dict) -> dict:
     user_id = job["user_id"]
 
     if job_type == "generate_summary":
-        from routers import kb
+        from kb import internal as kb
 
         return await kb.generate_summary_job(
             payload["node_id"],
@@ -24,7 +24,7 @@ async def run_job(job: dict) -> dict:
             user_id,
         )
     if job_type == "revise_summary":
-        from routers import kb
+        from kb import internal as kb
 
         return await kb.revise_summary_job(
             payload["node_id"],
@@ -42,9 +42,9 @@ async def run_job(job: dict) -> dict:
             only_stale=bool(payload.get("only_stale", False)),
         )
     if job_type == "rebuild_wiki":
-        from routers import kb
+        from kb import wiki
 
-        return await kb._do_rebuild_wiki(user_id)
+        return await wiki.rebuild_wiki(user_id)
     if job_type == "run_maintenance":
         from maintenance import run_maintenance
 

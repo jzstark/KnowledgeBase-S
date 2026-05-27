@@ -26,14 +26,9 @@ import database
 import object_nodes
 import prompt_loader
 from auth import require_auth_or_service_token
-from kb_tools import (
-    USER_ID,
-    _embed_query,
-    _is_visible_edge,
-    _read_wiki_body,
-    _vector_literal,
-    claude_client,
-)
+from kb.common import USER_ID, _is_visible_edge, _vector_literal
+from kb.retrieval import _embed_query, claude_client
+from kb.wiki import _read_wiki_body
 
 router = APIRouter(tags=["KB Public"])
 

@@ -21,7 +21,8 @@ from pydantic import BaseModel
 import database
 import prompt_loader
 from auth import require_auth
-from routers.settings import get_settings_dict
+from app.settings import get_settings_dict
+from kb.public_service import fetch_briefing_source_articles
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
@@ -117,23 +118,7 @@ async def generate_briefing(
             since = (datetime.utcnow() - timedelta(hours=hours_back)).strftime("%Y-%m-%d %H:%M:%S")
             node_cutoff = f"{KNOWLEDGE_TIME_SQL} >= '{since}'::timestamptz"
 
-    # 文章是否进入 briefing 取决于 source.is_primary（来源级配置），不再读 node.is_primary
-    # KNOWLEDGE_TIME_SQL 与 node_cutoff 中的列名（effective_at / source_published_at / captured_at /
-    # ingested_at / created_at）只在 knowledge_nodes 出现，sources 表无同名列，PG 会自动绑定到 n.*
-    rows = await database.database.fetch_all(
-        f"""
-        SELECT n.id, n.title, n.abstract, n.tags, n.created_at,
-               {KNOWLEDGE_TIME_SQL} AS knowledge_time
-        FROM knowledge_nodes n
-        JOIN sources s ON s.id = n.source_id
-        WHERE n.user_id = :user_id
-          AND s.is_primary = true
-          AND n.object_type = 'article'
-          AND {node_cutoff}
-        ORDER BY knowledge_time DESC
-        """,
-        {"user_id": USER_ID},
-    )
+    rows = await fetch_briefing_source_articles(USER_ID, node_cutoff)
 
     if rows:
         node_list = [

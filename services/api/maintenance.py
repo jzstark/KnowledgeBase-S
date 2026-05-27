@@ -419,7 +419,7 @@ async def aggregate_index_abstracts(
     """
     import prompt_loader
     from openai import AsyncOpenAI
-    from routers.kb import write_wiki_node
+    from kb.wiki import write_wiki_node
 
     claude_api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
     openai_api_key = os.environ.get("OPENAI_API_KEY", "")
