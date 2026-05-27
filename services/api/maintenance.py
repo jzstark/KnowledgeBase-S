@@ -313,6 +313,75 @@ async def migrate_wikilink_edges() -> dict:
 
 # ── 7. 孤儿 Entity 清理 ────────────────────────────────────────────────────────
 
+async def detect_embedding_model_drift(user_id: str = USER_ID) -> dict:
+    """
+    检测 embedding_model 与当前 config 不匹配（或 NULL）的节点数量。
+    仅做检测+报告，不自动重算——重算 embedding 是大动作，应由人工触发专门的
+    re-embed 作业，避免与 maintenance 普通流程混合。
+
+    返回：{current_model, mismatched_total, by_model, by_object_type, sample_ids}
+    """
+    current_model = config_loader.get("embedding.model", "text-embedding-3-small")
+
+    summary_row = await database.database.fetch_one(
+        """
+        SELECT COUNT(*) AS n
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND embedding IS NOT NULL
+          AND (embedding_model IS NULL OR embedding_model <> :model)
+        """,
+        {"uid": user_id, "model": current_model},
+    )
+    mismatched_total = int(summary_row["n"] or 0) if summary_row else 0
+
+    by_model_rows = await database.database.fetch_all(
+        """
+        SELECT COALESCE(embedding_model, '(null)') AS model, COUNT(*) AS n
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND embedding IS NOT NULL
+          AND (embedding_model IS NULL OR embedding_model <> :model)
+        GROUP BY COALESCE(embedding_model, '(null)')
+        ORDER BY n DESC
+        """,
+        {"uid": user_id, "model": current_model},
+    )
+    by_object_rows = await database.database.fetch_all(
+        """
+        SELECT object_type, COUNT(*) AS n
+        FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND embedding IS NOT NULL
+          AND (embedding_model IS NULL OR embedding_model <> :model)
+        GROUP BY object_type
+        ORDER BY n DESC
+        """,
+        {"uid": user_id, "model": current_model},
+    )
+    sample_rows = await database.database.fetch_all(
+        """
+        SELECT id FROM knowledge_nodes
+        WHERE user_id = :uid
+          AND embedding IS NOT NULL
+          AND (embedding_model IS NULL OR embedding_model <> :model)
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        {"uid": user_id, "model": current_model},
+    )
+
+    return {
+        "current_model": current_model,
+        "mismatched_total": mismatched_total,
+        "by_model": [{"model": r["model"], "count": int(r["n"])} for r in by_model_rows],
+        "by_object_type": [
+            {"object_type": r["object_type"], "count": int(r["n"])} for r in by_object_rows
+        ],
+        "sample_ids": [r["id"] for r in sample_rows],
+    }
+
+
 async def cleanup_orphan_entities(user_id: str) -> dict:
     """找出 source_node_ids 为空的 entity 节点，标记为待审核（打 tag: orphan）。"""
     rows = await database.database.fetch_all(
@@ -1202,6 +1271,13 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     index_abstract_result = await aggregate_index_abstracts(user_id)
     print(f"[maintenance] Index abstract aggregation: {index_abstract_result}", flush=True)
 
+    drift_result = await detect_embedding_model_drift(user_id)
+    print(
+        f"[maintenance] Embedding model drift: {drift_result['mismatched_total']} "
+        f"nodes do not match current model '{drift_result['current_model']}'",
+        flush=True,
+    )
+
     summary = {
         "legacy_llm_edge_cleanup": legacy_cleanup_result,
         "wikilink_migration": migrate_result,
@@ -1213,6 +1289,7 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "orphan_entities": orphan_result,
         "summarizes_backfill": summarizes_result,
         "index_abstract": index_abstract_result,
+        "embedding_model_drift": drift_result,
     }
     print(f"[maintenance] Done: {json.dumps(summary, ensure_ascii=False)}", flush=True)
     return summary

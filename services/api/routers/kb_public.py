@@ -852,19 +852,55 @@ async def summarize_corpus(
     if body.node_ids:
         node_ids = body.node_ids[:max_sources]
     else:
+        # Summary-first 分层检索：
+        #   Stage 1：在 summary_nodes 向量搜索 → top-K summaries
+        #   Stage 2：展开到对应的 summary_of（即原文章）
+        #   Fallback：若 summary 命中不足阈值/数量，补充直接 article 向量搜索
         embedding = await _embed_query(body.query)
         embedding_literal = _vector_literal(embedding)
-        rows = await database.database.fetch_all(
+        min_score = config_loader.get("kb_public.summarize_summary_min_score", 0.3)
+
+        summary_rows = await database.database.fetch_all(
             f"""
-            SELECT n.id
-            FROM knowledge_nodes n
-            WHERE n.user_id = :user_id AND n.object_type = 'article' AND n.embedding IS NOT NULL
-            ORDER BY n.embedding <=> '{embedding_literal}'::vector
+            SELECT s.summary_of AS article_id,
+                   1 - (s.body_embedding <=> '{embedding_literal}'::vector) AS score
+            FROM summary_nodes s
+            JOIN knowledge_nodes n ON n.id = s.node_id
+            WHERE n.user_id = :user_id
+              AND s.body_embedding IS NOT NULL
+              AND s.summary_of IS NOT NULL
+              AND (1 - (s.body_embedding <=> '{embedding_literal}'::vector)) >= :min_score
+            ORDER BY s.body_embedding <=> '{embedding_literal}'::vector
             LIMIT :limit
             """,
-            {"user_id": USER_ID, "limit": max_sources},
+            {"user_id": USER_ID, "limit": max_sources, "min_score": min_score},
         )
-        node_ids = [r["id"] for r in rows]
+        node_ids = []
+        seen: set[str] = set()
+        for r in summary_rows:
+            aid = r["article_id"]
+            if aid and aid not in seen:
+                seen.add(aid)
+                node_ids.append(aid)
+
+        # Fallback：summary 路径未填满时，补足直接 article 搜索
+        if len(node_ids) < max_sources:
+            remaining = max_sources - len(node_ids)
+            article_rows = await database.database.fetch_all(
+                f"""
+                SELECT n.id
+                FROM knowledge_nodes n
+                WHERE n.user_id = :user_id
+                  AND n.object_type = 'article'
+                  AND n.embedding IS NOT NULL
+                  AND NOT (n.id = ANY(:exclude_ids))
+                ORDER BY n.embedding <=> '{embedding_literal}'::vector
+                LIMIT :limit
+                """,
+                {"user_id": USER_ID, "exclude_ids": list(seen), "limit": remaining},
+            )
+            for r in article_rows:
+                node_ids.append(r["id"])
 
     if not node_ids:
         return {"summary": "", "sources_used": [], "coverage_note": "未找到匹配的文档"}

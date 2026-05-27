@@ -38,7 +38,7 @@ class ArticleIngestionResult:
 
 @dataclass
 class ArticleIngestionAdapters:
-    analyze_article: Callable[[str, list[dict], list[dict]], dict]
+    analyze_article: Callable[[str, list[dict], list[dict], list[dict]], dict]
     embed: Callable[[str], Awaitable[list[float]]]
     post_ingest: Callable[[dict], Awaitable[str]]
     get_analysis_context: Callable[[list[float]], Awaitable[dict]]
@@ -51,6 +51,7 @@ class ArticleIngestionAdapters:
     write_wiki_summary: Callable[[str, str, str, str, list[str], str], None]
     write_wiki_entity: Callable[[str, str, list[str], list[str], str, list[str]], None]
     max_entity_page_sources: int
+    embedding_model: str   # 当前使用的 embedding model 名（用于写入 nodes.embedding_model）
 
 
 async def process_article_like_item(
@@ -61,14 +62,16 @@ async def process_article_like_item(
     initial_embedding = None
     nearby_entities: list[dict] = []
     top_candidates: list[dict] = []
+    popular_tags: list[dict] = []
 
     if data.use_entity_context:
         initial_embedding = await adapters.embed(data.text[:8000])
         context = await adapters.get_analysis_context(initial_embedding)
         nearby_entities = context.get("nearby_entities", [])
         top_candidates = context.get("top_candidates", [])
+        popular_tags = context.get("popular_tags", [])
 
-    analysis = adapters.analyze_article(analysis_text, nearby_entities, top_candidates)
+    analysis = adapters.analyze_article(analysis_text, nearby_entities, top_candidates, popular_tags)
     abstract = analysis["abstract"]
     tags = analysis["tags"]
     entities = analysis["entities"]
@@ -85,12 +88,14 @@ async def process_article_like_item(
         "title": data.title,
         "abstract": abstract,
         "embedding": embedding,
+        "embedding_model": adapters.embedding_model,
         "source_type": data.source_type,
         "source_id": data.source_id,
         "raw_ref": data.raw_ref,
         "tags": tags,
         "object_type": "article",
         "source_item_id": data.source_item_id,
+        # doc_kind 不在此显式提供——API 层 ingest() 会沿 source_items → sources → default cascade 自动填充
         **data.time_payload,
     }
     if data.is_primary is not None:
@@ -106,6 +111,7 @@ async def process_article_like_item(
         "title": f"摘要：{display_title}",
         "abstract": abstract,
         "embedding": summary_embedding,
+        "embedding_model": adapters.embedding_model,
         "source_type": data.source_type,
         "source_id": data.source_id,
         "raw_ref": {},
@@ -179,6 +185,7 @@ async def _promote_entities(
                 "title": promoted["canonical_name"],
                 "abstract": entity_body[:500],
                 "embedding": entity_embedding,
+                "embedding_model": adapters.embedding_model,
                 "source_type": "entity",
                 "source_id": data.source_id,
                 "raw_ref": {},

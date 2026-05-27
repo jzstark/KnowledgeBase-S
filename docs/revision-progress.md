@@ -651,3 +651,35 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - Phase C · 配置补充 · ✅
   - `config/system.yaml`：新增 `kb_public.*` 13 个参数（top_k / batch / cite 两阶段计数 / 各 body 截断）；`models.{compare,cite,summarize_corpus}`、`llm_output_tokens.{compare,cite,summarize_corpus}` 各 3 项
   - `config/prompts.md`：新增 `compare_nodes` / `cite_match` / `summarize_corpus` 三段 prompt，cite_match 显式约束"逐字出现、禁止改写"
+- Phase D · entity_candidates 计数器 · ✅
+  - `database.py`：新增 `entity_candidates.mention_count INT` + `max_salience FLOAT`；幂等 backfill UPDATE 从历史 JSONB 浓缩计数（仅当 mention_count=0 且 mentions 非空时执行）
+  - `routers/kb.py` `process_entity_candidates`：upsert 时同步递增 `mention_count` 与 `GREATEST(max_salience, :salience)`；晋升判定从计数器列读，不再 `jsonb_array_length`
+  - `routers/kb.py` `entity_analyze_context`：候选池按 `mention_count DESC, max_salience DESC` 排序，跨过 JSONB
+  - JSONB `mentions` 列暂保留，用于晋升时取 `source_article_ids`；Phase A 第三批移除
+- Phase D · doc_kind 继承 · ✅
+  - `routers/kb.py` `IngestRequest`：新增 `doc_kind: str | None`
+  - `ingest()`：cascade 实现 — 显式 > `source_items.doc_kind` > `sources.default_doc_kind` > `config.doc_kind.default`；非法枚举值降级为 default（不阻断 ingestion）
+  - INSERT 同步写入 `knowledge_nodes.doc_kind`
+- Phase D · embedding_model 追踪 · ✅
+  - `IngestRequest` 增 `embedding_model`；`ingest()` 显式写入 `knowledge_nodes.embedding_model`（未给则取当前 `config.embedding.model`）
+  - `ingestion-worker/pipeline.py` `_article_ingestion_adapters` 注入 `embedding_model`；`article_ingestion.py` 在 article / summary / entity 三种 payload 中均带上
+  - `maintenance.detect_embedding_model_drift()`：检测 `embedding_model IS NULL OR != current_model` 的节点，按 model / object_type 分桶 + 20 个 sample_ids；并入 `run_maintenance` 日志输出但**不自动重算**（重算属重操作，应人工触发）
+- Phase D · tag 收敛 · ✅
+  - `routers/kb.py` `entity_analyze_context` 返回新增 `popular_tags`（按频次倒排 top-50；列表大小由 `ingestion.context_popular_tags` 控制）
+  - `ingestion-worker/pipeline.analyze_article` 增 `popular_tags` 参数，注入 `article_analysis` prompt
+  - `config/prompts.md` `article_analysis`：新增 `<<<existing_tags>>>` 占位符及收敛指令（优先复用、仅新主题才造新词）
+  - `article_ingestion.py` 把 context 中的 `popular_tags` 透传给 `analyze_article`
+  - 测试 fixture `tests/test_article_ingestion.py` 同步更新签名（含 `popular_tags`）+ 适配器加 `embedding_model="text-embedding-3-small"`
+- Phase D · summary-first 检索（summarize_corpus）· ✅
+  - `routers/kb_public.py` `summarize_corpus` 的 query 路径改为分层：
+    - Stage 1：在 `summary_nodes.body_embedding` 向量搜索，命中阈值 `kb_public.summarize_summary_min_score` 的取出 `summary_of` 文章 id
+    - Fallback：summary 路径未填满 `max_sources` 时，补足直接在 `knowledge_nodes(object_type='article')` 上做向量搜索，排除已选
+  - 显式 `node_ids` 路径维持原行为
+- Phase D · 配置补充 · ✅
+  - `ingestion.context_nearby_entities / context_top_candidates / context_popular_tags`（20 / 20 / 50）
+  - `kb_public.summarize_summary_min_score`（0.3）
+
+**Phase D 未做项 / 延后**
+- compare 工具暂未引入 summary-first（compare 输入永远是显式 node_ids，不存在 query → corpus 的扩展点）
+- 自动重算 drift embedding：仅检测+报告；自动重算需要专门的 job_type 与限流，未在本批实现
+- `entity_insights.refresh_stale_entity_profiles` 的 limit=200 仍硬编码（涉及 entity profile 流程，不在 Phase D 核心算法范畴，留给后续整理）

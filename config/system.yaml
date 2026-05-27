@@ -24,6 +24,9 @@ ingestion:
   max_entity_page_sources: 5   # 生成 entity 页时最多引用几篇来源文章的 abstract
   max_index_children_abstracts: 20  # aggregate_index_abstracts 时最多取几个子节点 abstract
   rss_lookback_days: 14        # RSS 抓取时回看天数，避免 feed 延迟出现导致漏抓；重复项由 DB 去重
+  context_nearby_entities: 20  # 入库分析时注入的近邻 entity 数量上限
+  context_top_candidates:  20  # 入库分析时注入的候选池条目数量上限
+  context_popular_tags:    50  # 入库分析时注入的常用 tag 数量上限（tag 收敛机制）
 
 models:
   article_analysis:  "claude-haiku-4-5-20251001"
@@ -106,3 +109,4 @@ kb_public:
   cite_body_chars:              3000  # Stage 2 注入 LLM 的每篇正文截断
   summarize_max_sources:        10
   summarize_body_chars:         2500
+  summarize_summary_min_score:  0.3   # summary-first stage 1 的最低余弦相似度阈值

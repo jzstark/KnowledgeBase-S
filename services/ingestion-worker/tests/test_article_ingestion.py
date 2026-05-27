@@ -36,10 +36,17 @@ class FakeIngestion:
         return {
             "nearby_entities": [{"id": "ent_old", "title": "Old Entity"}],
             "top_candidates": [{"canonical_name": "Candidate", "mention_count": 2}],
+            "popular_tags": [{"tag": "法规", "freq": 12}],
         }
 
-    def analyze_article(self, text: str, nearby_entities: list[dict], top_candidates: list[dict]) -> dict:
-        self.analyze_calls.append((text, nearby_entities, top_candidates))
+    def analyze_article(
+        self,
+        text: str,
+        nearby_entities: list[dict],
+        top_candidates: list[dict],
+        popular_tags: list[dict] | None = None,
+    ) -> dict:
+        self.analyze_calls.append((text, nearby_entities, top_candidates, popular_tags or []))
         return {"abstract": self.abstract, "tags": ["tag"], "entities": self.entities}
 
     async def post_ingest(self, payload: dict) -> str:
@@ -120,6 +127,7 @@ class FakeIngestion:
             write_wiki_summary=self.write_wiki_summary,
             write_wiki_entity=self.write_wiki_entity,
             max_entity_page_sources=5,
+            embedding_model="text-embedding-3-small",
         )
 
 

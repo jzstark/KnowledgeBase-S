@@ -235,10 +235,18 @@ async def materialize_fetched_source_items(source: BaseSource, source_config: di
     return await create_source_items(source_id, payloads)
 
 
-def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list[dict]) -> dict:
+def analyze_article(
+    text: str,
+    nearby_entities: list[dict],
+    top_candidates: list[dict],
+    popular_tags: list[dict] | None = None,
+) -> dict:
     """
     Call Claude to analyze an article.
     Returns: {abstract, tags, entities, contradictions, structural_hints}
+
+    popular_tags 用于 tag 收敛——以"标签 (频次)"形式注入 prompt，
+    引导 LLM 优先复用已有标签而非创造同义新词。
     """
     truncated = text[:MAX_TEXT_CHARS]
 
@@ -249,6 +257,10 @@ def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list
     candidate_entities_str = "\n".join(
         f"- {c['canonical_name']} (已出现 {c['mention_count']} 次)" for c in top_candidates
     ) or "（暂无）"
+
+    existing_tags_str = "\n".join(
+        f"- {t['tag']} ({t['freq']})" for t in (popular_tags or [])
+    ) or "（库中暂无 tag）"
 
     message = claude.messages.create(
         model=config_loader.get("models.article_analysis", "claude-haiku-4-5-20251001"),
@@ -261,6 +273,7 @@ def analyze_article(text: str, nearby_entities: list[dict], top_candidates: list
                     text=truncated,
                     existing_entities=existing_entities_str,
                     candidate_entities=candidate_entities_str,
+                    existing_tags=existing_tags_str,
                 ),
             }
         ],
@@ -514,6 +527,7 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
         write_wiki_summary=write_wiki_summary,
         write_wiki_entity=write_wiki_entity,
         max_entity_page_sources=MAX_ENTITY_PAGE_SOURCES,
+        embedding_model=config_loader.get("embedding.model", "text-embedding-3-small"),
     )
 
 

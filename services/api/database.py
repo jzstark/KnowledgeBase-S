@@ -298,7 +298,20 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
 ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS default_doc_kind VARCHAR;
 ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
+ALTER TABLE IF EXISTS entity_candidates ADD COLUMN IF NOT EXISTS mention_count INT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_candidates ADD COLUMN IF NOT EXISTS max_salience FLOAT DEFAULT 0;
 ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
+
+-- Phase D 一次性 backfill：将历史 JSONB mentions 浓缩为计数器。
+-- 仅在计数器尚未填充（mention_count = 0）时回填，幂等。
+UPDATE entity_candidates
+SET mention_count = jsonb_array_length(COALESCE(mentions, '[]'::jsonb)),
+    max_salience = COALESCE(
+        (SELECT MAX((elem->>'salience')::float)
+         FROM jsonb_array_elements(COALESCE(mentions, '[]'::jsonb)) AS elem),
+        0
+    )
+WHERE mention_count = 0 AND jsonb_array_length(COALESCE(mentions, '[]'::jsonb)) > 0;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS source_type VARCHAR;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref TEXT;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref_type VARCHAR;

@@ -117,6 +117,8 @@ class IngestRequest(BaseModel):
     effective_at: datetime | None = None
     source_item_id: str | None = None
     parent_index_id: str | None = None   # if set, adds an index_children row
+    doc_kind: str | None = None          # 显式覆盖；未给时由 ingest() 沿 cascade 链推导
+    embedding_model: str | None = None   # 生成该 embedding 时所用模型名（用于后续 drift 检测）
 
 
 class RebuildFromRawRequest(BaseModel):
@@ -165,6 +167,34 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
     is_default = False
     body_embedding_literal = None
     perspective_embedding_literal = None
+
+    # doc_kind cascade：显式提供 > source_items.doc_kind > sources.default_doc_kind > config.doc_kind.default
+    doc_kind = (body.doc_kind or "").strip() or None
+    if not doc_kind and body.source_item_id:
+        si_row = await database.database.fetch_one(
+            "SELECT doc_kind FROM source_items WHERE id = :id",
+            {"id": body.source_item_id},
+        )
+        if si_row and si_row["doc_kind"]:
+            doc_kind = si_row["doc_kind"]
+    if not doc_kind and body.source_id:
+        s_row = await database.database.fetch_one(
+            "SELECT default_doc_kind FROM sources WHERE id = :id",
+            {"id": body.source_id},
+        )
+        if s_row and s_row["default_doc_kind"]:
+            doc_kind = s_row["default_doc_kind"]
+    if not doc_kind:
+        doc_kind = config_loader.get("doc_kind.default", "other")
+    # 仅接受合法枚举；非法值降级为 default 而非 400（ingestion 不应被 prompt 噪声打断）
+    allowed_kinds = set(config_loader.get("doc_kind.values", []) or [])
+    if allowed_kinds and doc_kind not in allowed_kinds:
+        doc_kind = config_loader.get("doc_kind.default", "other")
+
+    # embedding_model：显式 > 当前 config 中的默认（记录当时所用模型，便于将来 drift 检测）
+    embedding_model = body.embedding_model or config_loader.get(
+        "embedding.model", "text-embedding-3-small"
+    )
     if body.object_type == "summary":
         perspective_label, perspective_instruction, is_default = _summary_perspective(
             body.perspective_label,
@@ -198,7 +228,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
            tags, is_primary, object_type, source_node_ids, summary_of, canonical_name, aliases,
            perspective, perspective_label, perspective_instruction, perspective_embedding,
            body_embedding, is_default, source_published_at, source_updated_at, captured_at,
-           effective_at, source_item_id)
+           effective_at, source_item_id, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_type, :source_id, :raw_ref, :tags, :is_primary,
@@ -207,7 +237,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
            {f"'{perspective_embedding_literal}'::vector" if perspective_embedding_literal else "NULL"},
            {f"'{body_embedding_literal}'::vector" if body_embedding_literal else "NULL"},
            :is_default, :source_published_at, :source_updated_at, :captured_at,
-           :effective_at, :source_item_id)
+           :effective_at, :source_item_id, :doc_kind, :embedding_model)
         """,
         {
             "id": node_id,
@@ -233,6 +263,8 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "captured_at": body.captured_at or datetime.now(timezone.utc),
             "effective_at": body.effective_at,
             "source_item_id": body.source_item_id,
+            "doc_kind": doc_kind,
+            "embedding_model": embedding_model,
         },
     )
     await object_nodes.upsert_object_node(
@@ -1645,15 +1677,19 @@ async def delete_memory(memory_id: int, _: dict = Depends(require_auth)):
 @router.post("/entity_candidates/analyze_context")
 async def entity_analyze_context(body: dict):
     """
-    给 ingestion-worker 提供 entity 上下文：
-    - 用 article embedding 找最近的 20 个已有 entity 节点（title + id）
-    - 返回 mention 数前 20 的候选池条目（canonical_name）
+    给 ingestion-worker 提供入库分析上下文：
+    - nearby_entities：用 article embedding 找最近的 20 个已有 entity 节点
+    - top_candidates：mention_count 数前 20 的候选池条目
+    - popular_tags：库中出现频次前 50 的 tags（tag 收敛机制，引导 LLM 优先复用）
     """
     embedding = body.get("embedding", [])
     if not embedding:
-        return {"nearby_entities": [], "top_candidates": []}
+        return {"nearby_entities": [], "top_candidates": [], "popular_tags": []}
 
     embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
+    nearby_limit = config_loader.get("ingestion.context_nearby_entities", 20)
+    candidate_limit = config_loader.get("ingestion.context_top_candidates", 20)
+    tags_limit = config_loader.get("ingestion.context_popular_tags", 50)
 
     async with database.database.connection() as conn:
         entity_rows = await conn.raw_connection.fetch(
@@ -1662,18 +1698,28 @@ async def entity_analyze_context(body: dict):
             FROM knowledge_nodes
             WHERE user_id = $1 AND object_type = 'entity' AND embedding IS NOT NULL
             ORDER BY embedding <=> '{embedding_literal}'::vector
-            LIMIT 20
+            LIMIT {nearby_limit}
             """,
             USER_ID,
         )
         candidate_rows = await conn.raw_connection.fetch(
-            """
-            SELECT id, canonical_name, aliases,
-                   jsonb_array_length(mentions) AS mention_count
+            f"""
+            SELECT id, canonical_name, aliases, mention_count, max_salience
             FROM entity_candidates
             WHERE user_id = $1 AND promoted_entity_id IS NULL
-            ORDER BY jsonb_array_length(mentions) DESC
-            LIMIT 20
+            ORDER BY mention_count DESC, max_salience DESC
+            LIMIT {candidate_limit}
+            """,
+            USER_ID,
+        )
+        tag_rows = await conn.raw_connection.fetch(
+            f"""
+            SELECT tag, COUNT(*) AS freq
+            FROM knowledge_nodes, unnest(tags) AS tag
+            WHERE user_id = $1 AND tags IS NOT NULL
+            GROUP BY tag
+            ORDER BY freq DESC, tag ASC
+            LIMIT {tags_limit}
             """,
             USER_ID,
         )
@@ -1686,6 +1732,9 @@ async def entity_analyze_context(body: dict):
         "top_candidates": [
             {"id": r["id"], "canonical_name": r["canonical_name"], "mention_count": r["mention_count"]}
             for r in candidate_rows
+        ],
+        "popular_tags": [
+            {"tag": r["tag"], "freq": int(r["freq"])} for r in tag_rows
         ],
     }
 
@@ -1763,12 +1812,14 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
             if isinstance(mentions, str):
                 import json as _json
                 mentions = _json.loads(mentions)
-            # avoid duplicate article
+            # avoid duplicate article（仅当未出现过该 article 时才追加并递增计数）
             if not any(m.get("article_id") == body.article_id for m in mentions):
                 await database.database.execute(
                     """
                     UPDATE entity_candidates
                     SET mentions = mentions || CAST(:entry AS jsonb),
+                        mention_count = COALESCE(mention_count, 0) + 1,
+                        max_salience = GREATEST(COALESCE(max_salience, 0), :salience),
                         aliases = (
                             SELECT array(SELECT DISTINCT unnest(aliases || CAST(:new_aliases AS text[])))
                         ),
@@ -1779,20 +1830,23 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
                         "cid": cand_id,
                         "entry": f"[{mention_entry}]",
                         "new_aliases": ent.aliases,
+                        "salience": float(ent.salience),
                     },
                 )
         else:
             # Insert new candidate (embedding computed lazily; skip here for now)
             await database.database.execute(
                 """
-                INSERT INTO entity_candidates (user_id, canonical_name, aliases, mentions)
-                VALUES (:uid, :name, :aliases, CAST(:mentions AS jsonb))
+                INSERT INTO entity_candidates
+                  (user_id, canonical_name, aliases, mentions, mention_count, max_salience)
+                VALUES (:uid, :name, :aliases, CAST(:mentions AS jsonb), 1, :salience)
                 """,
                 {
                     "uid": USER_ID,
                     "name": ent.name,
                     "aliases": ent.aliases,
                     "mentions": f"[{mention_entry}]",
+                    "salience": float(ent.salience),
                 },
             )
             cand_id_row = await database.database.fetch_one(
@@ -1801,23 +1855,28 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
             )
             cand_id = cand_id_row["id"] if cand_id_row else None
 
-        # Check promotion threshold
+        # Check promotion threshold —— 从计数器列读，避免再解析 JSONB
         if cand_id is None:
             continue
         cand_row = await database.database.fetch_one(
-            "SELECT id, canonical_name, aliases, mentions, promoted_entity_id FROM entity_candidates WHERE id = :cid",
+            """
+            SELECT id, canonical_name, aliases, mentions, promoted_entity_id,
+                   mention_count, max_salience
+            FROM entity_candidates WHERE id = :cid
+            """,
             {"cid": cand_id},
         )
         if not cand_row:
             continue
         if cand_row["promoted_entity_id"]:
             continue  # already promoted, skip
+        mention_count = int(cand_row["mention_count"] or 0)
+        max_salience = float(cand_row["max_salience"] or 0)
+        # source_article_ids 仍需从 JSONB 取（晋升后用于回填 source）
         mentions_raw = cand_row["mentions"]
         if isinstance(mentions_raw, str):
             import json as _json
             mentions_raw = _json.loads(mentions_raw)
-        mention_count = len(mentions_raw)
-        max_salience = max((m.get("salience", 0) for m in mentions_raw), default=0)
         source_article_ids = [m["article_id"] for m in mentions_raw]
 
         should_promote = (
