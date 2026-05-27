@@ -1207,11 +1207,13 @@ export default function KnowledgePage() {
   const [explorerKey, setExplorerKey] = useState(0);
   const [listRefreshToken, setListRefreshToken] = useState(0);
 
+  // 默认隐藏 summary 节点（设计：详情面板显示其 summaries，不在图中新增节点）
   const [visibleNodeTypes, setVisibleNodeTypes] = useState<Set<string>>(
-    () => new Set(["article", "entity", "summary", "index"]),
+    () => new Set(["article", "entity", "index"]),
   );
+  // 默认隐藏 similar_to（派生边，会让图变密）和 summarizes（已废除的关系，由 summary_nodes.summary_of FK 表达）
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<string>>(
-    () => new Set(Object.keys(EDGE_COLORS)),
+    () => new Set(["mentions", "part_of", "contains"]),
   );
   const [filterOpen, setFilterOpen] = useState(false);
 

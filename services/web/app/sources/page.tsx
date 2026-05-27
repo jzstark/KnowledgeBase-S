@@ -26,9 +26,68 @@ interface Source {
   config: Record<string, unknown> | string;
   api_token: string | null;
   is_primary: boolean;
+  default_doc_kind: string | null;
   last_fetched_at: string | null;
   created_at: string;
   article_count: number;
+}
+
+// ── doc_kind 下拉（共享）──────────────────────────────────────────────────────
+
+interface DocKindConfig {
+  values: string[];
+  default: string;
+}
+
+const DOC_KIND_LABELS: Record<string, string> = {
+  regulation: "法规 / 规章",
+  case: "判例 / 裁判文书",
+  news: "新闻 / 动态",
+  memo: "备忘录 / 内部说明",
+  contract: "合同 / 协议",
+  analysis: "评论 / 分析",
+  other: "其他",
+};
+
+function useDocKindConfig(): DocKindConfig | null {
+  const [cfg, setCfg] = useState<DocKindConfig | null>(null);
+  useEffect(() => {
+    fetch("/api/config/doc_kind", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setCfg(d))
+      .catch(() => {});
+  }, []);
+  return cfg;
+}
+
+function DocKindSelect({
+  value, onChange, required = false, includeEmpty = true,
+  emptyLabel = "继承 source 默认", id,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+  includeEmpty?: boolean;
+  emptyLabel?: string;
+  id?: string;
+}) {
+  const cfg = useDocKindConfig();
+  return (
+    <select
+      id={id}
+      required={required}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+    >
+      {includeEmpty && <option value="">{emptyLabel}</option>}
+      {(cfg?.values ?? []).map((v) => (
+        <option key={v} value={v}>
+          {DOC_KIND_LABELS[v] ?? v}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 interface WechatSubscription {
@@ -325,6 +384,9 @@ function SourceCard({
             <span>上次抓取：{fmtDate(source.last_fetched_at)}</span>
           )}
           <span>创建：{fmtDate(source.created_at)}</span>
+          {source.default_doc_kind && (
+            <span>默认类型：{DOC_KIND_LABELS[source.default_doc_kind] ?? source.default_doc_kind}</span>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -337,6 +399,7 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
   const [type, setType] = useState("rss");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [defaultDocKind, setDefaultDocKind] = useState("");
   const [wechatSubscriptions, setWechatSubscriptions] = useState<WechatSubscription[]>([]);
   const [loadingWechat, setLoadingWechat] = useState(false);
   const [selectedFeedId, setSelectedFeedId] = useState("");
@@ -394,7 +457,12 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), type, config }),
+          body: JSON.stringify({
+            name: name.trim(),
+            type,
+            config,
+            default_doc_kind: defaultDocKind || null,
+          }),
         });
       }
       if (!res.ok) {
@@ -403,7 +471,7 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
         return;
       }
       onCreated(await res.json());
-      setName(""); setUrl(""); setType("rss"); setSelectedFeedId("");
+      setName(""); setUrl(""); setType("rss"); setSelectedFeedId(""); setDefaultDocKind("");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "请求失败");
     } finally {
@@ -471,6 +539,23 @@ function AddForm({ onCreated }: { onCreated: (s: Source) => void }) {
             </p>
           )}
 
+          {type !== "wechat" && (
+            <div className="flex gap-3 items-start">
+              <Label className="text-xs w-14 shrink-0 pt-2">默认类型</Label>
+              <div className="flex-1">
+                <DocKindSelect
+                  value={defaultDocKind}
+                  onChange={setDefaultDocKind}
+                  includeEmpty
+                  emptyLabel="（不预设）"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  source 级 doc_kind 默认值，会自动应用到本 source 下所有未单独标注的 item。
+                </p>
+              </div>
+            </div>
+          )}
+
           {type === "wechat" && (
             <div className="space-y-2 pl-[4.5rem]">
               {loadingWechat ? (
@@ -524,19 +609,27 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
   const [files, setFiles] = useState<FileList | null>(null);
   const [capturedAt, setCapturedAt] = useState("");
   const [effectiveAt, setEffectiveAt] = useState("");
+  const [docKind, setDocKind] = useState("");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // 上传必填 doc_kind（设计要求）；source 已有 default 时该字段视为预填
+  useEffect(() => {
+    if (source?.default_doc_kind) setDocKind(source.default_doc_kind);
+  }, [source]);
+
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!files || files.length === 0 || !source) return;
+    if (!docKind) { setResult("请选择文件类型 (doc_kind)"); return; }
     setUploading(true);
     try {
       const fd = new FormData();
       for (const f of Array.from(files)) fd.append("files", f);
       if (capturedAt) fd.append("captured_at", new Date(capturedAt).toISOString());
       if (effectiveAt) fd.append("effective_at", new Date(effectiveAt).toISOString());
+      fd.append("doc_kind", docKind);
       const res = await fetch(`/api/sources/${source.id}/upload`, {
         method: "POST", credentials: "include", body: fd,
       });
@@ -569,6 +662,18 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
             className="text-sm text-muted-foreground w-full"
           />
           <p className="text-xs text-muted-foreground">可一次选择多个文件，每个文件独立处理后进入知识库。</p>
+          <div className="space-y-1.5">
+            <Label htmlFor="upload-doc-kind">文件类型 (doc_kind) <span className="text-red-500">*</span></Label>
+            <DocKindSelect
+              id="upload-doc-kind"
+              value={docKind}
+              onChange={setDocKind}
+              required
+              includeEmpty
+              emptyLabel="（请选择）"
+            />
+            <p className="text-xs text-muted-foreground">用于知识库内的结构化过滤；上传后可在节点元数据中逐条修改。</p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="captured-at">保存时间</Label>
@@ -592,7 +697,7 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
           {result && <p className="text-sm">{result}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>
-            <Button type="submit" size="sm" disabled={uploading || !files?.length}>
+            <Button type="submit" size="sm" disabled={uploading || !files?.length || !docKind}>
               {uploading ? "上传中…" : `上传${files?.length ? ` (${files.length})` : ""}`}
             </Button>
           </div>
@@ -606,8 +711,14 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
 
 function AddUrlModal({ source, onClose, onDone }: { source: Source | null; onClose: () => void; onDone: () => void }) {
   const [text, setText] = useState("");
+  // 设计：URL 默认 news；source 配置了 default_doc_kind 时以其为初值
+  const [docKind, setDocKind] = useState("news");
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
+
+  useEffect(() => {
+    if (source?.default_doc_kind) setDocKind(source.default_doc_kind);
+  }, [source]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -619,7 +730,7 @@ function AddUrlModal({ source, onClose, onDone }: { source: Source | null; onClo
       const res = await fetch(`/api/sources/${source.id}/add-url`, {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls }),
+        body: JSON.stringify({ urls, doc_kind: docKind || null }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -649,6 +760,16 @@ function AddUrlModal({ source, onClose, onDone }: { source: Source | null; onClo
             className="text-sm resize-none"
           />
           <p className="text-xs text-muted-foreground">每行一个 URL，可批量添加。</p>
+          <div className="space-y-1.5">
+            <Label htmlFor="add-url-doc-kind">文件类型 (doc_kind)</Label>
+            <DocKindSelect
+              id="add-url-doc-kind"
+              value={docKind}
+              onChange={setDocKind}
+              includeEmpty
+              emptyLabel="继承 source 默认"
+            />
+          </div>
           {result && <p className="text-sm">{result}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>

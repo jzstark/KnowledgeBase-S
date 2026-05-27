@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
+import config_loader
 from routers import briefing, drafts, files, kb, kb_public, settings, sources
 
 AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
@@ -80,3 +81,12 @@ async def me(_: dict = Depends(require_auth)):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config/doc_kind")
+async def get_doc_kind_config():
+    """UI 下拉枚举源——前端不允许自由文本，所有 doc_kind 输入处都拉取此端点。"""
+    return {
+        "values": config_loader.get("doc_kind.values", []) or [],
+        "default": config_loader.get("doc_kind.default", "other"),
+    }

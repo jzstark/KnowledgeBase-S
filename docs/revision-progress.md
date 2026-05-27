@@ -847,3 +847,49 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 **未端到端验证**（需要真实 LLM 调用 + ingestion 完整链）
 - `POST /compare / /cite / /summarize_corpus` —— 接口存在、参数验证通过；实际 LLM 行为留待真实使用时检验
 - doc_kind 继承链 / embedding_model 标记 / tag 收敛 —— 新文章入库后才能填充，需要 ingestion-worker 重启后验证。当前 292 节点这两字段均为 NULL（预期；未做历史 backfill）
+
+### Phase E · UI 更新 · ✅
+
+**已完成（设计文档 §8 的可落地子集）**
+
+| 项 | 实现 |
+|---|---|
+| 图谱默认隐藏 summary 节点 | `knowledge/page.tsx` visibleNodeTypes 初值改为 `{article, entity, index}` |
+| 图谱默认隐藏 similar_to / summarizes 边 | visibleEdgeTypes 初值改为 `{mentions, part_of, contains}` |
+| `GET /api/config/doc_kind` 端点 | `main.py` 新增，UI 下拉的枚举源 |
+| Source 创建表单加 `default_doc_kind` 下拉 | `sources/page.tsx` AddForm + 后端 `SourceCreate.default_doc_kind` |
+| Source 卡片显示当前默认类型 | SourceCard 底部 meta 栏新增 |
+| 上传文件 dialog 加 doc_kind 下拉（必填） | UploadModal + 后端 `/upload` 接 `Form doc_kind` |
+| 添加 URL dialog 加 doc_kind 下拉（默认 `news`） | AddUrlModal + 后端 `/add-url` body 接 `doc_kind` |
+| 共享 `DocKindSelect` 组件 + `useDocKindConfig` hook | 在 `sources/page.tsx` 内定义，不依赖任何外部组件库 |
+| 后端 `_validate_doc_kind` 校验 | 非法值 400 + 列出可选枚举 |
+| 中文标签映射 | `DOC_KIND_LABELS` 把 `regulation→法规 / 规章` 等显示给用户 |
+
+**后端配合改动**
+
+- `routers/sources.py`：`SourceCreate / SourceUpdate / SourceItemCreate` 加 `default_doc_kind / doc_kind`；`/upload` 接 Form `doc_kind`；`/add-url` 接 body `doc_kind`；`update_source` 支持 PATCH `default_doc_kind`
+- `_create_source_item` INSERT 列表加 `doc_kind`
+- 顶部 `import config_loader`
+- `main.py`：`GET /api/config/doc_kind` 返回 `{values, default}`
+
+**Docker 端到端验证（dev 模式）**
+
+| 验证 | 结果 |
+|---|---|
+| `GET /api/config/doc_kind` | 返回 7 枚举值 + default=other |
+| `POST /api/sources` 携带 `default_doc_kind` | 写入成功 |
+| `POST /api/sources` 携带 `default_doc_kind=bogus` | 400 + 列出合法值 |
+| `POST /api/sources/{id}/add-url` 携带 `doc_kind` | `source_items.doc_kind` 写入 case |
+| `GET /api/sources` 返回字段 | 含 `default_doc_kind` |
+| TypeScript 编译 | `npx tsc --noEmit` 干净 |
+| Next.js 构建 chunk | `app/sources/page.js` 含 `DocKindSelect / default_doc_kind / 默认类型`；`app/knowledge/page.js` 含新默认 `new Set(["article","entity","index"])` |
+
+**本批延后项**（依赖未实现的后端 API；设计文档列出但需独立专批）
+
+- **资源管理器按 source 分组**：当前 ListPanel 是平铺；按 source 分组 + 切换排序需 API 支持（`/api/kb/nodes?group_by=source`），属 medium-large
+- **Source 软删除 UI**：需要后端 `deleted_at` 字段已加（Phase A 第一批）但 DELETE 端点目前仍硬删；需要新增 `POST /api/sources/{id}/deactivate`（含可选 cascade 选项）
+- **Entity merge / 硬删除 UI**：设计 §7 列出 `POST /entities/merge` 与 `DELETE /entities/{id}`，目前两个后端端点均不存在
+- **节点元数据编辑（doc_kind 下拉）**：需要 `PATCH /api/kb/nodes/{id}/metadata`（设计 §7 列出但未实现）
+- **搜索面板默认隐藏 + Cmd/Ctrl+F 唤起**：当前右侧 ListPanel 始终显示；唤起改造需要快捷键 + 容器折叠
+
+这 5 项每项都是独立工程量（后端 API 新建 + 前端组件改造），各自适合作为后续单独的批次。Phase E 把"无需新后端"的部分全部落地。

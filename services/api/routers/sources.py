@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from pydantic import BaseModel
 
+import config_loader
 import database
 from auth import require_auth
 
@@ -29,13 +30,25 @@ class SourceCreate(BaseModel):
     type: str        # 'wechat'|'rss'|'url'|'pdf'|'image'|'plaintext'|'word'|'epub'
     config: dict[str, Any] = {}
     is_primary: bool = True
+    default_doc_kind: str | None = None   # 来源级默认文件类型，cascade 到 source_items
 
 
 class SourceUpdate(BaseModel):
     name: str | None = None
     config: dict[str, Any] | None = None
     is_primary: bool | None = None
+    default_doc_kind: str | None = None
     last_fetched_at: str | None = None   # ISO8601，worker 回写用
+
+
+def _validate_doc_kind(value: str | None) -> str | None:
+    """对外接口的 doc_kind 校验：必须在 config 枚举内，否则 400。"""
+    if value is None or value == "":
+        return None
+    allowed = set(config_loader.get("doc_kind.values", []) or [])
+    if allowed and value not in allowed:
+        raise HTTPException(400, f"invalid doc_kind '{value}'; allowed: {sorted(allowed)}")
+    return value
 
 
 FETCH_MODES = {
@@ -69,6 +82,7 @@ class SourceItemCreate(BaseModel):
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None
     effective_at: datetime | None = None
+    doc_kind: str | None = None              # 单条 item 级覆盖（优先于 source.default_doc_kind）
     raw_retention_policy: str = "keep_extracted_only"
     status: str = "pending"
 
@@ -126,12 +140,12 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
           (id, user_id, source_id, source_type, origin_ref, origin_ref_type,
            raw_snapshot_ref, extracted_text_ref, content_hash, title,
            source_published_at, source_updated_at, captured_at, effective_at,
-           raw_retention_policy, status)
+           doc_kind, raw_retention_policy, status)
         VALUES
           (:id, :user_id, :source_id, :source_type, :origin_ref, :origin_ref_type,
            :raw_snapshot_ref, :extracted_text_ref, :content_hash, :title,
            :source_published_at, :source_updated_at, :captured_at, :effective_at,
-           :raw_retention_policy, :status)
+           :doc_kind, :raw_retention_policy, :status)
         ON CONFLICT (user_id, source_id, origin_ref_type, origin_ref)
         DO UPDATE SET
           raw_snapshot_ref = COALESCE(EXCLUDED.raw_snapshot_ref, source_items.raw_snapshot_ref),
@@ -166,6 +180,7 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
             "source_updated_at": item.source_updated_at,
             "captured_at": item.captured_at,
             "effective_at": item.effective_at,
+            "doc_kind": _validate_doc_kind(item.doc_kind),
             "raw_retention_policy": item.raw_retention_policy,
             "status": item.status,
         },
@@ -483,8 +498,10 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
 
     await database.database.execute(
         """
-        INSERT INTO sources (id, user_id, name, type, fetch_mode, is_primary, config, api_token)
-        VALUES (:id, :user_id, :name, :type, :fetch_mode, :is_primary, :config, :api_token)
+        INSERT INTO sources (id, user_id, name, type, fetch_mode, is_primary,
+                             config, api_token, default_doc_kind)
+        VALUES (:id, :user_id, :name, :type, :fetch_mode, :is_primary,
+                :config, :api_token, :default_doc_kind)
         """,
         {
             "id": source_id,
@@ -495,6 +512,7 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
             "is_primary": body.is_primary,
             "config": database.jsonb(body.config),
             "api_token": None,
+            "default_doc_kind": _validate_doc_kind(body.default_doc_kind),
         },
     )
     row = await database.database.fetch_one(
@@ -513,6 +531,7 @@ async def upload_to_source(
     files: list[UploadFile] = File(...),
     captured_at: str | None = Form(None),
     effective_at: str | None = Form(None),
+    doc_kind: str | None = Form(None),
     _: dict = Depends(require_auth),
 ):
     """向已有 source 上传一批文件（支持多文件），存储并触发 ingestion-worker 处理。
@@ -531,6 +550,7 @@ async def upload_to_source(
 
     captured_at = _validate_optional_time(captured_at, "captured_at")
     effective_at = _validate_optional_time(effective_at, "effective_at")
+    doc_kind = _validate_doc_kind(doc_kind)
 
     saved: list[str] = []
     source_items: list[dict[str, Any]] = []
@@ -550,6 +570,7 @@ async def upload_to_source(
                 title=Path(file.filename or safe_name).stem,
                 captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else None,
                 effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else None,
+                doc_kind=doc_kind,
                 raw_retention_policy="keep_raw",
             ),
         )
@@ -586,6 +607,8 @@ async def add_url_to_source(
     if not urls:
         raise HTTPException(400, "至少提供一个 URL")
 
+    doc_kind = _validate_doc_kind(body.get("doc_kind"))
+
     source_items = [
         await _create_source_item(
             row,
@@ -594,6 +617,7 @@ async def add_url_to_source(
                 origin_ref_type="url",
                 content_hash=hashlib.sha256(url.encode("utf-8")).hexdigest(),
                 captured_at=datetime.utcnow(),
+                doc_kind=doc_kind,
                 raw_retention_policy="keep_extracted_only",
             ),
         )
@@ -649,6 +673,9 @@ async def update_source(source_id: str, body: SourceUpdate):
     if body.is_primary is not None:
         updates.append("is_primary = :is_primary")
         params["is_primary"] = body.is_primary
+    if body.default_doc_kind is not None:
+        updates.append("default_doc_kind = :default_doc_kind")
+        params["default_doc_kind"] = _validate_doc_kind(body.default_doc_kind) or ""
     if body.last_fetched_at is not None:
         updates.append("last_fetched_at = :last_fetched_at")
         params["last_fetched_at"] = datetime.fromisoformat(body.last_fetched_at)
