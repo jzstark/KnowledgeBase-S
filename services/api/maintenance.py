@@ -1099,8 +1099,8 @@ async def rebuild_from_raw(
             f"[rebuild] Step 4: 等待 {len(item_ids)} 个 source_items 完成（最长 60 分钟）...",
             flush=True,
         )
-        max_wait = 3600
-        interval = 20
+        max_wait = config_loader.get("maintenance.rebuild_max_wait_seconds", 3600)
+        interval = config_loader.get("maintenance.rebuild_poll_interval_seconds", 20)
         elapsed = 0
         pending_count = len(item_ids)
 

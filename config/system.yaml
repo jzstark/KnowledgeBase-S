@@ -4,6 +4,19 @@
 # 若要让参数修改影响历史入库内容，需执行 rebuild_from_raw。
 # ================================================================
 
+doc_kind:
+  # 文档类型枚举。新增值只需在此处添加，UI 下拉与 API 过滤自动同步。
+  # 用户/MCP 端不允许自由文本，仅能从此列表选择。
+  values:
+    - regulation   # 法规、规章、规范性文件
+    - case         # 判例、裁判文书
+    - news         # 新闻、动态
+    - memo         # 备忘录、内部说明
+    - contract     # 合同、协议
+    - analysis     # 评论、分析、综述文章
+    - other        # 其他
+  default: other
+
 ingestion:
   max_text_chars: 12000        # 送给 article_analysis 的最大字符数（约 4000 token）
   chunk_trigger_words: 5000    # 超过此词数 + 有章节结构时，触发 index+article 切分
@@ -21,6 +34,9 @@ models:
   hyde_abstract:     "claude-haiku-4-5-20251001"  # HyDE 查询扩展
   briefing_topics:   "claude-sonnet-4-6"
   draft_generation:  "claude-sonnet-4-6"
+  compare:           "claude-sonnet-4-6"          # MCP compare 工具
+  cite:              "claude-sonnet-4-6"          # MCP cite 工具 Stage 2
+  summarize_corpus:  "claude-sonnet-4-6"          # MCP summarize_corpus 工具
 
 embedding:
   model:      "text-embedding-3-small"
@@ -56,6 +72,8 @@ retrieval:
 
 maintenance:
   entity_update_batch:          10    # entity_update 每批处理数量
+  rebuild_max_wait_seconds:     3600  # rebuild_from_raw 等待所有 source_items 完成的总超时
+  rebuild_poll_interval_seconds: 20   # rebuild_from_raw 的轮询间隔
 
 briefing:
   topics_count:                 5
@@ -68,3 +86,23 @@ llm_output_tokens:
   index_summary:                512
   hyde_abstract:                200
   draft_generation:             4096
+  compare:                      2048
+  cite:                         2048
+  summarize_corpus:             3000
+
+# MCP Public 工具参数（/api/kb/v1/）
+kb_public:
+  search_top_k:                 10
+  search_top_k_max:             50
+  fetch_max_batch:              20
+  related_default_limit:        20
+  related_limit_max:            100
+  timeline_default_limit:       50
+  timeline_limit_max:           200
+  timeline_min_score:           0.3   # topic_query 模式下，向量相似度低于此值的文章不纳入时间轴
+  compare_body_chars:           4000  # compare 每篇文档正文截断长度
+  cite_max_results:             5
+  cite_candidate_count:         20    # Stage 1 向量粗筛保留的候选数
+  cite_body_chars:              3000  # Stage 2 注入 LLM 的每篇正文截断
+  summarize_max_sources:        10
+  summarize_body_chars:         2500

@@ -612,4 +612,42 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 
 > 随实施过程更新，每条记录格式：`[日期] Phase X - 具体内容 - 状态`
 
-（待填入）
+### 2026-05-27
+
+- Phase A · 加列 · ✅ `services/api/database.py` SCHEMA_SQL 新增：
+  - `knowledge_nodes.embedding_model VARCHAR`
+  - `knowledge_nodes.doc_kind VARCHAR`
+  - `sources.default_doc_kind VARCHAR`
+  - `sources.deleted_at TIMESTAMPTZ`
+  - `source_items.doc_kind VARCHAR`
+  - 全部 `ALTER TABLE IF EXISTS ... ADD COLUMN IF NOT EXISTS`，幂等，不影响现有数据
+- Phase A · doc_kind 枚举配置 · ✅ `config/system.yaml` 新增 `doc_kind.values`（regulation/case/news/memo/contract/analysis/other）+ `doc_kind.default=other`
+- Phase A · 参数审计 · ✅ 现状：代码库已大量通过 `config_loader.get(...)` 读取参数（`models.*` / `embedding.*` / `entity.*` / `retrieval.*` / `llm_output_tokens.*` 等已完整外置）
+  - 本批迁出：`maintenance.py` 的 rebuild 轮询参数（`maintenance.rebuild_max_wait_seconds` / `rebuild_poll_interval_seconds`）
+  - 剩余硬编码集中在三个地方，全部延后到对应 Phase 一起处理，避免在即将搬迁/重写的代码上重复改：
+    - `routers/briefing.py`（BATCH_SIZE、max_tokens=8192）、`routers/drafts.py`（100 阈值）、`routers/settings.py`（briefing_hours_back=24）→ Phase B 迁入 `app/` 时统一外置
+    - `kb_tools.py`（wiki body limit=4000、search limit 1-10 边界）→ Phase C 重写 MCP 工具时统一外置
+    - `entity_insights.py`（refresh limit=200）→ Phase D entity 算法更新时一并处理
+- Phase B · API 层分离 · ✅ 骨架完成（端点实际迁移延后到 Phase C）：
+  - 新建 `services/api/routers/kb_public.py`：FastAPI router（tag=`"KB Public"`）含 7 个工具 stub（search / fetch / fetch_batch / related / timeline / compare / cite / summarize_corpus），均返回 501，Pydantic 请求/响应类型已定义
+  - `routers/kb.py` tag 改为 `"KB Internal"`（文件名保留，避免破坏 5 处跨模块导入）
+  - `main.py`：挂载 `kb_public_app` 子应用于 `/api/kb/v1/`，自动获得独立 OpenAPI 文档 `/api/kb/v1/docs`
+  - 主应用 `/api/docs` 显示全量；MCP adapter 只看 `/api/kb/v1/docs`
+  - **延后**：`briefing/drafts` 物理移入 `app/`（涉及 `drafts.py → kb._hyde_embed_query`、`maintenance.py → kb.write_wiki_node` 等跨模块导入，留给专门的批次处理）
+- Phase C · 7 个 MCP 工具实现 · ✅ `routers/kb_public.py`（904 行）实现 8 个端点对应 7 个工具：
+  - `GET  /api/kb/v1/search` → hybrid 向量+关键词搜索；filters：type / tags / source_ids / doc_kind / date_from / date_to；keyword_hit 触发 +0.15 分加成，why_matched 标记 vector/keyword/hybrid
+  - `GET  /api/kb/v1/nodes/{id}` → 单节点 fetch，含 summaries 列表、index outline、source_name；`include_body` 控制 wiki 正文，`include_related_ids` 输出可见边
+  - `POST /api/kb/v1/nodes/batch` → 批量 fetch，受 `kb_public.fetch_max_batch` 限制
+  - `GET  /api/kb/v1/nodes/{id}/related` → 6 种 relation（mentions / mentioned_by / summarizes / summarized_by / contains / part_of）的固定 SQL 路由表
+  - `GET  /api/kb/v1/timeline` → entity_id 锚点走 `mentions` 边；topic_query 锚点走向量过滤（`kb_public.timeline_min_score` 阈值）；`include_facts=true` 时合并 `entity_facts`
+  - `POST /api/kb/v1/compare` → 2-5 节点对比，LLM（`compare_nodes` prompt）生成 Markdown 表 + 分析；服务端按最后一个 `|` 行切分表格与分析
+  - `POST /api/kb/v1/cite` → 两阶段算法
+    - Stage 1：embed(claim) → top-N 候选（`kb_public.cite_candidate_count`，doc_kind 过滤）
+    - Stage 2：`cite_match` prompt → LLM 返回 JSON 数组 → 服务端逐字 substring 验证 → 不在原文者丢弃
+    - 返回服务端验证通过的 `{article_id, quote, relevance_explanation, confidence}`
+  - `POST /api/kb/v1/summarize_corpus` → 显式 `node_ids` 或 `query`（向量搜索）确定语料；LLM（`summarize_corpus` prompt）按 bullet/prose/structured 输出；附 `coverage_note`（基于 N 篇文档 + 时间跨度）
+  - 共享工具函数：`_load_doc_context` / `_docs_to_prompt_text` / `_source_descriptor` / `_extract_json_array`（带 fence 与 preamble 容错）
+  - 路由设计：`POST /nodes/batch` 与 `GET /nodes/{id}` 不冲突（按 method+path 匹配）
+- Phase C · 配置补充 · ✅
+  - `config/system.yaml`：新增 `kb_public.*` 13 个参数（top_k / batch / cite 两阶段计数 / 各 body 截断）；`models.{compare,cite,summarize_corpus}`、`llm_output_tokens.{compare,cite,summarize_corpus}` 各 3 项
+  - `config/prompts.md`：新增 `compare_nodes` / `cite_match` / `summarize_corpus` 三段 prompt，cite_match 显式约束"逐字出现、禁止改写"

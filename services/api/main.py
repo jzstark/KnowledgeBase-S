@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
-from routers import briefing, drafts, files, kb, settings, sources
+from routers import briefing, drafts, files, kb, kb_public, settings, sources
 
 AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
@@ -35,6 +35,15 @@ app.include_router(files.router)
 app.include_router(briefing.router)
 app.include_router(settings.router)
 app.include_router(drafts.router)
+
+# KB Public — MCP 稳定接口子应用。挂在 /api/kb/v1/，
+# 独立 OpenAPI 文档位于 /api/kb/v1/docs，由 ~/Code/kb-chat/ 的 MCP adapter 调用。
+kb_public_app = FastAPI(
+    title="KnowledgeBase Public API",
+    description="只读 MCP 工具端点。接口稳定，变更需前向兼容。",
+)
+kb_public_app.include_router(kb_public.router)
+app.mount("/api/kb/v1", kb_public_app)
 
 
 class LoginRequest(BaseModel):

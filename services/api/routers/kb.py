@@ -24,7 +24,7 @@ from auth import require_auth, require_auth_or_service_token
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 RAW_CAP_BYTES = 512 * 1024 * 1024  # 512 MB
 
-router = APIRouter(prefix="/api/kb", tags=["kb"])
+router = APIRouter(prefix="/api/kb", tags=["KB Internal"])
 
 openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 claude_client = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
