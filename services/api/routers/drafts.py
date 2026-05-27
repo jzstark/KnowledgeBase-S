@@ -341,15 +341,15 @@ async def layered_retrieval(
             e_score = entity_hits_map.get(r["entity_id"], 0)
             scored_articles[a_id] = scored_articles.get(a_id, 0) + e_score * float(r["weight"] or 0.5)
 
-    # 2c: summary → article (summarizes edges: summary→article/index)
+    # 2c: summary → article (via summary_nodes.summary_of FK；不再用 knowledge_edges 的 summarizes)
     if scored_summaries:
         sum_ids_str = ", ".join(f"'{s}'" for s in scored_summaries)
         s2a = await database.database.fetch_all(
             f"""
-            SELECT from_node_id AS summary_id, to_node_id AS target_id
-            FROM knowledge_edges
-            WHERE from_node_id IN ({sum_ids_str})
-              AND relation_type = 'summarizes'
+            SELECT node_id AS summary_id, summary_of AS target_id
+            FROM summary_nodes
+            WHERE node_id IN ({sum_ids_str})
+              AND summary_of IS NOT NULL
             """
         )
         for r in s2a:

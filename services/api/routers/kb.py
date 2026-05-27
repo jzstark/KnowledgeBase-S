@@ -1097,13 +1097,7 @@ async def generate_summary_job(
             "source": {"source_node_ids": [node_id], "created_by": "job"},
         },
     )
-    await database.database.execute(
-        """
-        INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
-        VALUES (:from_id, :to_id, 'summarizes', 1.0, 'job')
-        """,
-        {"from_id": summary_id, "to_id": node_id},
-    )
+    # summarizes 关系由 summary_nodes.summary_of FK 表达，不再写 knowledge_edges
     await write_wiki_node(summary_id, user_id)
     await build_similar_edges(summary_id, user_id)
     return {
@@ -1757,12 +1751,9 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
     """
     处理 ingestion-worker 提交的 entity 候选列表：
     - matches_existing → 追加 source_node_ids
-    - 新词 → upsert entity_candidates（累加 mention）
+    - 新词 → upsert entity_candidates（递增计数器 + source_article_ids 数组追加）
     - 检查晋升条件，返回新晋升的候选
     """
-    import datetime as dt
-
-    now_iso = dt.datetime.utcnow().isoformat()
     matched_existing: list[str] = []
     promoted: list[dict] = []
 
@@ -1792,32 +1783,26 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
             matched_existing.append(ent.matches_existing_entity_id)
             continue
 
-        # Upsert into entity_candidates
-        mention_entry = database.jsonb(
-            {
-                "article_id": body.article_id,
-                "salience": ent.salience,
-                "seen_at": now_iso,
-                "summary_hint": ent.summary_hint,
-            }
-        )
+        # Upsert into entity_candidates（计数器 + source_article_ids 数组，无 JSONB）
         existing_cand = await database.database.fetch_one(
-            "SELECT id, mentions FROM entity_candidates WHERE user_id = :uid AND canonical_name = :name",
+            """
+            SELECT id, source_article_ids
+            FROM entity_candidates
+            WHERE user_id = :uid AND canonical_name = :name
+            """,
             {"uid": USER_ID, "name": ent.name},
         )
 
         if existing_cand:
             cand_id = existing_cand["id"]
-            mentions = existing_cand["mentions"]
-            if isinstance(mentions, str):
-                import json as _json
-                mentions = _json.loads(mentions)
-            # avoid duplicate article（仅当未出现过该 article 时才追加并递增计数）
-            if not any(m.get("article_id") == body.article_id for m in mentions):
+            existing_article_ids = list(existing_cand["source_article_ids"] or [])
+            # 仅当该 article_id 未出现过时才递增计数 + 追加 id（保持幂等）
+            if body.article_id not in existing_article_ids:
                 await database.database.execute(
                     """
                     UPDATE entity_candidates
-                    SET mentions = mentions || CAST(:entry AS jsonb),
+                    SET source_article_ids = array_append(
+                            COALESCE(source_article_ids, '{}'), :article_id),
                         mention_count = COALESCE(mention_count, 0) + 1,
                         max_salience = GREATEST(COALESCE(max_salience, 0), :salience),
                         aliases = (
@@ -1828,24 +1813,24 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
                     """,
                     {
                         "cid": cand_id,
-                        "entry": f"[{mention_entry}]",
+                        "article_id": body.article_id,
                         "new_aliases": ent.aliases,
                         "salience": float(ent.salience),
                     },
                 )
         else:
-            # Insert new candidate (embedding computed lazily; skip here for now)
             await database.database.execute(
                 """
                 INSERT INTO entity_candidates
-                  (user_id, canonical_name, aliases, mentions, mention_count, max_salience)
-                VALUES (:uid, :name, :aliases, CAST(:mentions AS jsonb), 1, :salience)
+                  (user_id, canonical_name, aliases, source_article_ids,
+                   mention_count, max_salience)
+                VALUES (:uid, :name, :aliases, ARRAY[:article_id]::text[], 1, :salience)
                 """,
                 {
                     "uid": USER_ID,
                     "name": ent.name,
                     "aliases": ent.aliases,
-                    "mentions": f"[{mention_entry}]",
+                    "article_id": body.article_id,
                     "salience": float(ent.salience),
                 },
             )
@@ -1855,13 +1840,12 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
             )
             cand_id = cand_id_row["id"] if cand_id_row else None
 
-        # Check promotion threshold —— 从计数器列读，避免再解析 JSONB
         if cand_id is None:
             continue
         cand_row = await database.database.fetch_one(
             """
-            SELECT id, canonical_name, aliases, mentions, promoted_entity_id,
-                   mention_count, max_salience
+            SELECT id, canonical_name, aliases, source_article_ids,
+                   promoted_entity_id, mention_count, max_salience
             FROM entity_candidates WHERE id = :cid
             """,
             {"cid": cand_id},
@@ -1869,15 +1853,10 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
         if not cand_row:
             continue
         if cand_row["promoted_entity_id"]:
-            continue  # already promoted, skip
+            continue
         mention_count = int(cand_row["mention_count"] or 0)
         max_salience = float(cand_row["max_salience"] or 0)
-        # source_article_ids 仍需从 JSONB 取（晋升后用于回填 source）
-        mentions_raw = cand_row["mentions"]
-        if isinstance(mentions_raw, str):
-            import json as _json
-            mentions_raw = _json.loads(mentions_raw)
-        source_article_ids = [m["article_id"] for m in mentions_raw]
+        source_article_ids = list(cand_row["source_article_ids"] or [])
 
         should_promote = (
             max_salience >= config_loader.get("entity.promotion_max_salience", 0.9)
@@ -1910,9 +1889,17 @@ async def backfill_entity_wikilinks(entity_id: str):
 
 
 async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -> dict:
+    """
+    新 entity 晋升后回填 entity_facts。
+
+    历史 mentions JSONB 保存了 per-article 的 (salience, summary_hint)；移除后
+    候选侧只保留聚合 max_salience。这里用 max_salience 作为每篇文章的回填权重，
+    summary_hint 不再回填（ingestion 时如有匹配会通过 process_entity_candidates
+    主路径写入 entity_facts，此函数是兜底）。
+    """
     cand = await database.database.fetch_one(
         """
-        SELECT canonical_name, mentions
+        SELECT canonical_name, source_article_ids, max_salience
         FROM entity_candidates
         WHERE id = :cid
         """,
@@ -1920,20 +1907,18 @@ async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -
     )
     if not cand:
         return {"facts_inserted": 0}
-    mentions = cand["mentions"] or []
-    if isinstance(mentions, str):
-        mentions = json.loads(mentions)
+    article_ids = list(cand["source_article_ids"] or [])
+    fallback_salience = float(cand["max_salience"] or 0.5) or 0.5
     inserted = 0
-    for mention in mentions:
-        article_id = mention.get("article_id")
+    for article_id in article_ids:
         if not article_id:
             continue
         created = await entity_insights.upsert_fact_from_mention(
             entity_node_id,
             article_id,
             canonical_name=cand["canonical_name"],
-            summary_hint=mention.get("summary_hint"),
-            salience=float(mention.get("salience", 0.5)),
+            summary_hint=None,
+            salience=fallback_salience,
             user_id=USER_ID,
         )
         if created:
@@ -2057,16 +2042,14 @@ async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_au
 
 @router.get("/entity_candidates")
 async def list_entity_candidates(_: dict = Depends(require_auth)):
-    """列出未晋升的 entity 候选（按 mention 数排序），供调试用。"""
+    """列出未晋升的 entity 候选（按 mention_count 排序），供调试用。"""
     async with database.database.connection() as conn:
         rows = await conn.raw_connection.fetch(
             """
-            SELECT id, canonical_name, aliases,
-                   jsonb_array_length(mentions) AS mention_count,
-                   updated_at
+            SELECT id, canonical_name, aliases, mention_count, max_salience, updated_at
             FROM entity_candidates
             WHERE user_id = $1 AND promoted_entity_id IS NULL
-            ORDER BY jsonb_array_length(mentions) DESC
+            ORDER BY mention_count DESC, max_salience DESC
             LIMIT 100
             """,
             USER_ID,
@@ -2076,7 +2059,8 @@ async def list_entity_candidates(_: dict = Depends(require_auth)):
             "id": r["id"],
             "canonical_name": r["canonical_name"],
             "aliases": list(r["aliases"]) if r["aliases"] else [],
-            "mention_count": r["mention_count"],
+            "mention_count": int(r["mention_count"] or 0),
+            "max_salience": float(r["max_salience"] or 0),
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         }
         for r in rows

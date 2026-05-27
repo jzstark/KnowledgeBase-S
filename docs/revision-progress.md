@@ -683,3 +683,50 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - compare 工具暂未引入 summary-first（compare 输入永远是显式 node_ids，不存在 query → corpus 的扩展点）
 - 自动重算 drift embedding：仅检测+报告；自动重算需要专门的 job_type 与限流，未在本批实现
 - `entity_insights.refresh_stale_entity_profiles` 的 limit=200 仍硬编码（涉及 entity profile 流程，不在 Phase D 核心算法范畴，留给后续整理）
+
+### Phase A 第三批（破坏性）· ✅ 已完成
+
+**实际执行范围（设计文档中标记的 7 项里，安全可做的 4 项）**
+
+1. **entity_candidates.mentions JSONB → 完全移除**
+   - `database.py` `CREATE TABLE` 中删 `mentions JSONB DEFAULT '[]'`，新建 schema 直接使用计数器结构
+   - `database.py` 新增 `source_article_ids TEXT[]` 列；`init()` 中条件迁移块（`if has_mentions:` 守卫）从 JSONB 抽取 `article_id` 数组后 `DROP COLUMN mentions`，幂等
+   - 改写 4 处 mentions JSONB 读取点：
+     - `kb.py process_entity_candidates`（写入+晋升判定）：read `source_article_ids` 数组，写入用 `array_append`
+     - `kb.py _materialize_candidate_facts`：用 `source_article_ids` + 候选侧 `max_salience` 作回填权重；不再有 per-article salience（兜底场景可接受）
+     - `kb.py list_entity_candidates`：用 `mention_count / max_salience` 列排序
+     - `maintenance.py promote_entity_candidates`：用 `mention_count / max_salience / source_article_ids`
+     - `maintenance.py backfill_wikilinks_for_entity`：salience_map 从 `entity_facts.confidence` 构建（per-article salience 在 ingestion 时已经通过 `upsert_fact_from_mention` 固化到 `entity_facts.confidence`）
+     - `maintenance.py migrate_wikilink_edges` Step A：salience 来源切到 `entity_facts.confidence`
+     - `maintenance.py rebuild_from_raw` 清空候选：用 `source_article_ids && base_ids[]`，不再 `jsonb_array_elements`
+
+2. **knowledge_nodes 应用层遗留字段删除**
+   - `database.py`：删除 `ADD COLUMN priority_score / last_accessed_at / access_count`；新增 `DROP COLUMN IF EXISTS`；删除 `idx_knowledge_nodes_priority` 索引声明，增加 `DROP INDEX IF EXISTS`
+   - 全代码库 grep 确认无 Python 引用，纯 schema 清理
+
+3. **summarizes 边删除**
+   - `database.py`：`DELETE FROM knowledge_edges WHERE relation_type = 'summarizes'`（幂等）
+   - 删除三处写入：
+     - `kb.py generate_summary_job`：删除 INSERT summarizes 边
+     - `maintenance.py backfill_summarizes_edges`：整个函数删除 + 从 `run_maintenance` 调用链移除 + 顶部 docstring 更新
+     - `maintenance.py restore_from_wiki`：删除 summarizes `_add_edge` 调用
+   - 读取已用 `summary_nodes.summary_of` FK 替代：
+     - `drafts.py` Phase 2c：`SELECT node_id, summary_of FROM summary_nodes WHERE node_id IN (...)`
+     - `kb_public.py related` 工具的 `summarizes / summarized_by` 已经走 `summary_nodes` JOIN，无需改
+
+4. **knowledge_edges UNIQUE 约束**
+   - `database.py`：去重 DELETE（`row_number() OVER (PARTITION BY ...)` CTE，保留每组最小 id，幂等）
+   - `init()`：检测 `uq_edges_from_to_type` 约束是否存在，缺则 `ADD CONSTRAINT UNIQUE(from_node_id, to_node_id, relation_type)`
+
+**本批延后的项（设计列表里剩 3 项）**
+
+- **`knowledge_nodes.is_primary`**：briefing.py 仍按它过滤（应用层概念，正确归宿是改为 JOIN `sources.is_primary`）；kb.py 4+ 处 INSERT 和 worker 都还在写入。等 briefing/drafts 迁入 `app/` 时一起处理
+- **`entity_profiles` 表**：`entity_insights.py` 4 处引用 + `kb.py:get_entity_timeline` 直接读 timeline_summary + `run_maintenance.refresh_stale_entity_profiles`。需要先把 entity 描述读路径全部切到 `nodes.abstract`，再删表。属于独立批次
+- **`knowledge_nodes` 其余对象专属字段**（canonical_name / aliases / perspective_* / body_embedding / source_node_ids / raw_ref / source_type）：每个字段都有多写多读路径，object tables 与 knowledge_nodes 同时被读写。需要逐字段做"切读 → 改写 → 删列"三步，跨越 ingest endpoint / object_nodes / maintenance / kb_tools 多文件。属于独立大批次
+
+**当前 schema 状态（Phase A 第三批后）**
+
+- `knowledge_nodes`：去掉了 `priority_score`、`last_accessed_at`、`access_count`；其余字段保持
+- `entity_candidates`：JSONB `mentions` 完全消失；保留 `mention_count / max_salience / source_article_ids` 三列
+- `knowledge_edges`：UNIQUE(from, to, type) 强制约束；`summarizes` 边永久清空
+- 其余表保持原状

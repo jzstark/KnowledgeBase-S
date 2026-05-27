@@ -3,10 +3,11 @@
   1. 迁移历史 wikilink 边到 mentions
   2. entity candidate 晋升与 wikilink/mentions 回灌
   3. orphan entity 标记
-  4. summarizes 边回填
-  5. index abstract 聚合
+  4. index abstract 聚合
+  5. embedding_model drift 检测（仅报告，不自动重算）
 
 可以作为独立脚本运行（python maintenance.py），也可以由 API 端点触发。
+注：summarizes 关系由 summary_nodes.summary_of FK 表达，不再有 summarizes 边回填。
 """
 import asyncio
 import json
@@ -63,10 +64,10 @@ async def promote_entity_candidates(user_id: str) -> dict:
 
     rows = await database.database.fetch_all(
         """
-        SELECT id, canonical_name, aliases, mentions
+        SELECT id, canonical_name, aliases, source_article_ids, mention_count, max_salience
         FROM entity_candidates
         WHERE user_id = :uid AND promoted_entity_id IS NULL
-        ORDER BY jsonb_array_length(mentions) DESC
+        ORDER BY mention_count DESC, max_salience DESC
         LIMIT 50
         """,
         {"uid": user_id},
@@ -75,11 +76,8 @@ async def promote_entity_candidates(user_id: str) -> dict:
     promoted_count = 0
     for row in rows:
         row = dict(row)
-        mentions = row["mentions"]
-        if isinstance(mentions, str):
-            mentions = json.loads(mentions)
-        mention_count = len(mentions)
-        max_salience = max((m.get("salience", 0) for m in mentions), default=0)
+        mention_count = int(row["mention_count"] or 0)
+        max_salience = float(row["max_salience"] or 0)
 
         should_promote = (
             (max_salience >= config_loader.get("entity.promotion_salience", 0.7)
@@ -89,7 +87,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
         if not should_promote:
             continue
 
-        source_ids = [m["article_id"] for m in mentions]
+        source_ids = list(row["source_article_ids"] or [])
         # Fetch abstracts for source articles
         source_abstracts = []
         for art_id in source_ids[:config_loader.get("ingestion.max_entity_page_sources", 5)]:
@@ -186,19 +184,18 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
     if not search_terms:
         return {"articles_scanned": 0, "wikilinks_added": 0}
 
-    # Pre-fetch salience map from entity_candidates: {article_id: salience}
+    # Pre-fetch salience map from entity_facts: {article_id: confidence}
+    # （per-article salience 在 ingestion 时通过 upsert_fact_from_mention 已固化到 entity_facts.confidence；
+    #  entity_candidates 已不再保存 per-article 详情，只保留聚合计数器与 source_article_ids 数组）
     salience_map: dict[str, float] = {}
-    cand_row = await database.database.fetch_one(
-        "SELECT mentions FROM entity_candidates WHERE promoted_entity_id = :eid",
+    fact_rows = await database.database.fetch_all(
+        "SELECT article_id, confidence FROM entity_facts WHERE entity_id = :eid",
         {"eid": entity_id},
     )
-    if cand_row and cand_row["mentions"]:
-        mentions_data = cand_row["mentions"]
-        if isinstance(mentions_data, str):
-            mentions_data = json.loads(mentions_data)
-        for m in mentions_data:
-            if m.get("article_id"):
-                salience_map[m["article_id"]] = float(m.get("salience", 0.5))
+    for r in fact_rows:
+        aid = r["article_id"]
+        if aid:
+            salience_map[aid] = float(r["confidence"] or 0.5)
 
     articles = await database.database.fetch_all(
         "SELECT id, user_id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'article'",
@@ -286,21 +283,20 @@ async def migrate_wikilink_edges() -> dict:
     if n == 0:
         return {"migrated": 0}
 
-    # Step A: 用 entity_candidates 中的真实 salience 更新权重
+    # Step A: 用 entity_facts.confidence 更新权重（per-article salience 来源已迁移到 entity_facts）
     await database.database.execute(
         """
         UPDATE knowledge_edges ke
         SET weight = COALESCE(
-            (SELECT (elem->>'salience')::float
-             FROM entity_candidates ec,
-                  jsonb_array_elements(ec.mentions) AS elem
-             WHERE ec.promoted_entity_id = ke.to_node_id
-               AND elem->>'article_id' = ke.from_node_id
+            (SELECT ef.confidence
+             FROM entity_facts ef
+             WHERE ef.entity_id = ke.to_node_id
+               AND ef.article_id = ke.from_node_id
              LIMIT 1),
             0.5
         )
         WHERE ke.relation_type = 'wikilink'
-        """
+    """
     )
 
     # Step B: 重命名
@@ -405,44 +401,6 @@ async def cleanup_orphan_entities(user_id: str) -> dict:
             )
             marked += 1
     return {"orphans_found": len(rows), "tagged": marked}
-
-
-# ── 8. Summarizes 边回填 ─────────────────────────────────────────────────────
-
-async def backfill_summarizes_edges(user_id: str) -> dict:
-    """为现有 summary 节点补建 summarizes 边（幂等，跳过已有的）。"""
-    summaries = await database.database.fetch_all(
-        """
-        SELECT id, source_node_ids FROM knowledge_nodes
-        WHERE user_id = :uid
-          AND object_type = 'summary'
-          AND source_node_ids IS NOT NULL
-          AND source_node_ids != '{}'
-        """,
-        {"uid": user_id},
-    )
-    added = 0
-    for row in summaries:
-        row = dict(row)
-        for target_id in (row["source_node_ids"] or []):
-            exists = await database.database.fetch_one(
-                """
-                SELECT 1 FROM knowledge_edges
-                WHERE from_node_id = :fid AND to_node_id = :tid AND relation_type = 'summarizes'
-                """,
-                {"fid": row["id"], "tid": target_id},
-            )
-            if not exists:
-                await database.database.execute(
-                    """
-                    INSERT INTO knowledge_edges
-                      (from_node_id, to_node_id, relation_type, weight, created_by)
-                    VALUES (:from_id, :to_id, 'summarizes', 1.0, 'backfill')
-                    """,
-                    {"from_id": row["id"], "to_id": target_id},
-                )
-                added += 1
-    return {"summaries_checked": len(summaries), "edges_added": added}
 
 
 # ── 9. Index Abstract 聚合 ─────────────────────────────────────────────────────
@@ -862,9 +820,7 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
         node_id = m["id"]
         object_type = str(m.get("type") or "article")
 
-        # summarizes: summary → article
-        if object_type == "summary" and m.get("summary_of"):
-            await _add_edge(node_id, m["summary_of"], "summarizes")
+        # summarizes 关系由 summary_nodes.summary_of FK 表达，不在此处建边
 
         # legacy part_of relations are restored into index_children, not knowledge_edges.
         relations = m.get("relations") or []
@@ -1063,11 +1019,7 @@ async def rebuild_from_raw(
         """
         DELETE FROM entity_candidates
         WHERE user_id = :uid
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(mentions) AS m
-            WHERE m->>'article_id' = ANY(:base_ids)
-          )
+          AND source_article_ids && CAST(:base_ids AS text[])
         """,
         {"uid": user_id, "base_ids": list(base_ids) or ["__none__"]},
     )
@@ -1265,9 +1217,6 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     orphan_result = await cleanup_orphan_entities(user_id)
     print(f"[maintenance] Orphan entities: {orphan_result}", flush=True)
 
-    summarizes_result = await backfill_summarizes_edges(user_id)
-    print(f"[maintenance] Summarizes backfill: {summarizes_result}", flush=True)
-
     index_abstract_result = await aggregate_index_abstracts(user_id)
     print(f"[maintenance] Index abstract aggregation: {index_abstract_result}", flush=True)
 
@@ -1287,7 +1236,6 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "entity_profiles": profiles_result,
         "entity_relatedness": relatedness_result,
         "orphan_entities": orphan_result,
-        "summarizes_backfill": summarizes_result,
         "index_abstract": index_abstract_result,
         "embedding_model_drift": drift_result,
     }

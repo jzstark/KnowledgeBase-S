@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS entity_candidates (
     canonical_name TEXT NOT NULL,
     aliases TEXT[] DEFAULT '{}',
     embedding vector(1536),
-    mentions JSONB DEFAULT '[]',
+    mention_count INT DEFAULT 0,
+    max_salience FLOAT DEFAULT 0,
+    source_article_ids TEXT[] DEFAULT '{}',
     promoted_entity_id VARCHAR REFERENCES knowledge_nodes(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -279,9 +281,6 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DE
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS perspective TEXT;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS priority_score FLOAT DEFAULT 1.0;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 0;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
@@ -300,18 +299,29 @@ ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
 ALTER TABLE IF EXISTS entity_candidates ADD COLUMN IF NOT EXISTS mention_count INT DEFAULT 0;
 ALTER TABLE IF EXISTS entity_candidates ADD COLUMN IF NOT EXISTS max_salience FLOAT DEFAULT 0;
+ALTER TABLE IF EXISTS entity_candidates ADD COLUMN IF NOT EXISTS source_article_ids TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
 
--- Phase D 一次性 backfill：将历史 JSONB mentions 浓缩为计数器。
--- 仅在计数器尚未填充（mention_count = 0）时回填，幂等。
-UPDATE entity_candidates
-SET mention_count = jsonb_array_length(COALESCE(mentions, '[]'::jsonb)),
-    max_salience = COALESCE(
-        (SELECT MAX((elem->>'salience')::float)
-         FROM jsonb_array_elements(COALESCE(mentions, '[]'::jsonb)) AS elem),
-        0
-    )
-WHERE mention_count = 0 AND jsonb_array_length(COALESCE(mentions, '[]'::jsonb)) > 0;
+-- Phase A 第三批：删除应用层遗留字段（无任何代码引用）
+DROP INDEX IF EXISTS idx_knowledge_nodes_priority;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS priority_score;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS last_accessed_at;
+ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS access_count;
+
+-- Phase A 第三批：删除所有 summarizes 边（由 summary_nodes.summary_of FK 替代）
+-- 幂等：再次执行 DELETE 影响零行
+DELETE FROM knowledge_edges WHERE relation_type = 'summarizes';
+
+-- Phase A 第三批：knowledge_edges 去重（保留每组最小 id）
+-- 幂等：去重后再次执行影响零行
+DELETE FROM knowledge_edges WHERE id IN (
+    SELECT id FROM (
+        SELECT id, row_number() OVER (
+            PARTITION BY from_node_id, to_node_id, relation_type ORDER BY id
+        ) AS rn
+        FROM knowledge_edges
+    ) t WHERE rn > 1
+);
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS source_type VARCHAR;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref TEXT;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS origin_ref_type VARCHAR;
@@ -490,7 +500,6 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_summary_of ON knowledge_nodes(summary_of);
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_priority ON knowledge_nodes(priority_score);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_knowledge_time ON knowledge_nodes(
     COALESCE(effective_at, source_published_at, captured_at, ingested_at)
 );
@@ -570,4 +579,37 @@ async def init():
         await database.execute(
             "ALTER TABLE knowledge_nodes ADD CONSTRAINT fk_summary_of "
             "FOREIGN KEY (summary_of) REFERENCES knowledge_nodes(id) ON DELETE CASCADE"
+        )
+
+    # Phase A 第三批：entity_candidates.mentions JSONB → source_article_ids TEXT[]
+    # 条件迁移：先 backfill 再 DROP（DO 块在 SCHEMA_SQL split-by-; 的拆分中无法直接用）
+    has_mentions = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='entity_candidates' AND column_name='mentions'"
+    )
+    if has_mentions:
+        await database.execute(
+            """
+            UPDATE entity_candidates
+            SET source_article_ids = ARRAY(
+                SELECT DISTINCT (elem->>'article_id')
+                FROM jsonb_array_elements(COALESCE(mentions, '[]'::jsonb)) AS elem
+                WHERE elem->>'article_id' IS NOT NULL
+            )
+            WHERE (source_article_ids IS NULL OR cardinality(source_article_ids) = 0)
+              AND jsonb_array_length(COALESCE(mentions, '[]'::jsonb)) > 0
+            """
+        )
+        await database.execute("ALTER TABLE entity_candidates DROP COLUMN mentions")
+
+    # Phase A 第三批：knowledge_edges 唯一约束 UNIQUE(from_node_id, to_node_id, relation_type)
+    # 去重 DELETE 已在 SCHEMA_SQL 中执行，此处仅添加约束（幂等）
+    row = await database.fetch_one(
+        "SELECT 1 FROM information_schema.table_constraints "
+        "WHERE constraint_name='uq_edges_from_to_type' AND table_name='knowledge_edges'"
+    )
+    if not row:
+        await database.execute(
+            "ALTER TABLE knowledge_edges ADD CONSTRAINT uq_edges_from_to_type "
+            "UNIQUE (from_node_id, to_node_id, relation_type)"
         )
