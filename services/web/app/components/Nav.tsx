@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/briefing", label: "简报", icon: Newspaper, key: "B", match: ["/briefing"] },
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
-  { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/rules", "/settings"] },
+  { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/settings"] },
   { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
   { href: "https://chat.laughtale.co.uk/", label: "LibreChat", icon: Bot, key: "C", match: [] },
   { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
@@ -32,7 +32,6 @@ const links = [
 const studioLinks = [
   { href: "/drafts", label: "草稿历史", activePath: "/drafts" },
   { href: "/instructions#templates", label: "写作模板", activePath: "/instructions" },
-  { href: "/rules", label: "偏好规则", activePath: "/rules" },
   { href: "/settings", label: "系统设置", activePath: "/settings" },
 ];
 

@@ -11,7 +11,6 @@ import secrets
 from pathlib import Path
 
 import anthropic
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -25,7 +24,6 @@ router = APIRouter(prefix="/api/drafts", tags=["drafts"])
 
 USER_ID = "default"
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
-FEEDBACK_WORKER_URL = os.environ.get("FEEDBACK_WORKER_URL", "http://feedback-worker:8002")
 
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 
@@ -41,10 +39,6 @@ MAX_KNOWLEDGE_CHARS = config_loader.get("retrieval.draft_knowledge_chars", 6000)
 class GenerateRequest(BaseModel):
     selected_topic_ids: list[str]
     template_name: str = "default"
-
-
-class FeedbackRequest(BaseModel):
-    final_content: str
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -167,24 +161,10 @@ async def generate_draft(body: GenerateRequest):
             entity_parts.append(f"**{title}**：{content}")
             remaining -= len(title) + len(content) + 4
 
-    # 5. 读取偏好规则（confidence >= 0.8）
-    pref_rows = await database.database.fetch_all(
-        """
-        SELECT rule FROM writing_memory
-        WHERE user_id = :user_id
-          AND (template_name = :tpl OR template_name IS NULL)
-          AND confidence >= 0.8
-        ORDER BY confidence DESC
-        LIMIT 10
-        """,
-        {"user_id": USER_ID, "tpl": body.template_name},
-    )
-    preferences = "\n".join(f"- {r['rule']}" for r in pref_rows)
-
-    # 6. 读取模板
+    # 5. 读取模板
     template = read_template(body.template_name)
 
-    # 7. 组合 Prompt
+    # 6. 组合 Prompt
     topic_lines = "\n".join(
         f"- 【{t['title']}】{t.get('description', '')}" for t in topics
     )
@@ -195,11 +175,9 @@ async def generate_draft(body: GenerateRequest):
         prompt_parts += ["", "知识库相关文章：", "\n\n".join(article_parts)]
     if entity_parts:
         prompt_parts += ["", "相关实体：", "\n\n".join(entity_parts)]
-    if preferences:
-        prompt_parts += ["", "根据用户历史反馈，额外注意：", preferences]
     prompt = "\n".join(prompt_parts)
 
-    # 8. 调用 Claude
+    # 7. 调用 Claude
     message = claude.messages.create(
         model=config_loader.get("models.draft_generation", "claude-sonnet-4-6"),
         max_tokens=config_loader.get("llm_output_tokens.draft_generation", 4096),
@@ -214,7 +192,7 @@ async def generate_draft(body: GenerateRequest):
     references = await fetch_reference_sources(reference_node_ids)
     draft_content += format_reference_section(references)
 
-    # 9. 写入 drafts 表
+    # 8. 写入 drafts 表
     draft_id = f"draft_{secrets.token_hex(6)}"
     await database.database.execute(
         """
@@ -262,42 +240,6 @@ async def list_drafts(_: dict = Depends(require_auth)):
             d["created_at"] = d["created_at"].isoformat()
         result.append(d)
     return result
-
-
-@router.post("/{draft_id}/feedback")
-async def submit_feedback(draft_id: str, body: FeedbackRequest):
-    """用户提交定稿，调用 feedback-worker 分析并学习偏好规则。"""
-    row = await database.database.fetch_one(
-        "SELECT id, template_name, draft_content FROM drafts WHERE id = :id AND user_id = :user_id",
-        {"id": draft_id, "user_id": USER_ID},
-    )
-    if not row:
-        raise HTTPException(404, "草稿不存在")
-
-    await database.database.execute(
-        "UPDATE drafts SET final_content = :fc WHERE id = :id",
-        {"fc": body.final_content, "id": draft_id},
-    )
-
-    rules_extracted = 0
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{FEEDBACK_WORKER_URL}/analyze",
-                json={
-                    "draft_id": draft_id,
-                    "draft_content": row["draft_content"] or "",
-                    "final_content": body.final_content,
-                    "template_name": row["template_name"] or "default",
-                },
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                rules_extracted = resp.json().get("rules_extracted", 0)
-    except Exception:
-        pass
-
-    return {"ok": True, "rules_extracted": rules_extracted}
 
 
 @router.get("/{draft_id}")

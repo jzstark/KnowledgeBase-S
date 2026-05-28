@@ -57,18 +57,6 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
     created_by VARCHAR
 );
 
-CREATE TABLE IF NOT EXISTS writing_memory (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    template_name VARCHAR,
-    rule TEXT,
-    rule_type VARCHAR,
-    confidence FLOAT DEFAULT 0.5,
-    count INTEGER DEFAULT 1,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS sources (
     id VARCHAR PRIMARY KEY,
     user_id VARCHAR NOT NULL,

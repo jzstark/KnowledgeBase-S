@@ -13,7 +13,6 @@ jobs:
       api: ${{ steps.filter.outputs.api }}
       ingestion: ${{ steps.filter.outputs.ingestion }}
       summarizer: ${{ steps.filter.outputs.summarizer }}
-      feedback: ${{ steps.filter.outputs.feedback }}
       kb_mcp: ${{ steps.filter.outputs.kb_mcp }}
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +28,6 @@ jobs:
               - 'services/ingestion-worker/**'
             summarizer:
               - 'services/summarizer-worker/**'
-            feedback:
-              - 'services/feedback-worker/**'
             kb_mcp:
               - 'services/kb-mcp/**'
 
@@ -113,26 +110,6 @@ jobs:
           context: services/summarizer-worker
           push: true
           tags: ghcr.io/jzstark/summarizer-worker:latest
-
-  build-feedback:
-    needs: changes
-    if: needs.changes.outputs.feedback == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v5
-        with:
-          context: services/feedback-worker
-          push: true
-          tags: ghcr.io/jzstark/feedback-worker:latest
 
   build-kb-mcp:
     needs: changes

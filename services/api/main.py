@@ -9,7 +9,7 @@ import database
 from auth import create_token, require_auth, verify_password
 import config_loader
 import prompt_loader
-from app import briefing, drafts, settings, writing_memory
+from app import briefing, drafts, settings
 from kb import internal as kb_internal
 from kb import public as kb_public
 from routers import files, sources
@@ -42,7 +42,6 @@ app.include_router(files.router)
 app.include_router(briefing.router)
 app.include_router(settings.router)
 app.include_router(drafts.router)
-app.include_router(writing_memory.router)
 
 # KB Public — MCP 稳定接口子应用。挂在 /api/kb/v1/，
 # 独立 OpenAPI 文档位于 /api/kb/v1/docs，由 ~/Code/kb-chat/ 的 MCP adapter 调用。

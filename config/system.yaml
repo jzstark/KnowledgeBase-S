@@ -43,7 +43,6 @@ models:
   image_ocr:         "claude-sonnet-4-6"
   image_cleanup:     "claude-sonnet-4-6"
   pdf_cleanup:       "claude-haiku-4-5-20251001"
-  feedback_analysis: "claude-haiku-4-5-20251001"
 
 embedding:
   model:      "text-embedding-3-small"
@@ -109,7 +108,6 @@ llm_output_tokens:
   image_ocr:                    4096
   image_cleanup:                4096
   pdf_cleanup:                  4096
-  feedback_analysis:            512
 
 # MCP Public 工具参数（/api/kb/v1/）
 kb_public:

@@ -5,7 +5,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { MarkdownView } from "../components/MarkdownView";
 
@@ -29,11 +28,6 @@ export default function DraftsPage() {
   const [copied, setCopied] = useState(false);
   const [editingDraft, setEditingDraft] = useState(false);
 
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [finalContent, setFinalContent] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [feedbackResult, setFeedbackResult] = useState<string | null>(null);
-
   useEffect(() => {
     fetch("/api/drafts", { credentials: "include" })
       .then((r) => r.json())
@@ -50,9 +44,6 @@ export default function DraftsPage() {
       const data = await r.json();
       setSelected(data);
       setEditingDraft(false);
-      setShowFeedback(false);
-      setFinalContent("");
-      setFeedbackResult(null);
     }
   }
 
@@ -70,34 +61,6 @@ export default function DraftsPage() {
     await navigator.clipboard.writeText(selected.draft_content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }
-
-  async function submitFeedback() {
-    if (!selected || !finalContent.trim()) return;
-    setSubmitting(true);
-    try {
-      const r = await fetch(`/api/drafts/${selected.id}/feedback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ final_content: finalContent }),
-      });
-      if (r.ok) {
-        const data = await r.json();
-        const n = data.rules_extracted ?? 0;
-        setFeedbackResult(
-          n > 0 ? `已学习 ${n} 条偏好规则` : "已保存定稿（未提取到新规则）"
-        );
-        setShowFeedback(false);
-        setFinalContent("");
-      } else {
-        setFeedbackResult("提交失败，请重试");
-      }
-    } catch {
-      setFeedbackResult("提交失败，请重试");
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   return (
@@ -156,11 +119,6 @@ export default function DraftsPage() {
                         <span className="text-xs text-muted-foreground">
                           {selected.created_at ? formatDate(selected.created_at) : ""}
                         </span>
-                        {selected.final_content && (
-                          <Badge variant="outline" className="text-xs text-green-600 border-green-200">
-                            已有定稿
-                          </Badge>
-                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <Button variant="ghost" size="sm" onClick={() => setEditingDraft((v) => !v)}>
@@ -179,65 +137,14 @@ export default function DraftsPage() {
                         onChange={(e) =>
                           setSelected({ ...selected, draft_content: e.target.value })
                         }
-                        className="h-[55vh] text-sm leading-relaxed resize-none border-0 shadow-none focus-visible:ring-0 p-0"
+                        className="h-[65vh] text-sm leading-relaxed resize-none border-0 shadow-none focus-visible:ring-0 p-0"
                         spellCheck={false}
                       />
                     ) : (
-                      <div className="max-h-[55vh] overflow-y-auto rounded-md border border-border bg-background p-4">
+                      <div className="max-h-[65vh] overflow-y-auto rounded-md border border-border bg-background p-4">
                         <MarkdownView content={selected.draft_content} />
                       </div>
                     )}
-
-                    {/* 定稿反馈区 */}
-                    <div className="mt-3 pt-3">
-                      <Separator className="mb-3" />
-                      {feedbackResult && (
-                        <div className="mb-3 text-sm text-green-700 bg-green-50 dark:bg-green-950 dark:text-green-400 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
-                          {feedbackResult}
-                        </div>
-                      )}
-
-                      {!showFeedback ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-muted-foreground"
-                          onClick={() => { setShowFeedback(true); setFeedbackResult(null); }}
-                        >
-                          + 提交定稿，让系统学习你的写作偏好
-                        </Button>
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-xs text-muted-foreground">
-                            将你修改后的最终版本粘贴到下方，系统将对比草稿并提炼偏好规则：
-                          </p>
-                          <Textarea
-                            value={finalContent}
-                            onChange={(e) => setFinalContent(e.target.value)}
-                            placeholder="粘贴你的定稿内容…"
-                            className="h-[30vh] text-sm leading-relaxed resize-none"
-                            spellCheck={false}
-                          />
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              onClick={submitFeedback}
-                              disabled={submitting || !finalContent.trim()}
-                            >
-                              {submitting ? "分析中…" : "提交定稿"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-muted-foreground"
-                              onClick={() => { setShowFeedback(false); setFinalContent(""); }}
-                            >
-                              取消
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
                   </CardContent>
                 </Card>
               ) : (

@@ -7,7 +7,10 @@ import os
 from pathlib import Path
 
 _DEFAULT_PATH = Path("/app/shared_config/prompts.md")
-_LOCAL_PATH = Path(__file__).resolve().parents[2] / "config" / "prompts.md"
+try:
+    _LOCAL_PATH = Path(__file__).resolve().parents[2] / "config" / "prompts.md"
+except IndexError:
+    _LOCAL_PATH = Path("/nonexistent")
 _PATH = Path(os.environ.get("PROMPTS_PATH", str(_DEFAULT_PATH)))
 
 REQUIRED_PROMPTS = (

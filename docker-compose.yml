@@ -30,7 +30,6 @@ services:
       AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       INGESTION_WORKER_URL: http://ingestion-worker:8001
-      FEEDBACK_WORKER_URL: http://feedback-worker:8002
       WECHAT2RSS_BASE_URL: ${WECHAT2RSS_BASE_URL:-https://rss.laughtale.co.uk/wechat-api}
       WECHAT2RSS_TOKEN: ${WECHAT2RSS_TOKEN}
     depends_on:
@@ -105,23 +104,6 @@ services:
       AUTH_SECRET: ${AUTH_SECRET}
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       USER_DATA_DIR: /app/user_data
-    depends_on:
-      api:
-        condition: service_healthy
-    profiles: ["workers"]
-
-  feedback-worker:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/feedback-worker:latest
-    build:
-      context: ./services/feedback-worker
-    restart: unless-stopped
-    volumes:
-      - ./user_data:/app/user_data
-      - ./config:/app/shared_config:ro
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      CLAUDE_API_KEY: ${CLAUDE_API_KEY}
-      API_BASE_URL: http://api:8000
     depends_on:
       api:
         condition: service_healthy
