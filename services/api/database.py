@@ -282,6 +282,9 @@ ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS perspective_embeddin
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS body_embedding;
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS is_default;
 
+-- published_at 为 knowledge_nodes 核心字段；若旧迁移曾 DROP，补回
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+
 -- Phase A 第三批：删除所有 summarizes 边（由 summary_nodes.summary_of FK 替代）
 -- 幂等：再次执行 DELETE 影响零行
 DELETE FROM knowledge_edges WHERE relation_type = 'summarizes';
