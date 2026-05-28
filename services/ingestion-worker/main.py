@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI
 
 import config_loader
+import prompt_loader
 from pipeline import run_book_pipeline, run_pipeline
 from sources.book import BookSource
 from sources.image import ImageSource

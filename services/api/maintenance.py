@@ -145,10 +145,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
                 )
                 entity_node_id = ingest_resp.json().get("id")
 
-            # Write entity wiki file
-            wiki_dir = (
-                sys.path[0] and None  # handled by write_wiki_node background task
-            )
+            # wiki file written by write_wiki_node background task via ingest endpoint
 
             # Mark candidate as promoted
             await database.database.execute(
@@ -440,9 +437,10 @@ async def aggregate_index_abstracts(
 
     # 1. 找所有 index 节点
     filters = ["kn.user_id = :uid", "kn.object_type = 'index'"]
-    params = {"uid": user_id, "index_id": index_id}
+    params: dict = {"uid": user_id}
     if index_id:
         filters.append("kn.id = :index_id")
+        params["index_id"] = index_id
     if only_stale:
         filters.append("COALESCE(ix.abstract_stale, false) = true")
     index_rows = await database.database.fetch_all(

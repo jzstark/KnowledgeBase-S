@@ -26,7 +26,7 @@ export default function LandingPage() {
 
   // Check auth on mount
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/api/auth/me", { credentials: "include" })
       .then((r) => setAuthed(r.ok))
       .catch(() => setAuthed(false));
   }, []);
@@ -45,7 +45,7 @@ export default function LandingPage() {
 
   const handleLogout = useCallback(async () => {
     setDropdownOpen(false);
-    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    await fetch("/auth/logout", { method: "POST" }).catch(() => {});
     setAuthed(false);
     router.refresh();
   }, [router]);

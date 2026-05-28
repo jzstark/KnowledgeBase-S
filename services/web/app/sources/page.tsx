@@ -614,9 +614,15 @@ function UploadModal({ source, onClose, onDone }: { source: Source | null; onClo
   const [result, setResult] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // 上传必填 doc_kind（设计要求）；source 已有 default 时该字段视为预填
   useEffect(() => {
-    if (source?.default_doc_kind) setDocKind(source.default_doc_kind);
+    if (!source) return;
+    if (source.default_doc_kind) setDocKind(source.default_doc_kind);
+    // 每次打开 modal 时重置为当前本地时间
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const now = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    setCapturedAt(now);
+    setEffectiveAt(now);
   }, [source]);
 
   async function handleUpload(e: React.FormEvent) {

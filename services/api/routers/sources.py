@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -599,6 +599,7 @@ async def upload_to_source(
     captured_at = _validate_optional_time(captured_at, "captured_at")
     effective_at = _validate_optional_time(effective_at, "effective_at")
     doc_kind = _validate_doc_kind(doc_kind)
+    now = datetime.now(timezone.utc)
 
     saved: list[str] = []
     source_items: list[dict[str, Any]] = []
@@ -616,8 +617,8 @@ async def upload_to_source(
                 raw_snapshot_ref=str(file_path),
                 content_hash=hashlib.sha256(content).hexdigest(),
                 title=Path(file.filename or safe_name).stem,
-                captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else None,
-                effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else None,
+                captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else now,
+                effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else now,
                 doc_kind=doc_kind,
                 raw_retention_policy="keep_raw",
             ),
@@ -665,7 +666,7 @@ async def add_url_to_source(
                 origin_ref=url,
                 origin_ref_type="url",
                 content_hash=hashlib.sha256(url.encode("utf-8")).hexdigest(),
-                captured_at=datetime.utcnow(),
+                captured_at=datetime.now(timezone.utc),
                 doc_kind=doc_kind,
                 raw_retention_policy="keep_extracted_only",
             ),
