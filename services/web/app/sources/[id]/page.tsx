@@ -14,9 +14,21 @@ interface Source {
   config: Record<string, unknown> | string | null;
   api_token: string | null;
   is_primary: boolean;
+  default_doc_kind: string | null;
+  deleted_at?: string | null;
   last_fetched_at: string | null;
   created_at: string;
   article_count: number;
+}
+
+interface SourceItem {
+  id: string;
+  title: string | null;
+  origin_ref: string;
+  status: string;
+  doc_kind: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -34,6 +46,51 @@ const TYPE_COLORS: Record<string, string> = {
   word: "bg-indigo-100 text-indigo-700",
   epub: "bg-teal-100 text-teal-700",
 };
+
+const DOC_KIND_LABELS: Record<string, string> = {
+  regulation: "法规 / 规章",
+  case: "判例 / 案件",
+  news: "新闻",
+  memo: "备忘录",
+  contract: "合同",
+  analysis: "分析",
+  other: "其他",
+};
+
+function useDocKindConfig(): string[] {
+  const [values, setValues] = useState<string[]>([]);
+  useEffect(() => {
+    fetch("/api/config/doc_kind", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.values && setValues(d.values))
+      .catch(() => {});
+  }, []);
+  return values;
+}
+
+function DocKindSelect({
+  value,
+  onChange,
+  includeEmpty = true,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  includeEmpty?: boolean;
+}) {
+  const values = useDocKindConfig();
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="rounded border border-gray-200 bg-white px-2 py-1 text-sm text-gray-800 outline-none focus:border-green-400 focus:ring-2 focus:ring-green-100"
+    >
+      {includeEmpty && <option value="">（不预设）</option>}
+      {values.map((kind) => (
+        <option key={kind} value={kind}>{DOC_KIND_LABELS[kind] ?? kind}</option>
+      ))}
+    </select>
+  );
+}
 
 function parseCfg(s: Source): Record<string, unknown> {
   if (!s.config) return {};
@@ -180,6 +237,101 @@ function WechatConfig({ source, onSourceUpdated }: { source: Source; onSourceUpd
   );
 }
 
+function SourceDefaults({ source, onSourceUpdated }: { source: Source; onSourceUpdated: (source: Source) => void }) {
+  const [value, setValue] = useState(source.default_doc_kind || "");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => setValue(source.default_doc_kind || ""), [source.default_doc_kind]);
+
+  async function save() {
+    setSaving(true);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/sources/${source.id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ default_doc_kind: value || "" }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(body.detail || `保存失败 (${res.status})`);
+        return;
+      }
+      onSourceUpdated(body as Source);
+      setMessage("默认类型已保存。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Section title="默认类型">
+      <div className="flex items-center gap-3">
+        <DocKindSelect value={value} onChange={setValue} />
+        <button
+          onClick={save}
+          disabled={saving || value === (source.default_doc_kind || "")}
+          className="text-xs px-2 py-1 border border-green-200 text-green-700 rounded hover:bg-green-50 disabled:opacity-50"
+        >
+          {saving ? "保存中…" : "保存"}
+        </button>
+        {message && <span className="text-xs text-gray-500">{message}</span>}
+      </div>
+    </Section>
+  );
+}
+
+function SourceItems({
+  sourceId,
+  items,
+  onItemUpdated,
+}: {
+  sourceId: string;
+  items: SourceItem[];
+  onItemUpdated: (item: SourceItem) => void;
+}) {
+  async function updateDocKind(item: SourceItem, docKind: string) {
+    const res = await fetch(`/api/sources/source-items/${item.id}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_kind: docKind || null }),
+    });
+    if (!res.ok) return;
+    onItemUpdated(await res.json());
+  }
+
+  return (
+    <Section title="Source Items" badge={`${items.length}`}>
+      {items.length === 0 ? (
+        <p className="text-sm text-gray-400">暂无条目。</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <div key={item.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+              <div className="min-w-0">
+                <p className="truncate text-sm text-gray-800">{item.title || item.origin_ref}</p>
+                <p className="truncate text-xs text-gray-400 font-mono">{sourceId} · {item.status} · {item.id}</p>
+              </div>
+              <DocKindSelect
+                value={item.doc_kind || ""}
+                onChange={(next) => updateDocKind(item, next)}
+              />
+              {item.updated_at && (
+                <span className="text-xs text-gray-400">
+                  {new Date(item.updated_at).toLocaleDateString("zh-CN")}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function SourceDetailPage() {
@@ -187,6 +339,7 @@ export default function SourceDetailPage() {
   const id = params.id as string;
 
   const [source, setSource] = useState<Source | null>(null);
+  const [items, setItems] = useState<SourceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -200,6 +353,14 @@ export default function SourceDetailPage() {
       .catch(() => setError("加载失败，source 可能不存在"))
       .finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    if (!source) return;
+    fetch(`/api/sources/${source.id}/source-items?limit=200`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setItems(Array.isArray(data) ? data : []))
+      .catch(() => setItems([]));
+  }, [source?.id]);
 
   if (loading) {
     return (
@@ -256,6 +417,10 @@ export default function SourceDetailPage() {
             {source.last_fetched_at && (
               <span>最近处理 {new Date(source.last_fetched_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
             )}
+            {source.default_doc_kind && (
+              <span>默认类型 {DOC_KIND_LABELS[source.default_doc_kind] ?? source.default_doc_kind}</span>
+            )}
+            {source.deleted_at && <span>已停用</span>}
             {typeof cfg.url === "string" && (
               <span className="truncate max-w-xs">{cfg.url}</span>
             )}
@@ -264,6 +429,8 @@ export default function SourceDetailPage() {
 
         {/* 类型专属内容 */}
         <div className="space-y-4">
+          <SourceDefaults source={source} onSourceUpdated={setSource} />
+
           {source.type === "wechat" && <WechatConfig source={source} onSourceUpdated={setSource} />}
 
           {source.type !== "wechat" && (
@@ -271,6 +438,12 @@ export default function SourceDetailPage() {
               <p className="text-sm text-gray-400">此 source 类型暂无额外配置项。</p>
             </Section>
           )}
+
+          <SourceItems
+            sourceId={source.id}
+            items={items}
+            onItemUpdated={(updated) => setItems((prev) => prev.map((item) => item.id === updated.id ? updated : item))}
+          />
         </div>
       </div>
     </main>

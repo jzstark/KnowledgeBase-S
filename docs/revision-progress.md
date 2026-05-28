@@ -945,7 +945,7 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 
 #### P4 · 代码清理 · ✅
 
-- **`database.py` 冗余 ALTER TABLE**：移除 8 条冗余 `ALTER TABLE IF EXISTS ... ADD COLUMN IF NOT EXISTS`（`knowledge_nodes` 的 object_type / updated_at / abstract / ingested_at / published_at；`entity_candidates` 的 mention_count / max_salience / source_article_ids），这些列已在 `CREATE TABLE` 中定义。保留 6 条真正的 migration alter（embedding_model / doc_kind / sources.default_doc_kind / sources.deleted_at / source_items.doc_kind / knowledge_edges.description）
+- **`database.py` 冗余 ALTER TABLE**：移除 8 条冗余 `ALTER TABLE IF EXISTS ... ADD COLUMN IF NOT EXISTS`（`knowledge_nodes` 的 object_type / updated_at / abstract / ingested_at / published_at；`entity_candidates` 的 mention_count / max_salience / source_article_ids），这些列已在 `CREATE TABLE` 中定义。后续审计修复中，`knowledge_edges.description` 已替换为 `metadata JSONB`。
 - **`entity_profiles` 注释**：`maintenance.py:~1229` 的 `# entity_profiles 表已删除` 注释是解释性上下文（说明后续调用为何是 rebuild_entity_pair_signals），保留
 - **COALESCE 链一致性**：`kb_tools.py` 与 `kb/public.py` 的 `COALESCE(s.body_embedding, n.embedding)` / `COALESCE(s.perspective_embedding, s.body_embedding, n.embedding)` 链完全一致，无需修改
 
@@ -1002,22 +1002,30 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - 前端有确认对话框，说明"已入库文章继续保留" ✅
 - **缺失**："同时删除 N 篇文章"的 cascade 选项（需要后端接受 `cascade_articles: bool` 参数并级联软删或硬删 article nodes）
 
-**§8 已停用 source 的"[已停用]"分组标注未实现**
+**§8 Source 管理页不显示已停用 source**
 
 设计决议 §8 描述："Source 删除：软删除（`deleted_at`），articles 保留，分组标注"[已停用]""。
 
-当前 sources/page.tsx 的 `loadSources()` 调用 `GET /api/sources`，该接口加了 `AND deleted_at IS NULL` 过滤，软删除后的 source 不出现在列表中。§8 要求在资源管理器中以"[已停用]"分组继续显示，目前未实现。
+当前资源管理器分组已能显示 `[已停用]`；但 sources 管理页默认仍只列出 active sources。后续如需要管理/恢复停用 source，需要在 Source 管理页增加 `include_deleted` 视图。
 
 ### 需要修复（功能正确性问题）
 
-**Bug-3 部分修复：entity 节点在 kb_tools.py 搜索结果中仍无 canonical_name**
+**已修复：entity 节点在搜索结果中使用 canonical_name**
 
-`kb_tools.py` 的 `_reference()` 已删 `node.get("canonical_name")`。但 `kb_tools.py` 的主搜索 SQL 中没有 `LEFT JOIN entity_nodes`，entity 节点返回的 `title` 是 `knowledge_nodes.title`（可能为 NULL 或不同于 `entity_nodes.canonical_name`）。
+2026-05-28 audit fix pass 已在 `kb_tools.py` 与 `kb/public.py` 搜索 SQL 中加入 `LEFT JOIN entity_nodes en`，返回 `COALESCE(en.canonical_name, n.title) AS title`。
 
-影响：entity 搜索结果的展示名称可能不准确。
+**已确认：`kb_tools.py` 的 HyDE 路径中 content[0].text 守卫**
 
-修复方向：在 `kb_tools.py` 的搜索 SQL 中加 `LEFT JOIN entity_nodes en ON en.node_id = n.id`，SELECT 加 `COALESCE(en.canonical_name, n.title) AS title`（或 `display_title`）。
+`kb_tools.py` 与 `kb/retrieval.py` 的 HyDE 路径均使用 `getattr(..., "text", "")`。同一轮 audit fix pass 还修复了 ingestion / image / pdf / feedback worker 的直接 `.text` 访问。
 
-**`kb_tools.py` 的 HyDE 路径中 content[0].text 守卫**
+### 审计修复批次 2026-05-28 · ✅
 
-审计 Bug-2 修复了 `briefing.py`、`kb/public.py`、`maintenance.py` 的 `.text` 访问。`kb_tools.py` 的 HyDE embed 路径（`kb/retrieval.py` 第 ~33 行）已在 P1 修复，但如果 `kb_tools.py` 有自己调用 `claude_client.messages.create` 并读 `content[0].text` 的路径，需再次确认已全部覆盖。当前 Pyright 清零说明无遗漏，但运行时覆盖仍依赖 Claude API 总是返回 TextBlock（对话类调用通常满足此条件）。
+- `knowledge_edges` 加 `metadata JSONB DEFAULT '{}'`，删除 legacy `description`，迁移时在 `index_children` 回填后删除 `part_of` edges。
+- 启动迁移删除旧 `chat_messages / chat_sessions` 表。
+- create index / create summary / revise summary / index rollup / wiki restore 的 embedding 写入路径补齐 `embedding_model`；summary `doc_kind` 继承来源节点。
+- 新增 `PATCH /api/sources/source-items/{item_id}`，允许用 config 枚举覆盖 source item `doc_kind`，并同步已入库 article node。
+- Knowledge 资源列表改为按知识时间排序，并在 source 分组标题显示 `[已停用]`。
+- Source 详情页支持编辑 `default_doc_kind`，并展示 source items 的 `doc_kind` 下拉。
+- KB Public search 与 legacy `kb_tools.py` 搜索均使用 `entity_nodes.canonical_name` 作为 entity 展示标题。
+- ingestion / image / pdf / feedback worker 全部移除 `content[0].text` 直接访问；PDF/OCR/feedback 模型与 token 参数已迁入 `config/system.yaml`。
+- API / ingestion-worker / feedback-worker 的 prompt loader 支持本地 `config/prompts.md` fallback，并提供启动期 required prompt 校验。

@@ -24,6 +24,14 @@ RAW_CAP_BYTES = 512 * 1024 * 1024  # 512 MB
 
 router = APIRouter(prefix="/api/kb", tags=["KB Internal"])
 
+
+def _current_embedding_model() -> str:
+    return config_loader.get("embedding.model", "text-embedding-3-small")
+
+
+def _default_doc_kind() -> str:
+    return config_loader.get("doc_kind.default", "other")
+
 def _make_node_id(
     object_type: str,
     raw_ref: dict,
@@ -593,6 +601,7 @@ class CreateIndexRequest(BaseModel):
     description: str | None = None
     rollup_instruction: str | None = None
     tags: list[str] = []
+    doc_kind: str | None = None
 
 
 class UpdateIndexRequest(BaseModel):
@@ -660,6 +669,11 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
     if not title:
         raise HTTPException(400, "title 不能为空")
     description = (body.description or "").strip()
+    doc_kind = body.doc_kind or _default_doc_kind()
+    allowed = set(config_loader.get("doc_kind.values", []) or [])
+    if allowed and doc_kind not in allowed:
+        raise HTTPException(400, f"无效的 doc_kind；可选值：{', '.join(sorted(allowed))}")
+    embedding_model = _current_embedding_model()
     embedding = await _embed_text("\n".join([title, description]).strip() or title)
     embedding_literal = _vector_literal(embedding)
     index_id = f"idx_{secrets.token_hex(6)}"
@@ -667,10 +681,10 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_id,
-           tags, object_type)
+           tags, object_type, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
-           :source_id, :tags, 'index')
+           :source_id, :tags, 'index', :doc_kind, :embedding_model)
         """,
         {
             "id": index_id,
@@ -679,6 +693,8 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
             "abstract": description,
             "source_id": index_id,
             "tags": body.tags,
+            "doc_kind": doc_kind,
+            "embedding_model": embedding_model,
         },
     )
     await object_nodes.upsert_object_node(
@@ -826,7 +842,7 @@ async def generate_summary_job(
 ) -> dict[str, Any]:
     source = await database.database.fetch_one(
         """
-        SELECT id, user_id, title, abstract, object_type
+        SELECT id, user_id, title, abstract, object_type, doc_kind
         FROM knowledge_nodes
         WHERE id = :id AND user_id = :user_id
         """,
@@ -875,11 +891,11 @@ async def generate_summary_job(
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_id,
-           tags, object_type)
+           tags, object_type, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{body_embedding_literal}'::vector,
            :source_id, :tags,
-           :object_type)
+           :object_type, :doc_kind, :embedding_model)
         """,
         {
             "id": summary_id,
@@ -889,6 +905,8 @@ async def generate_summary_job(
             "source_id": node_id,
             "tags": [],
             "object_type": "summary",
+            "doc_kind": source["doc_kind"] or _default_doc_kind(),
+            "embedding_model": _current_embedding_model(),
         },
     )
     await object_nodes.upsert_object_node(
@@ -1039,10 +1057,11 @@ async def revise_summary_job(
         UPDATE knowledge_nodes
         SET abstract = :abstract,
             embedding = '{body_embedding_literal}'::vector,
+            embedding_model = :embedding_model,
             updated_at = NOW()
         WHERE id = :id
         """,
-        params,
+        {**params, "embedding_model": _current_embedding_model()},
     )
     await object_nodes.upsert_object_node(
         node_id,
@@ -1383,13 +1402,15 @@ async def list_nodes(
             SELECT n.id, n.title, n.abstract,
                    COALESCE(an.source_type, n.object_type) AS source_type,
                    n.tags, n.object_type, n.created_at,
+                   COALESCE(n.published_at, n.ingested_at, n.created_at) AS published_at,
                    n.source_id, n.doc_kind,
-                   s.name AS source_name
+                   s.name AS source_name,
+                   s.deleted_at AS source_deleted_at
             FROM knowledge_nodes n
             LEFT JOIN article_nodes an ON an.node_id = n.id
             LEFT JOIN sources s ON s.id = n.source_id
             WHERE {where}
-            ORDER BY n.created_at DESC
+            ORDER BY COALESCE(n.published_at, n.ingested_at, n.created_at) DESC NULLS LAST
             LIMIT ${limit_idx} OFFSET ${offset_idx}
             """,
             *params, limit, offset,
@@ -1405,8 +1426,10 @@ async def list_nodes(
                 "tags": list(r["tags"]) if r["tags"] else [],
                 "object_type": r["object_type"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "published_at": r["published_at"].isoformat() if r["published_at"] else None,
                 "source_id": r["source_id"],
                 "source_name": r["source_name"],
+                "source_deleted_at": r["source_deleted_at"].isoformat() if r["source_deleted_at"] else None,
                 "doc_kind": r["doc_kind"],
             }
             for r in rows

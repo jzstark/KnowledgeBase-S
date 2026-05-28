@@ -546,10 +546,17 @@ async def aggregate_index_abstracts(
         await database.database.execute(
             f"""
             UPDATE knowledge_nodes
-            SET abstract = :abstract, embedding = '{emb_lit}'::vector, updated_at = NOW()
+            SET abstract = :abstract,
+                embedding = '{emb_lit}'::vector,
+                embedding_model = :embedding_model,
+                updated_at = NOW()
             WHERE id = :id
             """,
-            {"abstract": new_abstract, "id": idx_id},
+            {
+                "abstract": new_abstract,
+                "id": idx_id,
+                "embedding_model": config_loader.get("embedding.model", "text-embedding-3-small"),
+            },
         )
         await object_nodes.upsert_object_node(
             idx_id,
@@ -761,11 +768,11 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                 f"""
                 INSERT INTO knowledge_nodes
                   (id, user_id, title, abstract, embedding, source_id,
-                   tags, object_type, published_at, created_at)
+                   tags, object_type, published_at, created_at, doc_kind, embedding_model)
                 VALUES
                   (:id, :uid, :title, :abstract, '{emb_lit}'::vector,
                    :source_id, :tags,
-                   :object_type, :published_at, :created_at)
+                   :object_type, :published_at, :created_at, :doc_kind, :embedding_model)
                 """,
                 {
                     "id": node_id, "uid": user_id,
@@ -776,6 +783,8 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "object_type": object_type,
                     "published_at": published_at,
                     "created_at": created_at,
+                    "doc_kind": m.get("doc_kind") or config_loader.get("doc_kind.default", "other"),
+                    "embedding_model": config_loader.get("embedding.model", "text-embedding-3-small"),
                 },
             )
             await object_nodes.upsert_object_node(

@@ -21,8 +21,10 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     title TEXT,
     abstract TEXT,
     embedding vector(1536),
+    embedding_model VARCHAR,
     source_id VARCHAR,
     tags TEXT[],
+    doc_kind VARCHAR,
     object_type VARCHAR(16) NOT NULL DEFAULT 'article',
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
     published_at TIMESTAMPTZ,
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
     to_node_id VARCHAR REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
     relation_type VARCHAR,
     weight FLOAT,
+    metadata JSONB DEFAULT '{}',
     created_by VARCHAR
 );
 
@@ -73,6 +76,8 @@ CREATE TABLE IF NOT EXISTS sources (
     type VARCHAR NOT NULL,
     fetch_mode VARCHAR,
     is_primary BOOLEAN DEFAULT true,
+    default_doc_kind VARCHAR,
+    deleted_at TIMESTAMPTZ,
     config JSONB,
     api_token VARCHAR,
     last_fetched_at TIMESTAMPTZ,
@@ -253,7 +258,8 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
 ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS default_doc_kind VARCHAR;
 ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
-ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE IF EXISTS knowledge_edges ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE IF EXISTS knowledge_edges DROP COLUMN IF EXISTS description;
 
 -- Phase A 第三批：删除应用层遗留字段（无任何代码引用）
 DROP INDEX IF EXISTS idx_knowledge_nodes_priority;
@@ -267,6 +273,8 @@ ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS is_primary;
 
 -- 延后项 2：entity_profiles 表删除（entity 描述统一回到 nodes.abstract）
 DROP TABLE IF EXISTS entity_profiles CASCADE;
+DROP TABLE IF EXISTS chat_messages;
+DROP TABLE IF EXISTS chat_sessions;
 
 -- 延后项 3：knowledge_nodes 对象专属字段裁剪
 -- summary 专属：perspective_* / body_embedding / is_default / summary_of / perspective (legacy alias)
@@ -412,6 +420,9 @@ JOIN knowledge_nodes parent ON parent.id = ke.to_node_id AND parent.object_type 
 JOIN knowledge_nodes child ON child.id = ke.from_node_id AND child.object_type IN ('article', 'index')
 WHERE ke.relation_type = 'part_of'
 ON CONFLICT (index_id, child_id) DO NOTHING;
+
+-- index 结构由 index_children 表承载；part_of 只作为历史迁移输入，迁移后删除
+DELETE FROM knowledge_edges WHERE relation_type = 'part_of';
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_user_id ON knowledge_nodes(user_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes

@@ -34,6 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 config_loader.validate_required_keys()
+prompt_loader.validate_required_prompts()
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))

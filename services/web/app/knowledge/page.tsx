@@ -20,12 +20,14 @@ interface KBNode {
   abstract?: string;
   object_type?: string;
   created_at?: string;
+  published_at?: string;
   perspective_label?: string;
   perspective_instruction?: string;
   is_default?: boolean;
   doc_kind?: string;
   source_id?: string;
   source_name?: string;
+  source_deleted_at?: string | null;
 }
 
 interface KBEdge {
@@ -342,14 +344,21 @@ function ListPanel({
   }
 
   // 按 source_name 分组（仅 groupBySrc 模式下使用）
-  const grouped: { srcName: string; srcId: string; items: KBNode[] }[] = groupBySrc
+  const grouped: { srcName: string; srcId: string; deletedAt?: string | null; items: KBNode[] }[] = groupBySrc
     ? Object.values(
         nodes.reduce((acc, n) => {
           const key = n.source_id || "__none__";
-          if (!acc[key]) acc[key] = { srcName: n.source_name || "（无来源）", srcId: key, items: [] };
+          if (!acc[key]) {
+            acc[key] = {
+              srcName: n.source_name || "（无来源）",
+              srcId: key,
+              deletedAt: n.source_deleted_at,
+              items: [],
+            };
+          }
           acc[key].items.push(n);
           return acc;
-        }, {} as Record<string, { srcName: string; srcId: string; items: KBNode[] }>),
+        }, {} as Record<string, { srcName: string; srcId: string; deletedAt?: string | null; items: KBNode[] }>),
       )
     : [];
 
@@ -393,7 +402,7 @@ function ListPanel({
         ) : nodes.length === 0 ? (
           <p className="text-sm text-muted-foreground">暂无节点</p>
         ) : groupBySrc ? (
-          grouped.map(({ srcName, srcId, items }) => {
+          grouped.map(({ srcName, srcId, deletedAt, items }) => {
             const collapsed = collapsedSrcs.has(srcId);
             return (
               <div key={srcId} className="space-y-1">
@@ -406,7 +415,7 @@ function ListPanel({
                   })}
                 >
                   <span>{collapsed ? "▶" : "▼"}</span>
-                  <span className="truncate">{srcName}</span>
+                  <span className="truncate">{srcName}{deletedAt ? " [已停用]" : ""}</span>
                   <span className="ml-auto shrink-0 text-[10px]">{items.length}</span>
                 </button>
                 {!collapsed && items.map((n) => (

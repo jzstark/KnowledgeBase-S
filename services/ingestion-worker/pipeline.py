@@ -17,6 +17,7 @@ import re
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import anthropic
 import httpx
@@ -41,6 +42,10 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TEXT_CHARS = config_loader.get("ingestion.max_text_chars", 12000)
 MAX_ENTITY_PAGE_SOURCES = config_loader.get("ingestion.max_entity_page_sources", 5)
+
+
+def _message_text(message: Any) -> str:
+    return getattr(message.content[0], "text", "").strip() if message.content else ""
 
 
 def _infer_title_from_text(text: str) -> str | None:
@@ -278,7 +283,7 @@ def analyze_article(
             }
         ],
     )
-    raw = message.content[0].text.strip()
+    raw = _message_text(message)
 
     # Strip markdown code fences if present
     if "```" in raw:
@@ -327,7 +332,7 @@ def generate_entity_page(canonical_name: str, aliases: list[str], source_abstrac
             }
         ],
     )
-    return message.content[0].text.strip()
+    return _message_text(message)
 
 
 async def embed(text: str) -> list[float]:

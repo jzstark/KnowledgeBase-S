@@ -7,6 +7,7 @@ import os
 import anthropic
 import fitz  # PyMuPDF
 
+import config_loader
 import prompt_loader
 from sources.base import RawItem
 from sources.file_base import FileSourceMixin
@@ -17,14 +18,14 @@ _claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
 def _cleanup(raw_text: str) -> str:
     """用 LLM 清洗 PDF 提取的原文，去除排版噪音，保留正文。"""
     msg = _claude.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=4096,
+        model=config_loader.get("models.pdf_cleanup", "claude-haiku-4-5-20251001"),
+        max_tokens=config_loader.get("llm_output_tokens.pdf_cleanup", 4096),
         messages=[{
             "role": "user",
             "content": f"{prompt_loader.get('pdf_cleanup')}\n\n---\n\n{raw_text}",
         }],
     )
-    return msg.content[0].text.strip()
+    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
 
 
 class PDFSource(FileSourceMixin):

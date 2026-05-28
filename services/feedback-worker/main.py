@@ -15,6 +15,7 @@ import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+import config_loader
 import prompt_loader
 
 logging.basicConfig(
@@ -25,6 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Feedback Worker")
+config_loader.validate_required_keys()
+prompt_loader.validate_required_prompts()
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
@@ -59,11 +62,11 @@ async def analyze_feedback(body: AnalyzeRequest):
 
     try:
         message = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
+            model=config_loader.get("models.feedback_analysis", "claude-haiku-4-5-20251001"),
+            max_tokens=config_loader.get("llm_output_tokens.feedback_analysis", 512),
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = message.content[0].text.strip()
+        raw = getattr(message.content[0], "text", "").strip() if message.content else ""
         logger.info(f"draft {body.draft_id}: Claude 返回: {raw[:200]}")
     except Exception as e:
         logger.error(f"draft {body.draft_id}: Claude 调用失败: {e}")

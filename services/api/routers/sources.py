@@ -99,6 +99,10 @@ class SourceItemStatusUpdate(BaseModel):
     title: str | None = None
 
 
+class SourceItemUpdate(BaseModel):
+    doc_kind: str | None = None
+
+
 class Wechat2RSSSourceCreate(BaseModel):
     feed_id: str
     name: str | None = None
@@ -449,6 +453,37 @@ async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
     return _serialize_source_item(row)
 
 
+@router.patch("/source-items/{item_id}")
+async def update_source_item(item_id: str, body: SourceItemUpdate, _: dict = Depends(require_auth)):
+    doc_kind = _validate_doc_kind(body.doc_kind)
+    row = await database.database.fetch_one(
+        """
+        UPDATE source_items
+        SET doc_kind = :doc_kind,
+            updated_at = NOW()
+        WHERE id = :id
+        RETURNING *
+        """,
+        {"id": item_id, "doc_kind": doc_kind},
+    )
+    if not row:
+        raise HTTPException(404, "source item 不存在")
+
+    # 如果该 source item 已经入库为 article node，同步 node.doc_kind，避免 item/node 显示不一致。
+    await database.database.execute(
+        """
+        UPDATE knowledge_nodes n
+        SET doc_kind = :doc_kind,
+            updated_at = NOW()
+        FROM article_nodes an
+        WHERE an.node_id = n.id
+          AND an.source_item_id = :id
+        """,
+        {"id": item_id, "doc_kind": doc_kind},
+    )
+    return _serialize_source_item(row)
+
+
 @router.get("/{source_id}")
 async def get_source(source_id: str):
     """获取单个 source 详情（含文章数）。"""
@@ -473,10 +508,11 @@ async def get_source(source_id: str):
 
 
 @router.get("")
-async def list_sources():
+async def list_sources(include_deleted: bool = False):
     """列出所有 sources（附带每个 source 的文章数）。"""
+    deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
     rows = await database.database.fetch_all(
-        "SELECT * FROM sources WHERE deleted_at IS NULL ORDER BY created_at DESC"
+        f"SELECT * FROM sources {deleted_filter} ORDER BY deleted_at NULLS FIRST, created_at DESC"
     )
     counts = await database.database.fetch_all(
         "SELECT source_id, COUNT(*) AS cnt FROM knowledge_nodes"

@@ -188,6 +188,7 @@ async def search(
         (n.embedding IS NOT NULL
          OR s.body_embedding IS NOT NULL
          OR n.title ILIKE $2
+         OR en.canonical_name ILIKE $2
          OR n.abstract ILIKE $2
          OR s.body ILIKE $2)
         """,
@@ -217,7 +218,8 @@ async def search(
     # 双重使用同一向量子查询会重复昂贵 cosine 计算。这里采用 CTE 让 PG 自动复用。
     sql = f"""
         WITH scored AS (
-            SELECT n.id, n.title, n.object_type AS type, n.doc_kind, n.tags, n.source_id,
+            SELECT n.id, COALESCE(en.canonical_name, n.title) AS title,
+                   n.object_type AS type, n.doc_kind, n.tags, n.source_id,
                    COALESCE(s.body, n.abstract) AS abstract,
                    {KNOWLEDGE_TIME_SQL} AS published_at,
                    COALESCE(
@@ -230,9 +232,10 @@ async def search(
                      END,
                      0
                    ) AS vector_score,
-                   (n.title ILIKE $2 OR n.abstract ILIKE $2 OR s.body ILIKE $2) AS keyword_hit
+                   (n.title ILIKE $2 OR en.canonical_name ILIKE $2 OR n.abstract ILIKE $2 OR s.body ILIKE $2) AS keyword_hit
             FROM knowledge_nodes n
             LEFT JOIN summary_nodes s ON s.node_id = n.id
+            LEFT JOIN entity_nodes en ON en.node_id = n.id
             WHERE {' AND '.join(conditions)}
         )
         SELECT *,

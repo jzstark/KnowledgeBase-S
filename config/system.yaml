@@ -40,6 +40,10 @@ models:
   compare:           "claude-sonnet-4-6"          # MCP compare 工具
   cite:              "claude-sonnet-4-6"          # MCP cite 工具 Stage 2
   summarize_corpus:  "claude-sonnet-4-6"          # MCP summarize_corpus 工具
+  image_ocr:         "claude-sonnet-4-6"
+  image_cleanup:     "claude-sonnet-4-6"
+  pdf_cleanup:       "claude-haiku-4-5-20251001"
+  feedback_analysis: "claude-haiku-4-5-20251001"
 
 embedding:
   model:      "text-embedding-3-small"
@@ -102,6 +106,10 @@ llm_output_tokens:
   compare:                      2048
   cite:                         2048
   summarize_corpus:             3000
+  image_ocr:                    4096
+  image_cleanup:                4096
+  pdf_cleanup:                  4096
+  feedback_analysis:            512
 
 # MCP Public 工具参数（/api/kb/v1/）
 kb_public:

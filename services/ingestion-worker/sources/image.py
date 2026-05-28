@@ -19,6 +19,7 @@ from pathlib import Path
 import anthropic
 from PIL import Image
 
+import config_loader
 import prompt_loader
 from sources.base import RawItem
 from sources.file_base import FileSourceMixin
@@ -66,8 +67,8 @@ def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
     if tile_info:
         prompt += f"（{tile_info}）"
     msg = _claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model=config_loader.get("models.image_ocr", "claude-sonnet-4-6"),
+        max_tokens=config_loader.get("llm_output_tokens.image_ocr", 4096),
         messages=[{
             "role": "user",
             "content": [
@@ -76,20 +77,20 @@ def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
             ],
         }],
     )
-    return msg.content[0].text.strip()
+    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
 
 
 def _cleanup(raw_text: str) -> str:
     """第二步：用 LLM 清洗 OCR 原文，去除界面噪音，保留正文。"""
     msg = _claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model=config_loader.get("models.image_cleanup", "claude-sonnet-4-6"),
+        max_tokens=config_loader.get("llm_output_tokens.image_cleanup", 4096),
         messages=[{
             "role": "user",
             "content": f"{prompt_loader.get('image_cleanup')}\n\n---\n\n{raw_text}",
         }],
     )
-    return msg.content[0].text.strip()
+    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
 
 
 class ImageSource(FileSourceMixin):

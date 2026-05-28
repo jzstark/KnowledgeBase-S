@@ -18,11 +18,17 @@ REQUIRED_KEYS = (
     "ingestion.context_popular_tags",
     "models.article_analysis",
     "models.entity_page",
+    "models.image_ocr",
+    "models.image_cleanup",
+    "models.pdf_cleanup",
     "embedding.model",
     "embedding.dimensions",
     "embedding.max_chars",
     "llm_output_tokens.article_analysis",
     "llm_output_tokens.entity_page",
+    "llm_output_tokens.image_ocr",
+    "llm_output_tokens.image_cleanup",
+    "llm_output_tokens.pdf_cleanup",
 )
 
 try:

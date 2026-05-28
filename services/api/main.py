@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import database
 from auth import create_token, require_auth, verify_password
 import config_loader
+import prompt_loader
 from app import briefing, drafts, settings, writing_memory
 from kb import internal as kb_internal
 from kb import public as kb_public
@@ -19,6 +20,7 @@ AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config_loader.validate_required_keys()
+    prompt_loader.validate_required_prompts()
     await database.init()
     yield
     await database.database.disconnect()

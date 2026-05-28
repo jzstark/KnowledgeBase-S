@@ -256,7 +256,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
-                SELECT n.id, n.title, COALESCE(s.body, n.abstract) AS abstract,
+                SELECT n.id, COALESCE(en.canonical_name, n.title) AS title, COALESCE(s.body, n.abstract) AS abstract,
                        COALESCE(an.source_type, n.object_type) AS source_type,
                        n.tags, n.object_type,
                        {time_expr} AS effective_time,
@@ -270,6 +270,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
                 FROM knowledge_nodes n
                 LEFT JOIN summary_nodes s ON s.node_id = n.id
                 LEFT JOIN article_nodes an ON an.node_id = n.id
+                LEFT JOIN entity_nodes en ON en.node_id = n.id
                 WHERE {" AND ".join(conditions)}
                 ORDER BY {order_by}
                 LIMIT ${limit_idx}
@@ -279,7 +280,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
             )
     except Exception:
         text_params = [user_id, f"%{query.strip()}%"]
-        text_conditions = ["n.user_id = $1", "(n.title ILIKE $2 OR n.abstract ILIKE $2)"]
+        text_conditions = ["n.user_id = $1", "(n.title ILIKE $2 OR en.canonical_name ILIKE $2 OR n.abstract ILIKE $2)"]
         if object_type:
             text_params.append(object_type)
             text_conditions.append(f"n.object_type = ${len(text_params)}")
@@ -295,13 +296,14 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
                 f"""
-                SELECT n.id, n.title, n.abstract,
+                SELECT n.id, COALESCE(en.canonical_name, n.title) AS title, n.abstract,
                        COALESCE(an.source_type, n.object_type) AS source_type,
                        n.tags, n.object_type,
                        {time_expr} AS effective_time,
                        NULL::float AS score
                 FROM knowledge_nodes n
                 LEFT JOIN article_nodes an ON an.node_id = n.id
+                LEFT JOIN entity_nodes en ON en.node_id = n.id
                 WHERE {" AND ".join(text_conditions)}
                 ORDER BY effective_time DESC
                 LIMIT ${limit_idx}
