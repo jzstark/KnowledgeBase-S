@@ -15,7 +15,7 @@ class TimeFilterTests(unittest.TestCase):
             time_basis="published",
         )
 
-        self.assertEqual(clause, "n.source_published_at >= $2::timestamptz")
+        self.assertEqual(clause, "an.source_published_at >= $2::timestamptz")
         self.assertIsInstance(params[1], datetime)
         self.assertEqual(params[1].date().isoformat(), "2026-05-13")
 
@@ -29,7 +29,7 @@ class TimeFilterTests(unittest.TestCase):
             time_basis="captured",
         )
 
-        self.assertEqual(clause, "n.captured_at >= $2::timestamptz")
+        self.assertEqual(clause, "an.captured_at >= $2::timestamptz")
         self.assertIsInstance(params[1], datetime)
         self.assertEqual(params[1].isoformat(), "2026-05-14T16:00:00+00:00")
 

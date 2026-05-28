@@ -651,6 +651,11 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - Phase C · 配置补充 · ✅
   - `config/system.yaml`：新增 `kb_public.*` 13 个参数（top_k / batch / cite 两阶段计数 / 各 body 截断）；`models.{compare,cite,summarize_corpus}`、`llm_output_tokens.{compare,cite,summarize_corpus}` 各 3 项
   - `config/prompts.md`：新增 `compare_nodes` / `cite_match` / `summarize_corpus` 三段 prompt，cite_match 显式约束"逐字出现、禁止改写"
+- Phase C · 收口修正 · ✅
+  - `services/api/kb/public.py` search：keyword-only 节点不再因缺少 embedding 被过滤；vector score 缺失时降为 0，keyword 命中仍可进入结果
+  - `services/api/kb/public.py` cite：Stage 2 按 `kb_public.cite_body_chars` 从候选文章全文抽取相关窗口输入 LLM；服务端 quote 验证读取全文，避免只验证前 N 字符
+  - `~/Code/kb-chat/services/kb-mcp/kb_mcp/server.py`：MCP adapter 切换到 `/api/kb/v1/*`，暴露 search / fetch / batch fetch / related / timeline / compare / cite / summarize_corpus 七类 KB 工具
+  - 新增轻量合同测试：`services/api/tests/test_kb_public_contract.py` 与 kb-chat MCP adapter route/tool contract test
 - Phase D · entity_candidates 计数器 · ✅
   - `database.py`：新增 `entity_candidates.mention_count INT` + `max_salience FLOAT`；幂等 backfill UPDATE 从历史 JSONB 浓缩计数（仅当 mention_count=0 且 mentions 非空时执行）
   - `routers/kb.py` `process_entity_candidates`：upsert 时同步递增 `mention_count` 与 `GREATEST(max_salience, :salience)`；晋升判定从计数器列读，不再 `jsonb_array_length`
@@ -675,13 +680,15 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
     - Stage 1：在 `summary_nodes.body_embedding` 向量搜索，命中阈值 `kb_public.summarize_summary_min_score` 的取出 `summary_of` 文章 id
     - Fallback：summary 路径未填满 `max_sources` 时，补足直接在 `knowledge_nodes(object_type='article')` 上做向量搜索，排除已选
   - 显式 `node_ids` 路径维持原行为
+- Phase D · summary-first 上下文（compare）· ✅
+  - `services/api/kb/public.py` `_load_doc_context()`：article 节点优先读取 `summary_nodes` 中 default summary（`is_default DESC, created_at ASC`），缺 summary 时才回退 wiki 正文
+  - summary 节点直接使用自身 body/abstract，避免 compare 工具在已有 summary 可用时把整篇 article 正文塞进 LLM 上下文
 - Phase D · 配置补充 · ✅
   - `ingestion.context_nearby_entities / context_top_candidates / context_popular_tags`（20 / 20 / 50）
   - `kb_public.summarize_summary_min_score`（0.3）
 
-**Phase D 未做项 / 延后**
-- compare 工具暂未引入 summary-first（compare 输入永远是显式 node_ids，不存在 query → corpus 的扩展点）
-- 自动重算 drift embedding：仅检测+报告；自动重算需要专门的 job_type 与限流，未在本批实现
+**Phase D 设计取舍 / 延后**
+- embedding drift 当前**只检测+报告，不自动重算**。理由：re-embed 会批量改写向量、影响检索结果和 API 成本，应由显式 rebuild/re-embed job 在人工确认后触发，而不是混进普通 maintenance 自动任务。
 - `entity_insights.refresh_stale_entity_profiles` 的 limit=200 仍硬编码（涉及 entity profile 流程，不在 Phase D 核心算法范畴，留给后续整理）
 
 ### Phase A 第三批（破坏性）· ✅ 已完成
@@ -792,16 +799,17 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - `drafts.py` Phase 3 child summary expansion：`COALESCE(sn.summary_of, kn.summary_of)` → `sn.summary_of`；查询条件简化为 `JOIN summary_nodes`
 - `kb.py ingest()` 实体去重：`SELECT id FROM knowledge_nodes WHERE canonical_name = :name` → 改为 `JOIN entity_nodes en` 后比 `en.canonical_name`
 
-**保留未删的字段**（设计列表里曾标记为"对象专属"但实际仍在 `knowledge_nodes` 中）
+**后续已清理的字段**（原记录曾标记为暂缓）
 
-| 字段 | 保留原因 |
+| 字段 | 当前状态 |
 |---|---|
-| `raw_ref` | 现仍有 100+ 直接 SELECT 路径（去重、wiki 文件生成、jobs payload）；切走代价大 |
-| `source_type` | ingest 时区分 article/summary/entity 子类型；source / source_items 不能完全替代 |
-| `source_node_ids` | summary / entity 的来源 article 列表，无单独表承载；object table 的 `source` JSONB 是镜像但未用作权威读 |
-| `source_published_at / source_updated_at / captured_at / effective_at` | 主时间索引（`idx_knowledge_nodes_knowledge_time` COALESCE 这四列），全库时间过滤都依赖；object 表里也有但 JOIN 代价大 |
+| `raw_ref` | 已从 `knowledge_nodes` 删除；article 权威值在 `article_nodes.raw_ref`，读取由 `object_nodes.fetch_node_with_object_fields()` 兼容派生 |
+| `source_type` | 已从 `knowledge_nodes` 删除；article 权威值在 `article_nodes.source_type`，summary/entity/index 由 object type 派生 |
+| `source_node_ids` | 已从 `knowledge_nodes` 删除；summary 来源列表写入 `summary_nodes.source.source_node_ids`，entity 来源由 `entity_facts` 推导 |
+| `source_item_id` | 已从 `knowledge_nodes` 删除；article 权威值在 `article_nodes.source_item_id` |
+| `source_published_at / source_updated_at / captured_at / effective_at` | 已从 `knowledge_nodes` 删除；原始来源时间保留在 `article_nodes/source_items`，`knowledge_nodes.published_at` 作为通用知识时间索引 |
 
-这 7 个字段未来再做权衡（涉及大量 SELECT 路径切换 + 索引迁移），属于结构性大改造，不在本批次范围。
+迁移策略：启动时先把旧列回填到 object tables 与 `knowledge_nodes.published_at`，再幂等删除旧列。全库通用时间过滤改为 `COALESCE(n.published_at, n.ingested_at, n.created_at)`；需要原始发布/捕获时间的路径通过 `article_nodes` 或 `source_items` 查询。
 
 **所有可校验项**
 - `python3 -c "import ast; ..."` 通过 11 个文件

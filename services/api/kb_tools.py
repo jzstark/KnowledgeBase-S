@@ -158,10 +158,10 @@ def _reference(node: dict[str, Any], score: float | None = None) -> dict[str, An
 
 def _time_expr(time_basis: str | None) -> str:
     if time_basis == "published":
-        return "n.source_published_at"
+        return "an.source_published_at"
     if time_basis == "captured":
-        return "n.captured_at"
-    return "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at, n.created_at)"
+        return "an.captured_at"
+    return "COALESCE(n.published_at, n.ingested_at, n.created_at)"
 
 
 def _parse_time_filter(value: Any) -> datetime | None:
@@ -246,7 +246,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
     if time_clause:
         conditions.append(time_clause)
     if time_basis == "published":
-        conditions.append("n.source_published_at IS NOT NULL")
+        conditions.append("an.source_published_at IS NOT NULL")
 
     try:
         embedding = await _embed_query(query)
@@ -290,7 +290,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
         if time_clause:
             text_conditions.append(time_clause)
         if time_basis == "published":
-            text_conditions.append("n.source_published_at IS NOT NULL")
+            text_conditions.append("an.source_published_at IS NOT NULL")
         limit_idx = len(text_params) + 1
         async with database.database.connection() as conn:
             rows = await conn.raw_connection.fetch(
@@ -464,13 +464,13 @@ async def get_sources(node_id: str, user_id: str = USER_ID) -> dict[str, Any]:
         """
         SELECT n.id AS node_id, n.title AS node_title, n.object_type,
                COALESCE(an.source_type, n.object_type) AS source_type,
-               an.raw_ref, COALESCE(an.source_item_id, n.source_item_id) AS source_item_id,
+               an.raw_ref, an.source_item_id,
                si.origin_ref, si.origin_ref_type, si.raw_snapshot_ref,
                si.extracted_text_ref, si.source_published_at,
                s.id AS source_id, s.name AS source_name, s.type AS configured_source_type
         FROM knowledge_nodes n
         LEFT JOIN article_nodes an ON an.node_id = n.id
-        LEFT JOIN source_items si ON si.id = COALESCE(an.source_item_id, n.source_item_id)
+        LEFT JOIN source_items si ON si.id = an.source_item_id
         LEFT JOIN sources s ON s.id = COALESCE(si.source_id, n.source_id)
         WHERE n.user_id = :user_id AND n.id = ANY(:source_node_ids)
         ORDER BY n.created_at DESC

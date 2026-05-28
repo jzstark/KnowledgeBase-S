@@ -19,7 +19,7 @@ def wiki_file_path(user_id: str, node_id: str, object_type: str):
     return USER_DATA_DIR / user_id / "wiki" / subdir / f"{node_id}.md"
 
 
-def read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int = 4000) -> str:
+def read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int | None = 4000) -> str:
     path = wiki_file_path(user_id, node_id, object_type)
     if not path.exists():
         return ""
@@ -32,6 +32,8 @@ def read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int = 40
     lines = body.split("\n", 2)
     if len(lines) >= 3:
         body = lines[2].strip()
+    if limit is None:
+        return body
     return body[:limit] + ("..." if len(body) > limit else "")
 
 
@@ -52,6 +54,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     created_at = node["created_at"].isoformat() if node["created_at"] else ""
     updated_at = node["updated_at"].isoformat() if node.get("updated_at") else created_at
     ingested_at = node["ingested_at"].isoformat() if node.get("ingested_at") else ""
+    published_at = node["published_at"].isoformat() if node.get("published_at") else ""
     source_published_at = node["source_published_at"].isoformat() if node.get("source_published_at") else ""
     source_updated_at = node["source_updated_at"].isoformat() if node.get("source_updated_at") else ""
     captured_at = node["captured_at"].isoformat() if node.get("captured_at") else ""
@@ -121,6 +124,7 @@ tags: {tags_yaml}
 wikilinks: {wikilinks_yaml}{extra_fm}
 created_at: {created_at}
 ingested_at: {ingested_at}
+published_at: {published_at}
 source_published_at: {source_published_at}
 source_updated_at: {source_updated_at}
 captured_at: {captured_at}

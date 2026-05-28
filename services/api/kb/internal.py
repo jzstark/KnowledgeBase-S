@@ -211,19 +211,18 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         if existing_summary:
             return {"id": existing_summary["id"], "duplicate": True}
 
+    captured_at = body.captured_at or datetime.now(timezone.utc)
+    published_at = body.effective_at or body.source_published_at or captured_at
+
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
           (id, user_id, title, abstract, embedding, source_id,
-           tags, object_type,
-           source_published_at, source_updated_at, captured_at,
-           effective_at, source_item_id, doc_kind, embedding_model)
+           tags, object_type, published_at, doc_kind, embedding_model)
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_id, :tags,
-           :object_type,
-           :source_published_at, :source_updated_at, :captured_at,
-           :effective_at, :source_item_id, :doc_kind, :embedding_model)
+           :object_type, :published_at, :doc_kind, :embedding_model)
         """,
         {
             "id": node_id,
@@ -233,11 +232,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "source_id": body.source_id,
             "tags": body.tags,
             "object_type": body.object_type,
-            "source_published_at": body.source_published_at,
-            "source_updated_at": body.source_updated_at,
-            "captured_at": body.captured_at or datetime.now(timezone.utc),
-            "effective_at": body.effective_at,
-            "source_item_id": body.source_item_id,
+            "published_at": published_at,
             "doc_kind": doc_kind,
             "embedding_model": embedding_model,
         },
@@ -251,7 +246,7 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
             "source_type": body.source_type,
             "source_published_at": body.source_published_at,
             "source_updated_at": body.source_updated_at,
-            "captured_at": body.captured_at or datetime.now(timezone.utc),
+            "captured_at": captured_at,
             "effective_at": body.effective_at,
             "tags": body.tags,
             "summary_of": body.summary_of,
@@ -533,6 +528,7 @@ async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token
         "created_at",
         "updated_at",
         "ingested_at",
+        "published_at",
         "source_published_at",
         "source_updated_at",
         "captured_at",

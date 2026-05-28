@@ -17,7 +17,7 @@ async def fetch_node_light(node_id: str) -> dict | None:
 
 
 async def fetch_briefing_source_articles(user_id: str, node_cutoff_sql: str) -> list[dict]:
-    knowledge_time_sql = "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at)"
+    knowledge_time_sql = "COALESCE(n.published_at, n.ingested_at, n.created_at)"
     rows = await database.database.fetch_all(
         f"""
         SELECT n.id, n.title, n.abstract, n.tags, n.created_at,
@@ -93,11 +93,11 @@ async def fetch_reference_sources(node_ids: list[str], user_id: str = USER_ID) -
         FROM expanded_ids e
         JOIN knowledge_nodes n ON n.id = e.id
         LEFT JOIN article_nodes an ON an.node_id = n.id
-        LEFT JOIN source_items si ON si.id = COALESCE(an.source_item_id, n.source_item_id)
+        LEFT JOIN source_items si ON si.id = an.source_item_id
         LEFT JOIN sources s ON s.id = COALESCE(si.source_id, n.source_id)
         WHERE n.user_id = :user_id
           AND n.object_type IN ('article', 'index')
-        ORDER BY COALESCE(n.effective_at, n.source_published_at, si.source_published_at, n.created_at) DESC
+        ORDER BY COALESCE(n.published_at, si.source_published_at, n.created_at) DESC
         """,
         {"user_id": user_id, "seed_ids": seed_ids},
     )

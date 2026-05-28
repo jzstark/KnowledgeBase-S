@@ -23,8 +23,7 @@ async def upsert_entity_fact(
 
     article = await database.database.fetch_one(
         """
-        SELECT n.id, n.user_id, n.title, n.source_item_id, n.source_published_at,
-               n.effective_at, n.captured_at, n.ingested_at,
+        SELECT n.id, n.user_id, n.title, n.published_at, n.ingested_at,
                an.source_item_id AS article_source_item_id,
                an.source_published_at AS article_source_published_at,
                an.effective_at AS article_effective_at,
@@ -39,15 +38,13 @@ async def upsert_entity_fact(
     if not article:
         return False
 
-    source_item_id = article["article_source_item_id"] or article["source_item_id"]
-    source_published_at = article["article_source_published_at"] or article["source_published_at"]
+    source_item_id = article["article_source_item_id"]
+    source_published_at = article["article_source_published_at"]
     fact_time = (
         article["article_effective_at"]
         or article["article_source_published_at"]
         or article["article_captured_at"]
-        or article["effective_at"]
-        or article["source_published_at"]
-        or article["captured_at"]
+        or article["published_at"]
         or article["ingested_at"]
     )
 

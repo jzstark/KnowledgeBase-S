@@ -15,6 +15,7 @@ KB Public — MCP 稳定接口（只读）
 - POST /summarize_corpus    语料综述（LLM）
 """
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -73,9 +74,14 @@ def _utc_date_end(d: date) -> datetime:
     return datetime.combine(d, datetime.max.time()).replace(tzinfo=timezone.utc)
 
 
+KNOWLEDGE_TIME_SQL = "COALESCE(n.published_at, n.ingested_at, n.created_at)"
+ARTICLE_TIME_SQL = "COALESCE(art.published_at, art.ingested_at, art.created_at)"
+
+
 def _published_at(node: dict[str, Any]) -> Optional[datetime]:
     return (
-        node.get("effective_at")
+        node.get("published_at")
+        or node.get("effective_at")
         or node.get("source_published_at")
         or node.get("captured_at")
         or node.get("ingested_at")
@@ -93,6 +99,55 @@ def _snippet(text: Optional[str], limit: int = 200) -> Optional[str]:
     if not text:
         return None
     return text[:limit] + ("…" if len(text) > limit else "")
+
+
+_CITATION_TERM_RE = re.compile(r"[\w\u4e00-\u9fff]{2,}", re.UNICODE)
+
+
+def _citation_prompt_body(full_body: str, claim: str, context: str | None, limit: int) -> str:
+    if len(full_body) <= limit:
+        return full_body
+
+    raw_terms = _CITATION_TERM_RE.findall(f"{claim} {context or ''}".lower())
+    terms = [t for t in dict.fromkeys(raw_terms) if len(t) >= 3 or any("\u4e00" <= c <= "\u9fff" for c in t)]
+    if not terms:
+        return full_body[:limit] + "..."
+
+    lower_body = full_body.lower()
+    hits: list[int] = []
+    for term in sorted(terms, key=len, reverse=True)[:20]:
+        start = 0
+        while len(hits) < 30:
+            idx = lower_body.find(term, start)
+            if idx < 0:
+                break
+            hits.append(idx)
+            start = idx + len(term)
+    if not hits:
+        return full_body[:limit] + "..."
+
+    chunk_size = max(400, limit // min(len(hits), 3))
+    ranges: list[tuple[int, int]] = []
+    for hit in sorted(set(hits)):
+        start = max(0, hit - chunk_size // 2)
+        end = min(len(full_body), start + chunk_size)
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+        if sum(end - start for start, end in ranges) >= limit:
+            break
+
+    chunks: list[str] = []
+    remaining = limit
+    for start, end in ranges:
+        if remaining <= 0:
+            break
+        chunk = full_body[start:end][:remaining]
+        marker = f"\n[excerpt {start}:{start + len(chunk)}]\n"
+        chunks.append(marker + chunk)
+        remaining -= len(chunk)
+    return "\n".join(chunks).strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -129,7 +184,13 @@ async def search(
     params: list[Any] = [USER_ID, keyword_pattern]
     conditions = [
         "n.user_id = $1",
-        "(n.embedding IS NOT NULL OR s.body_embedding IS NOT NULL)",
+        """
+        (n.embedding IS NOT NULL
+         OR s.body_embedding IS NOT NULL
+         OR n.title ILIKE $2
+         OR n.abstract ILIKE $2
+         OR s.body ILIKE $2)
+        """,
     ]
     if type_list:
         params.append(type_list)
@@ -145,14 +206,10 @@ async def search(
         conditions.append(f"n.doc_kind = ANY(${len(params)}::text[])")
     if date_from:
         params.append(_utc_date_start(date_from))
-        conditions.append(
-            f"COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) >= ${len(params)}"
-        )
+        conditions.append(f"{KNOWLEDGE_TIME_SQL} >= ${len(params)}")
     if date_to:
         params.append(_utc_date_end(date_to))
-        conditions.append(
-            f"COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) <= ${len(params)}"
-        )
+        conditions.append(f"{KNOWLEDGE_TIME_SQL} <= ${len(params)}")
 
     params.append(top_k)
     limit_idx = len(params)
@@ -162,15 +219,18 @@ async def search(
         WITH scored AS (
             SELECT n.id, n.title, n.object_type AS type, n.doc_kind, n.tags, n.source_id,
                    COALESCE(s.body, n.abstract) AS abstract,
-                   COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at,
-                   CASE
-                     WHEN n.object_type = 'summary' THEN
-                       0.75 * (1 - (COALESCE(s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
-                       + 0.25 * (1 - (COALESCE(s.perspective_embedding, s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
-                     ELSE
-                       1 - (n.embedding <=> '{embedding_literal}'::vector)
-                   END AS vector_score,
-                   (n.title ILIKE $2 OR n.abstract ILIKE $2) AS keyword_hit
+                   {KNOWLEDGE_TIME_SQL} AS published_at,
+                   COALESCE(
+                     CASE
+                       WHEN n.object_type = 'summary' THEN
+                         0.75 * (1 - (COALESCE(s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                         + 0.25 * (1 - (COALESCE(s.perspective_embedding, s.body_embedding, n.embedding) <=> '{embedding_literal}'::vector))
+                       ELSE
+                         1 - (n.embedding <=> '{embedding_literal}'::vector)
+                     END,
+                     0
+                   ) AS vector_score,
+                   (n.title ILIKE $2 OR n.abstract ILIKE $2 OR s.body ILIKE $2) AS keyword_hit
             FROM knowledge_nodes n
             LEFT JOIN summary_nodes s ON s.node_id = n.id
             WHERE {' AND '.join(conditions)}
@@ -355,7 +415,7 @@ async def fetch_nodes_batch(
 _RELATED_SQL: dict[str, str] = {
     "mentions": """
         SELECT n.id, n.title, n.object_type AS type, n.doc_kind, ke.weight,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at
+               COALESCE(n.published_at, n.ingested_at, n.created_at) AS published_at
         FROM knowledge_edges ke
         JOIN knowledge_nodes n ON n.id = ke.to_node_id
         WHERE ke.from_node_id = :id AND ke.relation_type = 'mentions'
@@ -364,7 +424,7 @@ _RELATED_SQL: dict[str, str] = {
     """,
     "mentioned_by": """
         SELECT n.id, n.title, n.object_type AS type, n.doc_kind, ke.weight,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at
+               COALESCE(n.published_at, n.ingested_at, n.created_at) AS published_at
         FROM knowledge_edges ke
         JOIN knowledge_nodes n ON n.id = ke.from_node_id
         WHERE ke.to_node_id = :id AND ke.relation_type = 'mentions'
@@ -373,7 +433,7 @@ _RELATED_SQL: dict[str, str] = {
     """,
     "summarizes": """
         SELECT n.id, n.title, n.object_type AS type, n.doc_kind, 1.0::float AS weight,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at
+               COALESCE(n.published_at, n.ingested_at, n.created_at) AS published_at
         FROM summary_nodes s
         JOIN knowledge_nodes n ON n.id = s.summary_of
         WHERE s.node_id = :id
@@ -390,7 +450,7 @@ _RELATED_SQL: dict[str, str] = {
     """,
     "contains": """
         SELECT n.id, n.title, n.object_type AS type, n.doc_kind, ic.position::float AS weight,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at
+               COALESCE(n.published_at, n.ingested_at, n.created_at) AS published_at
         FROM index_children ic
         JOIN knowledge_nodes n ON n.id = ic.child_id
         WHERE ic.index_id = :id
@@ -464,18 +524,14 @@ async def timeline(
         params: dict[str, Any] = {"entity_id": entity_id, "limit": limit}
         if date_from:
             params["date_from"] = _utc_date_start(date_from)
-            clauses.append(
-                "COALESCE(art.effective_at, art.source_published_at, art.captured_at, art.ingested_at) >= :date_from"
-            )
+            clauses.append(f"{ARTICLE_TIME_SQL} >= :date_from")
         if date_to:
             params["date_to"] = _utc_date_end(date_to)
-            clauses.append(
-                "COALESCE(art.effective_at, art.source_published_at, art.captured_at, art.ingested_at) <= :date_to"
-            )
+            clauses.append(f"{ARTICLE_TIME_SQL} <= :date_to")
 
         sql = f"""
             SELECT art.id AS article_id, art.title, art.doc_kind,
-                   COALESCE(art.effective_at, art.source_published_at, art.captured_at, art.ingested_at) AS published_at,
+                   {ARTICLE_TIME_SQL} AS published_at,
                    src.name AS source_name
             FROM knowledge_edges ke
             JOIN knowledge_nodes art ON art.id = ke.from_node_id AND art.object_type = 'article'
@@ -534,21 +590,17 @@ async def timeline(
     ]
     if date_from:
         params_list.append(_utc_date_start(date_from))
-        conds.append(
-            f"COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) >= ${len(params_list)}"
-        )
+        conds.append(f"{KNOWLEDGE_TIME_SQL} >= ${len(params_list)}")
     if date_to:
         params_list.append(_utc_date_end(date_to))
-        conds.append(
-            f"COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) <= ${len(params_list)}"
-        )
+        conds.append(f"{KNOWLEDGE_TIME_SQL} <= ${len(params_list)}")
 
     params_list.append(limit)
     limit_idx = len(params_list)
 
     sql = f"""
         SELECT n.id AS article_id, n.title, n.doc_kind,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at,
+               {KNOWLEDGE_TIME_SQL} AS published_at,
                src.name AS source_name
         FROM knowledge_nodes n
         LEFT JOIN sources src ON src.id = n.source_id
@@ -586,7 +638,24 @@ async def _load_doc_context(node_id: str, body_chars: int) -> Optional[dict[str,
     object_type = node.get("object_type") or "article"
     body_text = ""
     if object_type == "article":
-        body_text = _read_wiki_body(USER_ID, node_id, "article", limit=body_chars)
+        summary_row = await database.database.fetch_one(
+            """
+            SELECT body
+            FROM summary_nodes
+            WHERE summary_of = :id
+              AND body IS NOT NULL
+              AND length(body) > 0
+            ORDER BY is_default DESC, created_at ASC
+            LIMIT 1
+            """,
+            {"id": node_id},
+        )
+        if summary_row and summary_row["body"]:
+            body_text = _snippet(summary_row["body"], body_chars) or ""
+        else:
+            body_text = _read_wiki_body(USER_ID, node_id, "article", limit=body_chars)
+    elif object_type == "summary":
+        body_text = (node.get("abstract") or "")[:body_chars]
     return {
         "id": node_id,
         "title": node.get("title") or "",
@@ -746,7 +815,7 @@ async def cite(
 
     sql = f"""
         SELECT n.id, n.title, n.doc_kind, n.abstract,
-               COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at) AS published_at,
+               {KNOWLEDGE_TIME_SQL} AS published_at,
                1 - (n.embedding <=> '{embedding_literal}'::vector) AS score
         FROM knowledge_nodes n
         WHERE {' AND '.join(conds)}
@@ -759,21 +828,22 @@ async def cite(
     if not rows:
         return {"citations": []}
 
-    # 读取每篇正文用于 LLM 输入 + 服务端验证
+    # LLM 输入按预算从全文抽取相关窗口；quote 验证使用全文。
     body_texts: dict[str, str] = {}
     row_index: dict[str, Any] = {}
     docs_for_prompt: list[dict[str, Any]] = []
     for r in rows:
         nid = r["id"]
-        wiki_body = _read_wiki_body(USER_ID, nid, "article", limit=body_chars)
-        body_texts[nid] = wiki_body
+        full_body = _read_wiki_body(USER_ID, nid, "article", limit=None)
+        prompt_body = _citation_prompt_body(full_body, body.claim, body.context, body_chars)
+        body_texts[nid] = full_body
         row_index[nid] = r
         docs_for_prompt.append({
             "id": nid,
             "title": r["title"],
             "doc_kind": r["doc_kind"],
             "abstract": r["abstract"] or "",
-            "body": wiki_body,
+            "body": prompt_body,
         })
 
     # Stage 2: LLM 精确匹配

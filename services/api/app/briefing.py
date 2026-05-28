@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
 BATCH_SIZE = config_loader.get("briefing.batch_size", 12)
-KNOWLEDGE_TIME_SQL = "COALESCE(n.effective_at, n.source_published_at, n.captured_at, n.ingested_at)"
+KNOWLEDGE_TIME_SQL = "COALESCE(n.published_at, n.ingested_at, n.created_at)"
 
 
 # ── 获取今日选题 ─────────────────────────────────────────────────────────────

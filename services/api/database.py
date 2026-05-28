@@ -25,10 +25,7 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     tags TEXT[],
     object_type VARCHAR(16) NOT NULL DEFAULT 'article',
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
-    source_published_at TIMESTAMPTZ,
-    source_updated_at TIMESTAMPTZ,
-    captured_at TIMESTAMPTZ,
-    effective_at TIMESTAMPTZ,
+    published_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -255,11 +252,7 @@ ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS object_type VARCH
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS abstract TEXT;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW();
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_published_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS effective_at TIMESTAMPTZ;
-ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS source_item_id VARCHAR;
+ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS embedding_model VARCHAR;
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS doc_kind VARCHAR;
 ALTER TABLE IF EXISTS sources ADD COLUMN IF NOT EXISTS default_doc_kind VARCHAR;
@@ -397,9 +390,8 @@ ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS jobs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
 
 UPDATE knowledge_nodes
-SET ingested_at = COALESCE(ingested_at, created_at, NOW()),
-    captured_at = COALESCE(captured_at, created_at, ingested_at, NOW())
-WHERE ingested_at IS NULL OR captured_at IS NULL;
+SET ingested_at = COALESCE(ingested_at, created_at, NOW())
+WHERE ingested_at IS NULL;
 
 -- Phase 0 backfill INSERT...SELECT into object tables 已经执行过；
 -- 延后项 3 之后，knowledge_nodes 上的对象专属字段（summary_of / canonical_name /
@@ -435,9 +427,8 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_embedding ON knowledge_nodes
 CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_object_type ON knowledge_nodes(object_type);
 -- idx_knowledge_nodes_summary_of 已删除（列同时随延后项 3 DROP）；
 -- summary_nodes 自带 idx_summary_nodes_summary_of 索引覆盖该路径
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_knowledge_time ON knowledge_nodes(
-    COALESCE(effective_at, source_published_at, captured_at, ingested_at)
-);
+DROP INDEX IF EXISTS idx_knowledge_nodes_knowledge_time;
+CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_published_at ON knowledge_nodes(published_at DESC);
 -- idx_knowledge_nodes_{body,perspective}_embedding 已删除（列同时随延后项 3 DROP）；
 -- summary_nodes 自带 idx_summary_nodes_body_embedding / idx_summary_nodes_perspective_embedding 覆盖该路径
 CREATE INDEX IF NOT EXISTS idx_entity_candidates_user ON entity_candidates(user_id);
@@ -446,7 +437,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_source_items_user_source_origin
     ON source_items(user_id, source_id, origin_ref_type, origin_ref);
 CREATE INDEX IF NOT EXISTS idx_source_items_source_status ON source_items(source_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_source_items_user_status ON source_items(user_id, status, created_at);
-CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_source_item_id ON knowledge_nodes(source_item_id);
+DROP INDEX IF EXISTS idx_knowledge_nodes_source_item_id;
 CREATE INDEX IF NOT EXISTS idx_article_nodes_source_item_id ON article_nodes(source_item_id);
 CREATE INDEX IF NOT EXISTS idx_article_nodes_knowledge_time ON article_nodes(
     COALESCE(effective_at, source_published_at, captured_at)
@@ -514,16 +505,69 @@ async def init():
         "SELECT 1 FROM information_schema.columns "
         "WHERE table_name='knowledge_nodes' AND column_name='source_node_ids'"
     )
-    if has_node_source_type or has_node_raw_ref:
+    has_node_source_item_id = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='source_item_id'"
+    )
+    has_node_source_published_at = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='source_published_at'"
+    )
+    has_node_source_updated_at = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='source_updated_at'"
+    )
+    has_node_captured_at = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='captured_at'"
+    )
+    has_node_effective_at = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='knowledge_nodes' AND column_name='effective_at'"
+    )
+    legacy_time_columns = [
+        col for col, exists in (
+            ("effective_at", has_node_effective_at),
+            ("source_published_at", has_node_source_published_at),
+            ("captured_at", has_node_captured_at),
+            ("ingested_at", True),
+            ("created_at", True),
+        ) if exists
+    ]
+    await database.execute(
+        f"""
+        UPDATE knowledge_nodes
+        SET published_at = COALESCE(published_at, {', '.join(legacy_time_columns)})
+        WHERE published_at IS NULL
+        """
+    )
+    if (
+        has_node_source_type
+        or has_node_raw_ref
+        or has_node_source_item_id
+        or has_node_source_published_at
+        or has_node_source_updated_at
+        or has_node_captured_at
+        or has_node_effective_at
+    ):
         source_type_expr = "source_type" if has_node_source_type else "object_type"
         raw_ref_expr = "raw_ref" if has_node_raw_ref else "'{}'::jsonb"
+        source_item_expr = "source_item_id" if has_node_source_item_id else "NULL::varchar"
+        source_published_expr = (
+            "source_published_at" if has_node_source_published_at else "NULL::timestamptz"
+        )
+        source_updated_expr = (
+            "source_updated_at" if has_node_source_updated_at else "NULL::timestamptz"
+        )
+        captured_expr = "captured_at" if has_node_captured_at else "NULL::timestamptz"
+        effective_expr = "effective_at" if has_node_effective_at else "NULL::timestamptz"
         await database.execute(
             f"""
             INSERT INTO article_nodes
               (node_id, source_item_id, raw_ref, source_type, source_published_at,
                source_updated_at, captured_at, effective_at, tags, status)
-            SELECT id, source_item_id, {raw_ref_expr}, {source_type_expr}, source_published_at,
-                   source_updated_at, captured_at, effective_at, tags, 'active'
+            SELECT id, {source_item_expr}, {raw_ref_expr}, {source_type_expr}, {source_published_expr},
+                   {source_updated_expr}, {captured_expr}, {effective_expr}, tags, 'active'
             FROM knowledge_nodes
             WHERE object_type = 'article'
             ON CONFLICT (node_id) DO UPDATE SET
@@ -554,7 +598,16 @@ async def init():
               AND cardinality(kn.source_node_ids) > 0
             """
         )
-    for column in ("source_type", "raw_ref", "source_node_ids"):
+    for column in (
+        "source_type",
+        "raw_ref",
+        "source_node_ids",
+        "source_item_id",
+        "source_published_at",
+        "source_updated_at",
+        "captured_at",
+        "effective_at",
+    ):
         exists = await database.fetch_one(
             "SELECT 1 FROM information_schema.columns "
             "WHERE table_name='knowledge_nodes' AND column_name=:column",

@@ -728,6 +728,16 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                 created_at = _dt.fromisoformat(created_at.replace("Z", "+00:00"))
             except Exception:
                 created_at = None
+        published_at = None
+        for time_key in ("published_at", "effective_at", "source_published_at", "captured_at"):
+            value = m.get(time_key)
+            if isinstance(value, str) and value:
+                try:
+                    published_at = _dt.fromisoformat(value.replace("Z", "+00:00"))
+                    break
+                except Exception:
+                    continue
+        published_at = published_at or created_at
 
         # entity fields
         canonical_name = m.get("canonical_name") or None
@@ -750,11 +760,11 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                 f"""
                 INSERT INTO knowledge_nodes
                   (id, user_id, title, abstract, embedding, source_id,
-                   tags, object_type, created_at)
+                   tags, object_type, published_at, created_at)
                 VALUES
                   (:id, :uid, :title, :abstract, '{emb_lit}'::vector,
                    :source_id, :tags,
-                   :object_type, :created_at)
+                   :object_type, :published_at, :created_at)
                 """,
                 {
                     "id": node_id, "uid": user_id,
@@ -763,6 +773,7 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "source_id": source_id,
                     "tags": tags,
                     "object_type": object_type,
+                    "published_at": published_at,
                     "created_at": created_at,
                 },
             )
@@ -957,11 +968,12 @@ async def rebuild_from_raw(
 
     node_rows = await database.database.fetch_all(
         """
-        SELECT id, object_type
-        FROM knowledge_nodes
-        WHERE user_id = :uid
-          AND source_item_id = ANY(:item_ids)
-          AND object_type IN ('article', 'index')
+        SELECT n.id, n.object_type
+        FROM knowledge_nodes n
+        JOIN article_nodes an ON an.node_id = n.id
+        WHERE n.user_id = :uid
+          AND an.source_item_id = ANY(:item_ids)
+          AND n.object_type = 'article'
         """,
         {"uid": user_id, "item_ids": item_ids},
     )
