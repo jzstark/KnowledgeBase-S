@@ -213,11 +213,13 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
         right = await _generate_topics_batch(batch[mid:], topics_setting)
         return left + right
 
-    raw = message.content[0].text.strip()
+    raw = getattr(message.content[0], "text", "").strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)
     if m:
         raw = m.group(0)
     parsed = repair_json(raw, return_objects=True)
+    if not isinstance(parsed, list):
+        return []
 
     # 将批次内 1-based 索引转换为实际 node ID
     for t in parsed:

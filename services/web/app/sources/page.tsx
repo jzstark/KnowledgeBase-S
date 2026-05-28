@@ -156,7 +156,7 @@ export default function SourcesPage() {
   useEffect(() => { loadSources(); }, []);
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`确定删除「${name}」？此操作不可恢复。`)) return;
+    if (!confirm(`停用「${name}」？该来源将从列表隐藏，已入库文章继续保留。`)) return;
     const r = await fetch(`/api/sources/${id}`, {
       method: "DELETE", credentials: "include",
     });
@@ -374,7 +374,7 @@ function SourceCard({
             )}
 
             <Button variant="outline" size="sm" className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10" onClick={onDelete}>
-              删除
+              停用
             </Button>
           </div>
         </div>

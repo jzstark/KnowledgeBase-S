@@ -141,7 +141,7 @@ async def generate_draft(body: GenerateRequest):
     remaining = MAX_KNOWLEDGE_CHARS
     article_parts: list[str] = []
     for node in retrieval["articles"]:
-        if remaining <= 100:
+        if remaining <= config_loader.get("drafts.min_remaining_chars", 100):
             break
         title   = node.get("title") or "（无标题）"
         tags    = "、".join((node.get("tags") or [])[:3])
@@ -156,7 +156,7 @@ async def generate_draft(body: GenerateRequest):
 
     entity_parts: list[str] = []
     for node in retrieval["entities"]:
-        if remaining <= 100:
+        if remaining <= config_loader.get("drafts.min_remaining_chars", 100):
             break
         title   = node.get("title") or "（无名实体）"
         content = read_wiki_body(USER_ID, node["id"], "entity")
@@ -205,7 +205,7 @@ async def generate_draft(body: GenerateRequest):
         max_tokens=config_loader.get("llm_output_tokens.draft_generation", 4096),
         messages=[{"role": "user", "content": prompt}],
     )
-    draft_content = message.content[0].text.strip()
+    draft_content = getattr(message.content[0], "text", "").strip()
     reference_node_ids = (
         all_source_ids
         + [node["id"] for node in retrieval["articles"]]

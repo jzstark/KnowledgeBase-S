@@ -30,7 +30,7 @@ async def embed_query(text: str) -> list[float]:
             max_tokens=config_loader.get("llm_output_tokens.hyde_abstract", 200),
             messages=[{"role": "user", "content": prompt_loader.fill("hyde_abstract", topic=text)}],
         )
-        hypo_text = hypo.content[0].text.strip()
+        hypo_text = getattr(hypo.content[0], "text", "").strip()
         if hypo_text:
             return await embed_text(hypo_text)
     except Exception:

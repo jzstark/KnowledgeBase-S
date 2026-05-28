@@ -32,7 +32,7 @@ class KbPublicContractTests(unittest.TestCase):
                     and isinstance(dec.args[0], ast.Constant)
                 ):
                     continue
-                routes.add((func.attr.upper(), dec.args[0].value))
+                routes.add((func.attr.upper(), str(dec.args[0].value)))
 
         self.assertEqual(
             {
@@ -77,10 +77,10 @@ class WikiBodyTests(unittest.TestCase):
             wiki = importlib.import_module("kb.wiki")
         except ModuleNotFoundError as exc:
             self.skipTest(f"optional dependency not installed: {exc.name}")
-        old_user_data_dir = wiki.USER_DATA_DIR
+        old_user_data_dir = wiki.USER_DATA_DIR  # type: ignore[attr-defined]
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                wiki.USER_DATA_DIR = Path(tmp)
+                wiki.USER_DATA_DIR = Path(tmp)  # type: ignore[attr-defined]
                 path = wiki.wiki_file_path("default", "art_test", "article")
                 path.parent.mkdir(parents=True)
                 path.write_text("---\nid: art_test\n---\n\n# Title\n\n" + "x" * 20, encoding="utf-8")
@@ -88,7 +88,7 @@ class WikiBodyTests(unittest.TestCase):
                 self.assertEqual(wiki.read_wiki_body("default", "art_test", "article", limit=None), "x" * 20)
                 self.assertEqual(wiki.read_wiki_body("default", "art_test", "article", limit=5), "xxxxx...")
             finally:
-                wiki.USER_DATA_DIR = old_user_data_dir
+                wiki.USER_DATA_DIR = old_user_data_dir  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import math
 from typing import Any
 
+import config_loader
 import database
 
 
@@ -187,9 +188,9 @@ async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
         FROM entity_facts
         WHERE entity_id = :entity_id
         ORDER BY fact_time DESC NULLS LAST, updated_at DESC
-        LIMIT 12
+        LIMIT :facts_limit
         """,
-        {"entity_id": entity_id},
+        {"entity_id": entity_id, "facts_limit": config_loader.get("entity_insights.refresh_facts_limit", 12)},
     )
     facts_count_row = await database.database.fetch_one(
         "SELECT COUNT(*) AS count FROM entity_facts WHERE entity_id = :entity_id",

@@ -170,7 +170,7 @@ async def search(
     """Hybrid 向量 + 关键词搜索。filters 全部可选。"""
     top_k = top_k or config_loader.get("kb_public.search_top_k", 10)
     top_k_max = config_loader.get("kb_public.search_top_k_max", 50)
-    top_k = min(max(int(top_k), 1), top_k_max)
+    top_k = min(max(int(top_k or 0), 1), top_k_max)
 
     type_list = _csv(type)
     tag_list = _csv(tags)
@@ -477,7 +477,7 @@ async def related(
 ):
     limit = limit or config_loader.get("kb_public.related_default_limit", 20)
     limit_max = config_loader.get("kb_public.related_limit_max", 100)
-    limit = min(max(int(limit), 1), limit_max)
+    limit = min(max(int(limit or 0), 1), limit_max)
 
     rows = await database.database.fetch_all(
         _RELATED_SQL[relation], {"id": node_id, "limit": limit}
@@ -517,7 +517,7 @@ async def timeline(
 
     limit = limit or config_loader.get("kb_public.timeline_default_limit", 50)
     limit_max = config_loader.get("kb_public.timeline_limit_max", 200)
-    limit = min(max(int(limit), 1), limit_max)
+    limit = min(max(int(limit or 0), 1), limit_max)
 
     if entity_id:
         clauses = ["ke.relation_type = 'mentions'", "ke.to_node_id = :entity_id"]
@@ -576,7 +576,8 @@ async def timeline(
 
         return {"events": events}
 
-    # topic_query 路径：向量搜索文章
+    # topic_query 路径：向量搜索文章（non-None guaranteed by earlier validation）
+    assert topic_query
     embedding = await _embed_query(topic_query)
     embedding_literal = _vector_literal(embedding)
     threshold = config_loader.get("kb_public.timeline_min_score", 0.3)
@@ -728,7 +729,7 @@ async def compare(
         max_tokens=config_loader.get("llm_output_tokens.compare", 2048),
         messages=[{"role": "user", "content": prompt}],
     )
-    output = resp.content[0].text.strip()
+    output = getattr(resp.content[0], "text", "").strip()
 
     # 简单切分表格与分析：找到表格末尾（最后一个 | 开头的行），之后归为 analysis
     lines = output.split("\n")
@@ -858,7 +859,7 @@ async def cite(
         max_tokens=config_loader.get("llm_output_tokens.cite", 2048),
         messages=[{"role": "user", "content": prompt}],
     )
-    raw_text = resp.content[0].text
+    raw_text = getattr(resp.content[0], "text", "")
     candidate_quotes = _extract_json_array(raw_text)
 
     # 服务端验证：quote 必须逐字出现在正文中（防 LLM 幻觉）
@@ -921,6 +922,7 @@ async def summarize_corpus(
         #   Stage 1：在 summary_nodes 向量搜索 → top-K summaries
         #   Stage 2：展开到对应的 summary_of（即原文章）
         #   Fallback：若 summary 命中不足阈值/数量，补充直接 article 向量搜索
+        assert body.query  # non-None guaranteed by earlier validation
         embedding = await _embed_query(body.query)
         embedding_literal = _vector_literal(embedding)
         min_score = config_loader.get("kb_public.summarize_summary_min_score", 0.3)
@@ -990,7 +992,7 @@ async def summarize_corpus(
         max_tokens=config_loader.get("llm_output_tokens.summarize_corpus", 3000),
         messages=[{"role": "user", "content": prompt}],
     )
-    summary_text = resp.content[0].text.strip()
+    summary_text = getattr(resp.content[0], "text", "").strip()
 
     pub_years = [d["published_at"].year for d in docs if isinstance(d.get("published_at"), datetime)]
     if pub_years:

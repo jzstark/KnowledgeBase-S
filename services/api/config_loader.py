@@ -2,6 +2,8 @@
 Loads /app/shared_config/system.yaml (bind-mounted from repo config/).
 Provides dot-path access: get("retrieval.entity_top_k", 10)
 """
+from typing import Any
+
 import yaml
 from pathlib import Path
 
@@ -55,6 +57,8 @@ REQUIRED_KEYS = (
     "briefing.hours_back",
     "briefing.batch_size",
     "briefing.summary_chars",
+    "drafts.min_remaining_chars",
+    "entity_insights.refresh_facts_limit",
     "llm_output_tokens.article_analysis",
     "llm_output_tokens.entity_page",
     "llm_output_tokens.summary_gen",
@@ -91,7 +95,7 @@ except FileNotFoundError:
     _cfg = {}
 
 
-def get(path: str, default=None):
+def get(path: str, default: Any = None) -> Any:
     """Return config value at dot-separated path, or default if not found."""
     keys = path.split(".")
     v = _cfg

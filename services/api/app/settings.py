@@ -95,7 +95,7 @@ async def get_settings(_: dict = Depends(require_auth)):
 @router.put("")
 async def update_settings(body: SettingsUpdate, _: dict = Depends(require_auth)):
     current = await get_settings_dict()
-    updates = body.model_dump(exclude_none=True)
+    updates = body.dict(exclude_none=True)
     merged = {**current, **updates}
 
     await database.database.execute(

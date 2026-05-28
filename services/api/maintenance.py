@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import sys
+from typing import Any
 
 import anthropic
 
@@ -116,7 +117,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
                 max_tokens=config_loader.get("llm_output_tokens.entity_page", 2048),
                 messages=[{"role": "user", "content": prompt}],
             )
-            entity_body = resp.content[0].text.strip()
+            entity_body = getattr(resp.content[0], "text", "").strip()
         except Exception as e:
             print(f"[maintenance] entity page generation failed for {row['canonical_name']}: {e}")
             continue
@@ -521,7 +522,7 @@ async def aggregate_index_abstracts(
                 max_tokens=config_loader.get("llm_output_tokens.index_summary", 512),
                 messages=[{"role": "user", "content": prompt}],
             )
-            new_abstract = resp.content[0].text.strip()
+            new_abstract = getattr(resp.content[0], "text", "").strip()
         except Exception as e:
             print(f"[maintenance] index_abstract LLM error for {idx_id}: {e}", flush=True)
             skipped += 1
@@ -915,7 +916,7 @@ async def rebuild_from_raw(
     print(f"[rebuild] Step 1: 选择 source_items manifest... {filters}", flush=True)
 
     where = ["si.user_id = :uid"]
-    params = {"uid": user_id}
+    params: dict[str, Any] = {"uid": user_id}
     if source_id:
         where.append("si.source_id = :source_id")
         params["source_id"] = source_id

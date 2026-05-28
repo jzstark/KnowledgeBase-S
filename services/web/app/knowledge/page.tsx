@@ -23,6 +23,9 @@ interface KBNode {
   perspective_label?: string;
   perspective_instruction?: string;
   is_default?: boolean;
+  doc_kind?: string;
+  source_id?: string;
+  source_name?: string;
 }
 
 interface KBEdge {
@@ -134,6 +137,17 @@ const SOURCE_TYPE_BADGE: Record<string, string> = {
   wechat: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   manual: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
 };
+
+function useDocKindConfig(): string[] {
+  const [values, setValues] = useState<string[]>([]);
+  useEffect(() => {
+    fetch("/api/config/doc_kind", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.values && setValues(d.values))
+      .catch(() => {});
+  }, []);
+  return values;
+}
 
 function nodeSymbolPath(d: SimNode, selected: boolean): string {
   const base = Math.min(8 + (d.degree || 0) * 1.5, 22);
@@ -270,16 +284,19 @@ function ListPanel({
   const [q, setQ] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [offset, setOffset] = useState(0);
+  const [groupBySrc, setGroupBySrc] = useState(false);
+  const [collapsedSrcs, setCollapsedSrcs] = useState<Set<string>>(new Set());
   const LIMIT = 50;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const loadNodes = useCallback(async (searchQ: string, tagF: string, off: number) => {
+  const loadNodes = useCallback(async (searchQ: string, tagF: string, off: number, grouped = false) => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(off) });
+      const params = new URLSearchParams({ limit: grouped ? "200" : String(LIMIT), offset: String(grouped ? 0 : off) });
       if (searchQ.trim()) params.set("q", searchQ.trim());
       if (tagF.trim()) params.set("tags", tagF.trim());
+      if (grouped) params.set("type", "article");
       const r = await fetch(`/api/kb/nodes?${params}`, { credentials: "include" });
       if (r.ok) {
         const data = await r.json();
@@ -292,15 +309,15 @@ function ListPanel({
   }, []);
 
   useEffect(() => {
-    loadNodes(q, tagFilter, offset);
+    loadNodes(q, tagFilter, offset, groupBySrc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offset]);
+  }, [offset, groupBySrc]);
 
-  useEffect(() => { loadNodes("", "", 0); }, [loadNodes]);
+  useEffect(() => { loadNodes("", "", 0, groupBySrc); }, [loadNodes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (refreshToken === undefined || refreshToken === 0) return;
-    loadNodes(q, tagFilter, offset);
+    loadNodes(q, tagFilter, offset, groupBySrc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
@@ -314,15 +331,27 @@ function ListPanel({
     setQ(val);
     setOffset(0);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => loadNodes(val, tagFilter, 0), 500);
+    debounceRef.current = setTimeout(() => loadNodes(val, tagFilter, 0, groupBySrc), 500);
   }
 
   function handleTagChange(val: string) {
     setTagFilter(val);
     setOffset(0);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => loadNodes(q, val, 0), 500);
+    debounceRef.current = setTimeout(() => loadNodes(q, val, 0, groupBySrc), 500);
   }
+
+  // 按 source_name 分组（仅 groupBySrc 模式下使用）
+  const grouped: { srcName: string; srcId: string; items: KBNode[] }[] = groupBySrc
+    ? Object.values(
+        nodes.reduce((acc, n) => {
+          const key = n.source_id || "__none__";
+          if (!acc[key]) acc[key] = { srcName: n.source_name || "（无来源）", srcId: key, items: [] };
+          acc[key].items.push(n);
+          return acc;
+        }, {} as Record<string, { srcName: string; srcId: string; items: KBNode[] }>),
+      )
+    : [];
 
   return (
     <div className="flex flex-col h-full">
@@ -342,6 +371,18 @@ function ListPanel({
             placeholder="按标签过滤"
             className="flex-1 text-sm h-8"
           />
+          <button
+            onClick={() => setGroupBySrc((v) => !v)}
+            title="按 source 分组（仅显示文章）"
+            className={cn(
+              "shrink-0 text-xs border rounded px-1.5 py-0.5 transition-colors",
+              groupBySrc
+                ? "bg-primary text-primary-foreground border-primary"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            分组
+          </button>
           <span className="text-xs text-muted-foreground shrink-0">{total}</span>
         </div>
       </div>
@@ -351,6 +392,29 @@ function ListPanel({
           <p className="text-sm text-muted-foreground">加载中…</p>
         ) : nodes.length === 0 ? (
           <p className="text-sm text-muted-foreground">暂无节点</p>
+        ) : groupBySrc ? (
+          grouped.map(({ srcName, srcId, items }) => {
+            const collapsed = collapsedSrcs.has(srcId);
+            return (
+              <div key={srcId} className="space-y-1">
+                <button
+                  className="w-full text-left text-xs font-medium text-muted-foreground hover:text-foreground flex items-center gap-1 py-1"
+                  onClick={() => setCollapsedSrcs((prev) => {
+                    const next = new Set(prev);
+                    collapsed ? next.delete(srcId) : next.add(srcId);
+                    return next;
+                  })}
+                >
+                  <span>{collapsed ? "▶" : "▼"}</span>
+                  <span className="truncate">{srcName}</span>
+                  <span className="ml-auto shrink-0 text-[10px]">{items.length}</span>
+                </button>
+                {!collapsed && items.map((n) => (
+                  <NodeCard key={n.id} node={n} selected={n.id === selectedId} onClick={() => onSelectNode(n.id)} />
+                ))}
+              </div>
+            );
+          })
         ) : (
           nodes.map((n) => (
             <NodeCard
@@ -363,7 +427,7 @@ function ListPanel({
         )}
       </div>
 
-      {total > LIMIT && (
+      {!groupBySrc && total > LIMIT && (
         <div className="px-3 py-2 border-t border-border flex items-center justify-between shrink-0">
           <Button
             variant="outline"
@@ -772,6 +836,8 @@ function WikiPanel({
   onSummaryCreated,
   onSummaryRevised,
   onJobQueued,
+  onNodeDeleted,
+  onNodeUpdated,
 }: {
   detail: NodeDetail | null;
   detailLoading: boolean;
@@ -782,6 +848,8 @@ function WikiPanel({
   onSummaryCreated?: () => void;
   onSummaryRevised?: (nodeId: string) => void;
   onJobQueued?: () => void;
+  onNodeDeleted?: () => void;
+  onNodeUpdated?: (nodeId: string) => void;
 }) {
   const [sumFormOpen, setSumFormOpen] = useState(false);
   const [perspInput, setPerspInput] = useState("");
@@ -793,6 +861,12 @@ function WikiPanel({
   const [reviseMsg, setReviseMsg] = useState("");
   const [entityFacts, setEntityFacts] = useState<EntityFact[]>([]);
   const [relatedEntities, setRelatedEntities] = useState<RelatedEntity[]>([]);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergeMsg, setMergeMsg] = useState("");
+  const [docKindEditing, setDocKindEditing] = useState(false);
+  const docKindValues = useDocKindConfig();
 
   useEffect(() => {
     let cancelled = false;
@@ -878,6 +952,59 @@ function WikiPanel({
     } finally {
       setReviseLoading(false);
     }
+  }
+
+  async function handleDeleteEntity() {
+    if (!detail) return;
+    if (!confirm(`确定删除实体「${detail.title || detail.id}」？此操作将级联删除关联的 edges 和 facts，不可恢复。`)) return;
+    const r = await fetch(`/api/kb/entities/${detail.id}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (r.ok) {
+      onNodeDeleted?.();
+    } else {
+      const err = await r.json().catch(() => ({}));
+      alert(`删除失败：${err.detail || r.status}`);
+    }
+  }
+
+  async function handleMergeEntity() {
+    if (!detail || !mergeTarget.trim()) return;
+    setMergeLoading(true);
+    setMergeMsg("");
+    try {
+      const r = await fetch("/api/kb/entities/merge", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: detail.id, target_id: mergeTarget.trim() }),
+      });
+      if (r.ok) {
+        setMergeMsg("合并成功");
+        setMergeOpen(false);
+        setMergeTarget("");
+        setTimeout(() => { onNodeDeleted?.(); }, 800);
+      } else {
+        const err = await r.json().catch(() => ({}));
+        setMergeMsg(`合并失败：${err.detail || r.status}`);
+      }
+    } catch {
+      setMergeMsg("网络错误");
+    } finally {
+      setMergeLoading(false);
+    }
+  }
+
+  async function handleDocKindChange(newDocKind: string) {
+    if (!detail) return;
+    setDocKindEditing(false);
+    const r = await fetch(`/api/kb/nodes/${detail.id}/metadata`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_kind: newDocKind }),
+    });
+    if (r.ok) onNodeUpdated?.(detail.id);
   }
 
   if (openFile) return <FilePanel file={openFile} onClose={onCloseFile} />;
@@ -973,6 +1100,23 @@ function WikiPanel({
             >
               查看 Wiki 导出
             </Button>
+            {objectType === "entity" && (
+              <>
+                <Button
+                  variant="outline" size="sm" className="h-7 text-xs"
+                  onClick={() => { setMergeOpen((v) => !v); setMergeMsg(""); }}
+                >
+                  合并到…
+                </Button>
+                <Button
+                  variant="outline" size="sm"
+                  className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
+                  onClick={handleDeleteEntity}
+                >
+                  删除
+                </Button>
+              </>
+            )}
           </div>
         </div>
         {detail.abstract && (
@@ -982,6 +1126,59 @@ function WikiPanel({
           <p className="text-[11px] text-muted-foreground mt-2">
             视角：{detail.is_default ? "default" : detail.perspective_label}
           </p>
+        )}
+        {/* doc_kind 内联编辑 */}
+        {(objectType === "article" || objectType === "entity" || objectType === "index") && (
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-[11px] text-muted-foreground">类型：</span>
+            {docKindEditing ? (
+              <select
+                autoFocus
+                className="text-xs border border-border rounded px-1 py-0.5 bg-background"
+                defaultValue={detail.doc_kind || ""}
+                onBlur={() => setDocKindEditing(false)}
+                onChange={(e) => handleDocKindChange(e.target.value)}
+              >
+                <option value="">—</option>
+                {docKindValues.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : (
+              <button
+                className="text-[11px] text-muted-foreground hover:text-foreground border border-transparent hover:border-border rounded px-1 py-0.5"
+                onClick={() => setDocKindEditing(true)}
+              >
+                {detail.doc_kind || "（未设置）"}
+              </button>
+            )}
+          </div>
+        )}
+        {/* entity 合并表单 */}
+        {mergeOpen && (
+          <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+            <p className="text-xs text-muted-foreground">将当前 entity 合并入目标 entity（输入目标 ID）：</p>
+            <Input
+              type="text" value={mergeTarget}
+              onChange={(e) => setMergeTarget(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleMergeEntity(); }}
+              placeholder="目标 entity ID（如 ent_abc123）"
+              className="text-xs h-7"
+              disabled={mergeLoading}
+            />
+            <div className="flex items-center gap-2">
+              <Button size="sm" className="h-6 text-xs" onClick={handleMergeEntity}
+                disabled={mergeLoading || !mergeTarget.trim()}>
+                {mergeLoading ? "合并中…" : "确认合并"}
+              </Button>
+              <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground"
+                onClick={() => { setMergeOpen(false); setMergeMsg(""); setMergeTarget(""); }}>
+                取消
+              </Button>
+              {mergeMsg && (
+                <span className={cn("text-xs", mergeMsg.startsWith("合并失败") || mergeMsg.startsWith("网络")
+                  ? "text-destructive" : "text-green-600")}>{mergeMsg}</span>
+              )}
+            </div>
+          </div>
         )}
 
         {/* 摘要生成内联表单 */}
@@ -1220,6 +1417,7 @@ export default function KnowledgePage() {
   const [leftWidth, setLeftWidth] = useState(208);
   const [rightWidth, setRightWidth] = useState(288);
   const [graphHeight, setGraphHeight] = useState(256);
+  const [showList, setShowList] = useState(false);
 
   useEffect(() => { loadGraph(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -1231,6 +1429,10 @@ export default function KnowledgePage() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") clearSelection();
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setShowList((v) => !v);
+      }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -1599,6 +1801,14 @@ export default function KnowledgePage() {
                 loadGraph();
               }}
               onJobQueued={loadJobs}
+              onNodeDeleted={() => {
+                clearSelection();
+                setListRefreshToken((t) => t + 1);
+                loadGraph();
+              }}
+              onNodeUpdated={(nodeId) => {
+                refreshSelectedNode(nodeId);
+              }}
             />
           </div>
 
@@ -1671,24 +1881,33 @@ export default function KnowledgePage() {
           </div>
         </div>
 
-        <ResizeHandle
-          direction="h"
-          onMouseDown={(e) => startDrag(e, "h", rightWidth, -1, setRightWidth, 200, 520)}
-        />
-
-        {/* 右：列表 */}
-        <div style={{ width: rightWidth }} className="shrink-0 border-l border-border bg-muted/30 overflow-hidden flex flex-col">
-          <div className="px-3 py-2 border-b border-border bg-muted/40 shrink-0">
-            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">列表</span>
-          </div>
-          <div className="flex-1 overflow-hidden">
-            <ListPanel
-              selectedId={selectedNodeId ?? undefined}
-              onSelectNode={(id) => selectNode(id)}
-              refreshToken={listRefreshToken}
+        {showList && (
+          <>
+            <ResizeHandle
+              direction="h"
+              onMouseDown={(e) => startDrag(e, "h", rightWidth, -1, setRightWidth, 200, 520)}
             />
-          </div>
-        </div>
+
+            {/* 右：列表（Cmd/Ctrl+F 切换） */}
+            <div style={{ width: rightWidth }} className="shrink-0 border-l border-border bg-muted/30 overflow-hidden flex flex-col">
+              <div className="px-3 py-2 border-b border-border bg-muted/40 shrink-0 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">列表</span>
+                <button
+                  onClick={() => setShowList(false)}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  title="关闭（Esc 或 Cmd+F）"
+                >✕</button>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <ListPanel
+                  selectedId={selectedNodeId ?? undefined}
+                  onSelectNode={(id) => selectNode(id)}
+                  refreshToken={listRefreshToken}
+                />
+              </div>
+            </div>
+          </>
+        )}
 
       </div>
       </div>

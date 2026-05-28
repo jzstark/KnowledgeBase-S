@@ -343,7 +343,8 @@ async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depen
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
-    d = dict(row)
+    assert row is not None
+    d: dict[str, Any] = dict(row)  # type: ignore[arg-type]
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
     d["article_count"] = 0
@@ -527,7 +528,8 @@ async def create_source(body: SourceCreate, _: dict = Depends(require_auth)):
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
-    d = dict(row)
+    assert row is not None
+    d: dict[str, Any] = dict(row)  # type: ignore[arg-type]
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
     d["article_count"] = 0
@@ -699,7 +701,8 @@ async def update_source(source_id: str, body: SourceUpdate):
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
-    d = dict(row)
+    assert row is not None
+    d: dict[str, Any] = dict(row)  # type: ignore[arg-type]
     if d.get("last_fetched_at"):
         d["last_fetched_at"] = d["last_fetched_at"].isoformat()
     if d.get("created_at"):

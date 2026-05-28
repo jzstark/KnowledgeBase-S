@@ -416,7 +416,7 @@ async def _hyde_embed_query(text: str) -> list[float]:
             max_tokens=config_loader.get("llm_output_tokens.hyde_abstract", 200),
             messages=[{"role": "user", "content": prompt_loader.fill("hyde_abstract", topic=text)}],
         )
-        hypo_text = hypo.content[0].text.strip()
+        hypo_text = getattr(hypo.content[0], "text", "").strip()
         if hypo_text:
             return await _embed_query(hypo_text)
     except Exception:
@@ -610,6 +610,24 @@ class AddIndexChildRequest(BaseModel):
 
 class ReorderIndexChildrenRequest(BaseModel):
     child_ids: list[str]
+
+
+class UpdateNodeMetadataRequest(BaseModel):
+    title: str | None = None
+    tags: list[str] | None = None
+    published_at: datetime | None = None
+    doc_kind: str | None = None
+
+
+class UpdateEntityRequest(BaseModel):
+    canonical_name: str | None = None
+    aliases: list[str] | None = None
+    entity_type: str | None = None
+
+
+class MergeEntitiesRequest(BaseModel):
+    source_id: str  # 被合并方（成为 tombstone）
+    target_id: str  # 保留方
 
 
 def _serialize_index_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -841,7 +859,7 @@ async def generate_summary_job(
         max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
         messages=[{"role": "user", "content": prompt}],
     )
-    summary_content = message.content[0].text.strip()
+    summary_content = getattr(message.content[0], "text", "").strip()
 
     body_embedding = await _embed_text(summary_content)
     perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
@@ -997,7 +1015,7 @@ async def revise_summary_job(
         max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
         messages=[{"role": "user", "content": prompt}],
     )
-    revised_content = message.content[0].text.strip()
+    revised_content = getattr(message.content[0], "text", "").strip()
 
     body_embedding = await _embed_text(revised_content)
     body_embedding_literal = _vector_literal(body_embedding)
@@ -1102,6 +1120,38 @@ async def revise_summary(
     return {"status": job["status"], "job_id": job["id"], "job": job}
 
 
+@router.delete("/summaries/{summary_id}")
+async def delete_summary(summary_id: str, _: dict = Depends(require_auth)):
+    """删除 summary 节点（wiki 文件 + summary_nodes + knowledge_nodes）。"""
+    row = await database.database.fetch_one(
+        "SELECT user_id, object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": summary_id},
+    )
+    if not row:
+        raise HTTPException(404, "节点不存在")
+    if row["object_type"] != "summary":
+        raise HTTPException(400, "只能删除 summary 节点")
+
+    uid = row["user_id"] or USER_ID
+    wiki_file = _wiki_file_path(uid, summary_id, "summary")
+    if wiki_file.exists():
+        wiki_file.unlink()
+
+    await database.database.execute(
+        "DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id",
+        {"id": summary_id},
+    )
+    await database.database.execute(
+        "DELETE FROM summary_nodes WHERE node_id = :id",
+        {"id": summary_id},
+    )
+    await database.database.execute(
+        "DELETE FROM knowledge_nodes WHERE id = :id",
+        {"id": summary_id},
+    )
+    return {"ok": True}
+
+
 # ── 节点删除 ──────────────────────────────────────────────────────────────────
 
 @router.delete("/nodes/{node_id}")
@@ -1130,6 +1180,75 @@ async def delete_node(node_id: str, _: dict = Depends(require_auth)):
         "DELETE FROM knowledge_nodes WHERE id = :id",
         {"id": node_id},
     )
+
+    return {"ok": True}
+
+
+@router.post("/nodes/{node_id}/archive")
+async def archive_node(node_id: str, _: dict = Depends(require_auth)):
+    """软删除 article 节点（article_nodes.status = 'archived'）。"""
+    row = await database.database.fetch_one(
+        "SELECT object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+    if not row:
+        raise HTTPException(404, "节点不存在")
+    if row["object_type"] != "article":
+        raise HTTPException(400, "archive 仅适用于 article 节点")
+
+    await database.database.execute(
+        "UPDATE article_nodes SET status = 'archived' WHERE node_id = :id",
+        {"id": node_id},
+    )
+    return {"ok": True}
+
+
+@router.patch("/nodes/{node_id}/metadata")
+async def update_node_metadata(
+    node_id: str,
+    body: UpdateNodeMetadataRequest,
+    _: dict = Depends(require_auth),
+):
+    """修改节点元数据（title / tags / published_at / doc_kind）。"""
+    row = await database.database.fetch_one(
+        "SELECT object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": node_id},
+    )
+    if not row:
+        raise HTTPException(404, "节点不存在")
+
+    if body.doc_kind is not None:
+        allowed = config_loader.get("doc_kind.values", [])
+        if body.doc_kind not in allowed:
+            raise HTTPException(400, f"无效的 doc_kind；可选值：{', '.join(allowed)}")
+
+    updates: list[str] = []
+    params: dict[str, Any] = {"id": node_id}
+    if body.title is not None:
+        updates.append("title = :title")
+        params["title"] = body.title.strip()
+    if body.tags is not None:
+        updates.append("tags = :tags")
+        params["tags"] = body.tags
+    if body.published_at is not None:
+        updates.append("published_at = :published_at")
+        params["published_at"] = body.published_at
+    if body.doc_kind is not None:
+        updates.append("doc_kind = :doc_kind")
+        params["doc_kind"] = body.doc_kind
+
+    if updates:
+        await database.database.execute(
+            f"UPDATE knowledge_nodes SET {', '.join(updates)}, updated_at = NOW() WHERE id = :id",
+            params,
+        )
+
+    # Keep entity_nodes.canonical_name in sync when entity title changes
+    if body.title is not None and row["object_type"] == "entity":
+        await database.database.execute(
+            "UPDATE entity_nodes SET canonical_name = :title WHERE node_id = :id",
+            {"title": body.title.strip(), "id": node_id},
+        )
 
     return {"ok": True}
 
@@ -1223,8 +1342,9 @@ async def list_nodes(
     tags: str | None = None,
     q: str | None = None,
     type: str | None = None,
+    source_id: str | None = None,
 ):
-    """分页列出节点，支持文本搜索、标签和类型过滤，无需认证。"""
+    """分页列出节点，支持文本搜索、标签、类型和来源过滤，无需认证。"""
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
     conditions = ["n.user_id = $1"]
@@ -1245,6 +1365,11 @@ async def list_nodes(
         conditions.append(f"n.object_type = ${ti}")
         params.append(type)
 
+    if source_id:
+        si = len(params) + 1
+        conditions.append(f"n.source_id = ${si}")
+        params.append(source_id)
+
     where = " AND ".join(conditions)
     limit_idx = len(params) + 1
     offset_idx = len(params) + 2
@@ -1257,9 +1382,12 @@ async def list_nodes(
             f"""
             SELECT n.id, n.title, n.abstract,
                    COALESCE(an.source_type, n.object_type) AS source_type,
-                   n.tags, n.object_type, n.created_at
+                   n.tags, n.object_type, n.created_at,
+                   n.source_id, n.doc_kind,
+                   s.name AS source_name
             FROM knowledge_nodes n
             LEFT JOIN article_nodes an ON an.node_id = n.id
+            LEFT JOIN sources s ON s.id = n.source_id
             WHERE {where}
             ORDER BY n.created_at DESC
             LIMIT ${limit_idx} OFFSET ${offset_idx}
@@ -1277,6 +1405,9 @@ async def list_nodes(
                 "tags": list(r["tags"]) if r["tags"] else [],
                 "object_type": r["object_type"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "source_id": r["source_id"],
+                "source_name": r["source_name"],
+                "doc_kind": r["doc_kind"],
             }
             for r in rows
         ],
@@ -1735,6 +1866,147 @@ async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_au
     return result
 
 
+@router.patch("/entities/{entity_id}")
+async def update_entity(
+    entity_id: str,
+    body: UpdateEntityRequest,
+    _: dict = Depends(require_auth),
+):
+    """修改 entity 的 canonical_name / aliases / entity_type。"""
+    row = await database.database.fetch_one(
+        "SELECT object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": entity_id},
+    )
+    if not row or row["object_type"] != "entity":
+        raise HTTPException(404, "entity 不存在")
+
+    entity_updates: list[str] = []
+    params: dict[str, Any] = {"id": entity_id}
+    if body.canonical_name is not None:
+        entity_updates.append("canonical_name = :canonical_name")
+        params["canonical_name"] = body.canonical_name.strip()
+    if body.aliases is not None:
+        entity_updates.append("aliases = :aliases")
+        params["aliases"] = body.aliases
+    if body.entity_type is not None:
+        entity_updates.append("entity_type = :entity_type")
+        params["entity_type"] = body.entity_type.strip()
+
+    if entity_updates:
+        await database.database.execute(
+            f"UPDATE entity_nodes SET {', '.join(entity_updates)} WHERE node_id = :id",
+            params,
+        )
+
+    if body.canonical_name is not None:
+        await database.database.execute(
+            "UPDATE knowledge_nodes SET title = :name, updated_at = NOW() WHERE id = :id",
+            {"name": body.canonical_name.strip(), "id": entity_id},
+        )
+
+    return {"ok": True}
+
+
+@router.post("/entities/merge")
+async def merge_entities(body: MergeEntitiesRequest, _: dict = Depends(require_auth)):
+    """将 source entity 合并入 target entity。
+    mentions 边和 entity_facts 转移到 target，source 保留为 tombstone（merged_into 指向 target）。
+    """
+    source_id, target_id = body.source_id, body.target_id
+    if source_id == target_id:
+        raise HTTPException(400, "source 和 target 不能相同")
+
+    for eid in (source_id, target_id):
+        row = await database.database.fetch_one(
+            "SELECT object_type FROM knowledge_nodes WHERE id = :id",
+            {"id": eid},
+        )
+        if not row or row["object_type"] != "entity":
+            raise HTTPException(404, f"entity 不存在：{eid}")
+
+    # Transfer non-conflicting edges where source is the from-node
+    await database.database.execute(
+        """
+        UPDATE knowledge_edges SET from_node_id = :target
+        WHERE from_node_id = :source
+          AND NOT EXISTS (
+            SELECT 1 FROM knowledge_edges e2
+            WHERE e2.from_node_id = :target
+              AND e2.to_node_id = knowledge_edges.to_node_id
+              AND e2.relation_type = knowledge_edges.relation_type
+          )
+        """,
+        {"source": source_id, "target": target_id},
+    )
+    # Transfer non-conflicting edges where source is the to-node
+    await database.database.execute(
+        """
+        UPDATE knowledge_edges SET to_node_id = :target
+        WHERE to_node_id = :source
+          AND NOT EXISTS (
+            SELECT 1 FROM knowledge_edges e2
+            WHERE e2.to_node_id = :target
+              AND e2.from_node_id = knowledge_edges.from_node_id
+              AND e2.relation_type = knowledge_edges.relation_type
+          )
+        """,
+        {"source": source_id, "target": target_id},
+    )
+    # Delete remaining duplicate edges still referencing source
+    await database.database.execute(
+        "DELETE FROM knowledge_edges WHERE from_node_id = :source OR to_node_id = :source",
+        {"source": source_id},
+    )
+
+    # Transfer entity_facts
+    await database.database.execute(
+        "UPDATE entity_facts SET entity_id = :target WHERE entity_id = :source",
+        {"source": source_id, "target": target_id},
+    )
+
+    # Mark source as merged (tombstone)
+    await database.database.execute(
+        "UPDATE entity_nodes SET merged_into = :target WHERE node_id = :source",
+        {"source": source_id, "target": target_id},
+    )
+
+    return {"ok": True, "source_id": source_id, "target_id": target_id}
+
+
+@router.delete("/entities/{entity_id}")
+async def delete_entity(entity_id: str, _: dict = Depends(require_auth)):
+    """硬删除 entity（级联删 entity_facts / edges / entity_nodes / knowledge_nodes）。"""
+    row = await database.database.fetch_one(
+        "SELECT user_id, object_type FROM knowledge_nodes WHERE id = :id",
+        {"id": entity_id},
+    )
+    if not row or row["object_type"] != "entity":
+        raise HTTPException(404, "entity 不存在")
+
+    uid = row["user_id"] or USER_ID
+    wiki_file = _wiki_file_path(uid, entity_id, "entity")
+    if wiki_file.exists():
+        wiki_file.unlink()
+
+    await database.database.execute(
+        "DELETE FROM entity_facts WHERE entity_id = :id",
+        {"id": entity_id},
+    )
+    await database.database.execute(
+        "DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id",
+        {"id": entity_id},
+    )
+    await database.database.execute(
+        "DELETE FROM entity_nodes WHERE node_id = :id",
+        {"id": entity_id},
+    )
+    await database.database.execute(
+        "DELETE FROM knowledge_nodes WHERE id = :id",
+        {"id": entity_id},
+    )
+    return {"ok": True}
+
+
 @router.get("/entity_candidates")
 async def list_entity_candidates(_: dict = Depends(require_auth)):
     """列出未晋升的 entity 候选（按 mention_count 排序），供调试用。"""
@@ -1783,7 +2055,7 @@ async def trigger_rebuild_from_raw(
     _: dict = Depends(require_auth),
 ):
     """从 source_items manifest 重建知识库。后台运行；支持 filter/dry-run/resume。"""
-    payload = body.model_dump(exclude_none=True) if body else {}
+    payload = body.dict(exclude_none=True) if body else {}
     key_parts = [
         "rebuild_from_raw",
         USER_ID,

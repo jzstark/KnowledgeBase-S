@@ -901,3 +901,123 @@ doc_kind 是 config 控制的枚举（`config/system.yaml` 的 `doc_kind.values`
 - **搜索面板默认隐藏 + Cmd/Ctrl+F 唤起**：当前右侧 ListPanel 始终显示；唤起改造需要快捷键 + 容器折叠
 
 这 5 项每项都是独立工程量（后端 API 新建 + 前端组件改造），各自适合作为后续单独的批次。Phase E 把"无需新后端"的部分全部落地。
+
+---
+
+### 审计批次 2026-05-28（P1–P5 + Pyright 清零）
+
+依据 `docs/audit-2026-05-28.md` 的发现，在 Phase A–E 基础上执行以下修复与补充。
+
+#### P1 · 阻断性 Bug 修复 · ✅
+
+- **Bug-1 `config_loader.get()` 返回类型**：`config_loader.py:94` 加 `-> Any` 注解，消除所有调用处的 Pyright `Unknown` 传播错误
+- **Bug-2 `content[0].text` ToolUseBlock 守卫**：Claude API 返回 `TextBlock | ToolUseBlock` union，只有 `TextBlock` 有 `.text`。统一改为 `getattr(resp.content[0], "text", "")`，覆盖 8 处（`kb_tools.py`、`kb/retrieval.py`、`maintenance.py` ×2、`briefing.py`、`kb/public.py` ×3）
+- **Bug-3 `canonical_name` 残留**：`kb_tools.py` `_reference()` 中 `node.get("canonical_name")` 已删除（字段已迁至 `entity_nodes`）；entity 节点标题不再静默 fallback 为 id
+- **`entity_insights.py` LIMIT 参数外置**：`refresh_entity_profile` 中 `LIMIT 12` 改为 `:facts_limit` 绑定参数，值由 `config_loader.get("entity_insights.refresh_facts_limit", 12)` 读取
+
+#### P2 · §7 后端 API 补全 + 配置外置 · ✅
+
+**§7 缺失端点全部实现**（均位于 `kb/internal.py`）：
+
+| 端点 | 功能 |
+|---|---|
+| `DELETE /summaries/{summary_id}` | 删除摘要 |
+| `PATCH  /entities/{entity_id}` | 修改 canonical_name / aliases / entity_type |
+| `POST   /entities/merge` | 合并两个 entity（source → target，级联重定向 edges） |
+| `DELETE /entities/{entity_id}` | 硬删除 entity（级联删 edges / entity_facts） |
+| `POST   /nodes/{node_id}/archive` | 软删除（status = archived） |
+| `PATCH  /nodes/{node_id}/metadata` | 修改 title / tags / published_at / doc_kind |
+
+**配置外置**：
+- `app/drafts.py`：上下文组装阈值 `remaining <= 100` → `config_loader.get("drafts.min_remaining_chars", 100)`（`config/system.yaml` 新增 `drafts.min_remaining_chars: 100`）
+- `entity_insights.py`：`LIMIT 12` → `config_loader.get("entity_insights.refresh_facts_limit", 12)`（`config/system.yaml` 新增 `entity_insights.refresh_facts_limit: 12`）
+- `config/system.yaml` 新增 entity 晋升阈值配置：`entity.promotion_max_salience`（0.9）/ `entity.promotion_salience`（0.7）/ `entity.promotion_salience_mentions`（2）/ `entity.promotion_min_mentions`（3）
+
+#### P3 · Phase E 延后项（4/5 落地） · ✅
+
+| 项 | 状态 | 实现方式 |
+|---|---|---|
+| 资源管理器按 source 分组 | ✅ | `knowledge/page.tsx` 新增 `groupBySrc` toggle，按 `source_name` 分组渲染 |
+| Entity merge UI | ✅ | WikiPanel 内 mergeOpen 状态 + 输入框，调用 `POST /api/kb/entities/merge` |
+| 节点 doc_kind 内联编辑 | ✅ | 详情面板 doc_kind 行加编辑态，调用 `PATCH /api/kb/nodes/{id}/metadata` |
+| 搜索面板默认隐藏 + 快捷键 | ✅ | `showList` 初值 `false`；Cmd/Ctrl+F 唤起；Esc 收起 |
+| Source 软删除 UI + cascade 选项 | ⚠️ 部分 | 后端 `DELETE /api/sources/{id}` 已实现软删除（`deleted_at = NOW()`）；前端有确认对话框（"已入库文章继续保留"）；**"同时删除 N 篇文章"的 cascade 选项未实现** |
+
+#### P4 · 代码清理 · ✅
+
+- **`database.py` 冗余 ALTER TABLE**：移除 8 条冗余 `ALTER TABLE IF EXISTS ... ADD COLUMN IF NOT EXISTS`（`knowledge_nodes` 的 object_type / updated_at / abstract / ingested_at / published_at；`entity_candidates` 的 mention_count / max_salience / source_article_ids），这些列已在 `CREATE TABLE` 中定义。保留 6 条真正的 migration alter（embedding_model / doc_kind / sources.default_doc_kind / sources.deleted_at / source_items.doc_kind / knowledge_edges.description）
+- **`entity_profiles` 注释**：`maintenance.py:~1229` 的 `# entity_profiles 表已删除` 注释是解释性上下文（说明后续调用为何是 rebuild_entity_pair_signals），保留
+- **COALESCE 链一致性**：`kb_tools.py` 与 `kb/public.py` 的 `COALESCE(s.body_embedding, n.embedding)` / `COALESCE(s.perspective_embedding, s.body_embedding, n.embedding)` 链完全一致，无需修改
+
+#### P5 · 测试补充 · ✅
+
+新增 `services/api/tests/test_p5_coverage.py`（23 个测试，4 个测试类）：
+
+| 测试类 | 覆盖内容 | 策略 |
+|---|---|---|
+| `CitationPromptBodyTests` (5) | `_citation_prompt_body` 的 excerpt 选取逻辑（边界长度、无匹配词截断、有匹配词抽段、marker 格式、context 词驱动） | AST 提取纯函数 + `exec`（绕开 prompt_loader 文件依赖） |
+| `CiteQuoteVerificationTests` (3) | quote 逐字校验存在、全文用于验证（非 excerpt）、Stage 1→2→验证顺序 | 源码文本检查 |
+| `EntityPromotionThresholdTests` (8) | 各 salience/mention_count 阈值边界（0.9 / 0.7+2 / 3条） | 纯逻辑镜像（固化 config 默认值） |
+| `DocKindCascadeTests` (3) | explicit → source_item → source.default → config.default 优先级顺序、非法值降级 | 源码文本位置检查 |
+| `SummaryFirstFallbackTests` (4) | summary_nodes 先于 wiki fallback、else 分支触发条件、非空 body 过滤、is_default 排序 | 源码文本检查 |
+
+#### Pyright · 58 → 0 错误 · ✅
+
+| 类型 | 受影响文件 | 修复 |
+|---|---|---|
+| ToolUseBlock `.text` 崩溃风险 | `briefing.py`、`kb/public.py` ×3 | `content[0].text` → `getattr(..., "text", "")` |
+| `repair_json` 返回类型未收窄 | `briefing.py` | 增加 `if not isinstance(parsed, list): return []` |
+| Pydantic v1 `.model_dump()` 不存在 | `settings.py`、`kb/internal.py` | `.model_dump()` → `.dict()` |
+| `int(None)` 类型收窄不足 | `kb/public.py` ×3 | `int(x)` → `int(x or 0)` |
+| `_embed_query(str\|None)` 类型收窄不足 | `kb/public.py` ×2 | 增加 `assert` |
+| `dict(row)` 无 None 检查 | `routers/sources.py` ×3 | `assert row is not None` + `dict[str, Any]` 注解 |
+| `params dict` 类型过窄 | `maintenance.py` | 显式标注 `dict[str, Any]`；补 `from typing import Any` |
+| 测试文件 AST / 模块属性误报 | 两个测试文件 | `str()`、`# type: ignore[attr-defined]`、`list[Any]`、`assert not None` |
+
+---
+
+## 与第一、二部分设计决议的差异说明
+
+以下记录当前实现与 §1–8 设计决议的差异，分为**已知遗留**和**需要修复**两类。
+
+### 已知遗留（有意延后，需独立批次）
+
+**§7 路径命名偏差（KB Internal 仅供内部使用，优先级低）**
+
+设计决议 §7 规定的两个路径与实际实现不同：
+
+| §7 规定路径 | 实际路径 |
+|---|---|
+| `POST /api/kb/nodes/{id}/summaries` | `POST /api/kb/nodes/{node_id}/create_summary` |
+| `POST /api/kb/summaries/{id}/revise` | `POST /api/kb/nodes/{node_id}/revise_summary` |
+
+这两个端点属于 KB Internal（前端直接调用），MCP adapter 不依赖。功能可用，路径命名与 §7 规范不符。后续可在不破坏现有前端调用的前提下增加路径别名或改名。
+
+**§8 Source 删除 cascade 选项未实现**
+
+设计决议 §8 描述："Source 删除时提供选项：仅停用来源 / 同时删除 N 篇文章"。
+
+当前实现：
+- 后端 `DELETE /api/sources/{id}` 为软删除（`deleted_at = NOW()`），articles 保留 ✅
+- 前端有确认对话框，说明"已入库文章继续保留" ✅
+- **缺失**："同时删除 N 篇文章"的 cascade 选项（需要后端接受 `cascade_articles: bool` 参数并级联软删或硬删 article nodes）
+
+**§8 已停用 source 的"[已停用]"分组标注未实现**
+
+设计决议 §8 描述："Source 删除：软删除（`deleted_at`），articles 保留，分组标注"[已停用]""。
+
+当前 sources/page.tsx 的 `loadSources()` 调用 `GET /api/sources`，该接口加了 `AND deleted_at IS NULL` 过滤，软删除后的 source 不出现在列表中。§8 要求在资源管理器中以"[已停用]"分组继续显示，目前未实现。
+
+### 需要修复（功能正确性问题）
+
+**Bug-3 部分修复：entity 节点在 kb_tools.py 搜索结果中仍无 canonical_name**
+
+`kb_tools.py` 的 `_reference()` 已删 `node.get("canonical_name")`。但 `kb_tools.py` 的主搜索 SQL 中没有 `LEFT JOIN entity_nodes`，entity 节点返回的 `title` 是 `knowledge_nodes.title`（可能为 NULL 或不同于 `entity_nodes.canonical_name`）。
+
+影响：entity 搜索结果的展示名称可能不准确。
+
+修复方向：在 `kb_tools.py` 的搜索 SQL 中加 `LEFT JOIN entity_nodes en ON en.node_id = n.id`，SELECT 加 `COALESCE(en.canonical_name, n.title) AS title`（或 `display_title`）。
+
+**`kb_tools.py` 的 HyDE 路径中 content[0].text 守卫**
+
+审计 Bug-2 修复了 `briefing.py`、`kb/public.py`、`maintenance.py` 的 `.text` 访问。`kb_tools.py` 的 HyDE embed 路径（`kb/retrieval.py` 第 ~33 行）已在 P1 修复，但如果 `kb_tools.py` 有自己调用 `claude_client.messages.create` 并读 `content[0].text` 的路径，需再次确认已全部覆盖。当前 Pyright 清零说明无遗漏，但运行时覆盖仍依赖 Claude API 总是返回 TextBlock（对话类调用通常满足此条件）。
