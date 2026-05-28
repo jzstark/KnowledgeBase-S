@@ -59,34 +59,39 @@ async def upsert_entity_fact(
         {"entity_id": entity_id, "article_id": article_id, "fact_text": fact_text},
     )
 
-    await database.database.execute(
-        """
-        INSERT INTO entity_facts
-          (user_id, entity_id, article_id, source_item_id, fact_text, fact_time,
-           source_published_at, evidence_span, confidence)
-        VALUES
-          (:user_id, :entity_id, :article_id, :source_item_id, :fact_text,
-           :fact_time, :source_published_at, :evidence_span, :confidence)
-        ON CONFLICT (entity_id, article_id, fact_text) DO UPDATE SET
-          source_item_id = EXCLUDED.source_item_id,
-          fact_time = EXCLUDED.fact_time,
-          source_published_at = EXCLUDED.source_published_at,
-          evidence_span = COALESCE(EXCLUDED.evidence_span, entity_facts.evidence_span),
-          confidence = GREATEST(entity_facts.confidence, EXCLUDED.confidence),
-          updated_at = NOW()
-        """,
-        {
-            "user_id": user_id or article["user_id"] or "default",
-            "entity_id": entity_id,
-            "article_id": article_id,
-            "source_item_id": source_item_id,
-            "fact_text": fact_text,
-            "fact_time": fact_time,
-            "source_published_at": source_published_at,
-            "evidence_span": evidence_span,
-            "confidence": max(0.0, min(float(confidence), 1.0)),
-        },
-    )
+    try:
+        await database.database.execute(
+            """
+            INSERT INTO entity_facts
+              (user_id, entity_id, article_id, source_item_id, fact_text, fact_time,
+               source_published_at, evidence_span, confidence)
+            VALUES
+              (:user_id, :entity_id, :article_id, :source_item_id, :fact_text,
+               :fact_time, :source_published_at, :evidence_span, :confidence)
+            ON CONFLICT (entity_id, article_id, fact_text) DO UPDATE SET
+              source_item_id = EXCLUDED.source_item_id,
+              fact_time = EXCLUDED.fact_time,
+              source_published_at = EXCLUDED.source_published_at,
+              evidence_span = COALESCE(EXCLUDED.evidence_span, entity_facts.evidence_span),
+              confidence = GREATEST(entity_facts.confidence, EXCLUDED.confidence),
+              updated_at = NOW()
+            """,
+            {
+                "user_id": user_id or article["user_id"] or "default",
+                "entity_id": entity_id,
+                "article_id": article_id,
+                "source_item_id": source_item_id,
+                "fact_text": fact_text,
+                "fact_time": fact_time,
+                "source_published_at": source_published_at,
+                "evidence_span": evidence_span,
+                "confidence": max(0.0, min(float(confidence), 1.0)),
+            },
+        )
+    except Exception as e:
+        if "ForeignKeyViolationError" in type(e).__name__ or "foreign key" in str(e).lower():
+            return False
+        raise
     return existing is None
 
 
