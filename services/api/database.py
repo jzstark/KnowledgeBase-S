@@ -240,6 +240,61 @@ CREATE TABLE IF NOT EXISTS user_settings (
     settings JSONB NOT NULL DEFAULT '{}'
 );
 
+-- Phase B: 文件夹 / 文档实例模型
+
+CREATE TABLE IF NOT EXISTS folders (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    parent_id VARCHAR REFERENCES folders(id) ON DELETE SET NULL,
+    name VARCHAR NOT NULL,
+    kind VARCHAR NOT NULL DEFAULT 'normal',    -- normal | stream
+    status VARCHAR NOT NULL DEFAULT 'active',  -- active | archived
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS connectors (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    folder_id VARCHAR REFERENCES folders(id) ON DELETE CASCADE,
+    type VARCHAR NOT NULL,                     -- rss | wechat
+    config JSONB DEFAULT '{}',
+    status VARCHAR NOT NULL DEFAULT 'active',  -- active | inactive
+    last_fetched_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS raw_assets (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    storage_key TEXT,
+    original_filename TEXT,
+    mime_type VARCHAR,
+    size BIGINT,
+    sha256 VARCHAR,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS document_instances (
+    id VARCHAR PRIMARY KEY,
+    user_id VARCHAR NOT NULL,
+    folder_id VARCHAR REFERENCES folders(id) ON DELETE SET NULL,
+    raw_asset_id VARCHAR REFERENCES raw_assets(id),
+    connector_id VARCHAR REFERENCES connectors(id) ON DELETE SET NULL,
+    display_name TEXT,
+    origin_ref TEXT,
+    origin_ref_type VARCHAR,
+    doc_kind VARCHAR,
+    status VARCHAR NOT NULL DEFAULT 'pending', -- pending | processing | succeeded | failed | ignored
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Phase B: 新列
+ALTER TABLE IF EXISTS article_nodes ADD COLUMN IF NOT EXISTS document_instance_id VARCHAR REFERENCES document_instances(id);
+ALTER TABLE IF EXISTS source_items ADD COLUMN IF NOT EXISTS document_instance_id VARCHAR REFERENCES document_instances(id);
+
 ALTER TABLE IF EXISTS drafts ADD COLUMN IF NOT EXISTS selected_topic_ids TEXT[];
 ALTER TABLE IF EXISTS topics ADD COLUMN IF NOT EXISTS source_node_ids TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS knowledge_nodes ADD COLUMN IF NOT EXISTS embedding_model VARCHAR;
@@ -468,6 +523,19 @@ CREATE INDEX IF NOT EXISTS idx_jobs_user_idempotency_key
 CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);
+
+-- Phase B 索引
+CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_id);
+CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+CREATE INDEX IF NOT EXISTS idx_connectors_folder ON connectors(folder_id);
+CREATE INDEX IF NOT EXISTS idx_connectors_user_status ON connectors(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_raw_assets_user ON raw_assets(user_id);
+CREATE INDEX IF NOT EXISTS idx_raw_assets_sha256 ON raw_assets(sha256) WHERE sha256 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_document_instances_folder ON document_instances(folder_id);
+CREATE INDEX IF NOT EXISTS idx_document_instances_raw_asset ON document_instances(raw_asset_id);
+CREATE INDEX IF NOT EXISTS idx_document_instances_status ON document_instances(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_article_nodes_document_instance ON article_nodes(document_instance_id);
+CREATE INDEX IF NOT EXISTS idx_source_items_document_instance ON source_items(document_instance_id);
 
 """
 
@@ -703,3 +771,111 @@ async def init():
               )
             """
         )
+
+    # ── Phase B backfill（全部幂等，重复执行影响零行）──────────────────────────
+
+    # 1. sources → folders
+    await database.execute(
+        """
+        INSERT INTO folders (id, user_id, parent_id, name, kind, status, created_at, updated_at)
+        SELECT
+            'fld_' || substring(id FROM 5),
+            user_id,
+            NULL,
+            name,
+            CASE WHEN type IN ('rss', 'wechat') AND COALESCE(fetch_mode, '') = 'subscription'
+                 THEN 'stream' ELSE 'normal' END,
+            CASE WHEN deleted_at IS NOT NULL THEN 'archived' ELSE 'active' END,
+            created_at,
+            NOW()
+        FROM sources
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+
+    # 2. stream sources → connectors
+    await database.execute(
+        """
+        INSERT INTO connectors (id, user_id, folder_id, type, config, status, last_fetched_at, created_at, updated_at)
+        SELECT
+            'con_' || substring(id FROM 5),
+            user_id,
+            'fld_' || substring(id FROM 5),
+            type,
+            COALESCE(config, '{}'::jsonb),
+            CASE WHEN deleted_at IS NOT NULL THEN 'inactive' ELSE 'active' END,
+            last_fetched_at,
+            created_at,
+            NOW()
+        FROM sources
+        WHERE type IN ('rss', 'wechat') AND COALESCE(fetch_mode, '') = 'subscription'
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+
+    # 3. source_items → raw_assets（storage_key 优先取 raw_snapshot_ref，退而 extracted_text_ref，再退 origin_ref）
+    await database.execute(
+        """
+        INSERT INTO raw_assets (id, user_id, storage_key, original_filename, sha256, created_at)
+        SELECT
+            'ra_' || substring(id FROM 4),
+            user_id,
+            COALESCE(raw_snapshot_ref, extracted_text_ref, origin_ref),
+            title,
+            content_hash,
+            created_at
+        FROM source_items
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+
+    # 4. source_items → document_instances
+    await database.execute(
+        """
+        INSERT INTO document_instances
+          (id, user_id, folder_id, raw_asset_id, connector_id,
+           display_name, origin_ref, origin_ref_type, doc_kind, status, created_at, updated_at)
+        SELECT
+            'di_' || substring(si.id FROM 4),
+            si.user_id,
+            'fld_' || substring(si.source_id FROM 5),
+            'ra_' || substring(si.id FROM 4),
+            CASE WHEN s.type IN ('rss', 'wechat') AND COALESCE(s.fetch_mode, '') = 'subscription'
+                 THEN 'con_' || substring(si.source_id FROM 5) ELSE NULL END,
+            si.title,
+            si.origin_ref,
+            si.origin_ref_type,
+            si.doc_kind,
+            si.status,
+            si.created_at,
+            si.updated_at
+        FROM source_items si
+        JOIN sources s ON s.id = si.source_id
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+
+    # 5. source_items.document_instance_id 回填
+    await database.execute(
+        """
+        UPDATE source_items
+        SET document_instance_id = 'di_' || substring(id FROM 4)
+        WHERE document_instance_id IS NULL
+          AND EXISTS (
+              SELECT 1 FROM document_instances
+              WHERE document_instances.id = 'di_' || substring(source_items.id FROM 4)
+          )
+        """
+    )
+
+    # 6. article_nodes.document_instance_id 回填（经 source_item_id 桥接）
+    await database.execute(
+        """
+        UPDATE article_nodes an
+        SET document_instance_id = si.document_instance_id
+        FROM source_items si
+        WHERE an.source_item_id = si.id
+          AND si.document_instance_id IS NOT NULL
+          AND an.document_instance_id IS NULL
+        """
+    )

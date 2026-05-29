@@ -17,6 +17,7 @@ class RawItem:
     captured_at: datetime | None = None
     effective_at: datetime | None = None
     source_item_id: str | None = None
+    document_instance_id: str | None = None   # Phase B: 稳定身份键
 
 
 class BaseSource(ABC):

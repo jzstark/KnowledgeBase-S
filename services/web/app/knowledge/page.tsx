@@ -504,19 +504,6 @@ function ListPanel({
 
 // ── 资源管理器面板 ────────────────────────────────────────────────────────────
 
-const RAW_TYPE_LABELS: Record<string, string> = {
-  pdf: "PDF",
-  image: "图片",
-  wechat: "微信",
-  plaintext: "文本",
-  word: "Word",
-};
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 const WIKI_SECTION_LABELS: Record<string, string> = {
   articles: "文章",
@@ -539,7 +526,7 @@ function ExplorerPanel({
   const [tree, setTree] = useState<FileTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(
-    new Set(["raw", "wiki", "wiki-articles", "wiki-entities", "wiki-indices", "config"])
+    new Set(["wiki", "wiki-articles", "wiki-entities", "wiki-indices", "config"])
   );
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -614,60 +601,6 @@ function ExplorerPanel({
 
   return (
     <div className="h-full overflow-auto p-2 text-sm select-none">
-      {/* 原始文件 */}
-      <div>
-        <button
-          onClick={() => toggle("raw")}
-          className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
-        >
-          {chevron("raw")} 原始文件
-        </button>
-        {expanded.has("raw") && (
-          <div className="ml-3">
-            {Object.entries(tree.raw).map(([type, files]) => {
-              if (files.length === 0) return null;
-              const key = `raw-${type}`;
-              return (
-                <div key={type}>
-                  <button
-                    onClick={() => toggle(key)}
-                    className="flex items-center w-full text-left text-muted-foreground py-0.5 hover:text-foreground"
-                  >
-                    {chevron(key)}
-                    <span className="text-xs">{RAW_TYPE_LABELS[type] ?? type}</span>
-                    <span className="ml-1 text-xs text-muted-foreground/40">({files.length})</span>
-                  </button>
-                  {expanded.has(key) && (
-                    <div className="ml-3 space-y-0.5">
-                      {files.map((f) => (
-                        <div key={f.rel_path} className="flex items-center gap-1 group py-0.5">
-                          <span className="flex-1 text-xs text-muted-foreground truncate" title={f.name}>
-                            {f.name}
-                          </span>
-                          <span className="text-xs text-muted-foreground/40 shrink-0">{formatBytes(f.size)}</span>
-                          {f.node_id && (
-                            <button
-                              onClick={() => handleDeleteNode(f.node_id!, f.name)}
-                              disabled={deleting === f.node_id}
-                              className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 ml-1"
-                              title="删除节点"
-                            >
-                              {deleting === f.node_id ? "…" : "✕"}
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="border-t border-border my-2" />
-
       {/* Wiki */}
       <div>
         <button
@@ -1558,6 +1491,10 @@ export default function KnowledgePage() {
   }
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("list")) {
+      setShowList(true);
+    }
+
     function selectNodeFromLocation() {
       const hashMatch = window.location.hash.match(/^#node=(.+)$/);
       const queryNode = new URLSearchParams(window.location.search).get("node");

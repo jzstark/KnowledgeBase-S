@@ -226,6 +226,7 @@ def _raw_item_from_source_item(row: dict, source_type: str) -> RawItem:
         captured_at=_parse_item_time(row.get("captured_at")),
         effective_at=_parse_item_time(row.get("effective_at")),
         source_item_id=row["id"],
+        document_instance_id=row.get("document_instance_id"),
     )
     item._file_name = file_name
     return item
@@ -612,6 +613,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     source_id=source_id,
                     source_type=source_type,
                     source_item_id=source_item["id"],
+                    document_instance_id=source_item.get("document_instance_id"),
                     item=item,
                     title=item.title,
                     text=text,

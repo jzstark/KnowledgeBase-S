@@ -4,6 +4,9 @@
 
 设计决议部分是本次重构的事实依据，不轻易修改。进度部分随实施持续更新。
 
+相关专题修订文档：
+- `docs/revision-source-folders.md`：source → 资料夹 / Raw Pool / Wiki 双视角重构设计。
+
 ---
 
 ## 指导原则

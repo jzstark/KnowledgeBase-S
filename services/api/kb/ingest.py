@@ -59,6 +59,7 @@ class IngestRequest(BaseModel):
     captured_at: datetime | None = None
     effective_at: datetime | None = None
     source_item_id: str | None = None
+    document_instance_id: str | None = None   # Phase B: 稳定身份键
     parent_index_id: str | None = None
     doc_kind: str | None = None
     embedding_model: str | None = None
@@ -87,9 +88,16 @@ def _make_node_id(
     summary_of: str | None = None,
     perspective_label: str | None = None,
     perspective_instruction: str | None = None,
+    document_instance_id: str | None = None,
 ) -> str:
-    """Deterministic ID for source-backed nodes and entities; random otherwise."""
+    """Deterministic ID for source-backed nodes and entities; random otherwise.
+    Priority: document_instance_id > raw_ref.path > raw_ref.url > entity/summary keys > random.
+    """
     prefix = object_type[:3] if object_type else "nod"
+    # Phase B: document_instance_id 是最稳定的身份键，优先使用
+    if document_instance_id and object_type == "article":
+        h = hashlib.sha256(f"{user_id}:{document_instance_id}".encode()).hexdigest()[:16]
+        return f"art_{h}"
     raw_path = (raw_ref or {}).get("path")
     if raw_path:
         h = hashlib.sha256(raw_path.encode()).hexdigest()[:16]
@@ -127,6 +135,19 @@ async def do_ingest(body: IngestRequest) -> str | dict:
     Core ingest logic: dedup checks, doc_kind cascade, node creation.
     Returns node_id on success, or a dict with {id, duplicate: True} if skipped.
     """
+    # Phase B: document_instance_id 去重（优先）
+    if body.document_instance_id and body.object_type == "article":
+        existing = await database.database.fetch_one(
+            """
+            SELECT n.id FROM knowledge_nodes n
+            JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.user_id = :uid AND an.document_instance_id = :di_id
+            """,
+            {"uid": body.user_id, "di_id": body.document_instance_id},
+        )
+        if existing:
+            return {"id": existing["id"], "duplicate": True}
+
     raw_path = (body.raw_ref or {}).get("path")
     if raw_path:
         existing = await database.database.fetch_one(
@@ -173,8 +194,17 @@ async def do_ingest(body: IngestRequest) -> str | dict:
     body_embedding_literal = None
     perspective_embedding_literal = None
 
-    # doc_kind cascade：显式提供 > source_items.doc_kind > sources.default_doc_kind > config.doc_kind.default
+    # doc_kind cascade:
+    #   显式 > document_instances.doc_kind > source_items.doc_kind
+    #   > sources.default_doc_kind > config.doc_kind.default
     doc_kind = (body.doc_kind or "").strip() or None
+    if not doc_kind and body.document_instance_id:
+        di_row = await database.database.fetch_one(
+            "SELECT doc_kind FROM document_instances WHERE id = :id",
+            {"id": body.document_instance_id},
+        )
+        if di_row and di_row["doc_kind"]:
+            doc_kind = di_row["doc_kind"]
     if not doc_kind and body.source_item_id:
         si_row = await database.database.fetch_one(
             "SELECT doc_kind FROM source_items WHERE id = :id",
@@ -215,6 +245,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
         body.summary_of,
         perspective_label,
         perspective_instruction,
+        body.document_instance_id,
     )
 
     if body.object_type == "summary" and body.summary_of:
@@ -255,6 +286,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
         body.object_type,
         {
             "source_item_id": body.source_item_id,
+            "document_instance_id": body.document_instance_id,
             "raw_ref": body.raw_ref,
             "source_type": body.source_type,
             "source_published_at": body.source_published_at,

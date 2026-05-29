@@ -75,6 +75,18 @@ async def fetch_sources() -> list[dict]:
         return resp.json()
 
 
+async def fetch_connectors() -> list[dict]:
+    """Phase 4: 从 connectors API 获取活跃 stream 连接器。"""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{API_BASE_URL}/api/connectors", timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+    return []
+
+
 def build_source(config: dict):
     """根据 source 配置构造对应的 Source 实例。"""
     t = config["type"]
@@ -129,9 +141,32 @@ def _log_task_exception(task: asyncio.Task):
 
 async def run_once():
     """轮询模式下只处理自动抓取型（subscription）sources；
-    manual 型由用户通过 trigger 端点显式触发。"""
+    manual 型由用户通过 trigger 端点显式触发。
+    Phase 4: 同时处理 connectors（stream 资料夹）对应的 source。"""
     sources = await fetch_sources()
     subscription_sources = [s for s in sources if s.get("fetch_mode") == "subscription"]
+
+    # Phase 4: connectors → 取对应的 source（fld_XXXX → src_XXXX）
+    # 避免重复：只添加尚未出现在 subscription_sources 里的 source_id
+    existing_source_ids = {s["id"] for s in subscription_sources}
+    connectors = await fetch_connectors()
+    for con in connectors:
+        if con.get("status") != "active":
+            continue
+        folder_id = con.get("folder_id", "")
+        if not folder_id.startswith("fld_"):
+            continue
+        con_source_id = "src_" + folder_id[4:]
+        if con_source_id in existing_source_ids:
+            continue
+        # 用 connector config 补全 source config
+        matching_source = next(
+            (s for s in sources if s["id"] == con_source_id), None
+        )
+        if matching_source:
+            subscription_sources.append(matching_source)
+            existing_source_ids.add(con_source_id)
+
     logger.info(f"共 {len(subscription_sources)} 个订阅源待自动抓取")
 
     for config in subscription_sources:

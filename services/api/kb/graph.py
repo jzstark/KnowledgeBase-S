@@ -109,13 +109,14 @@ async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, A
         await database.database.execute(
             """
             INSERT INTO article_nodes
-              (node_id, source_item_id, raw_ref, source_type, source_published_at,
-               source_updated_at, captured_at, effective_at, tags, status)
+              (node_id, source_item_id, document_instance_id, raw_ref, source_type,
+               source_published_at, source_updated_at, captured_at, effective_at, tags, status)
             VALUES
-              (:node_id, :source_item_id, :raw_ref, :source_type, :source_published_at,
-               :source_updated_at, :captured_at, :effective_at, :tags, :status)
+              (:node_id, :source_item_id, :document_instance_id, :raw_ref, :source_type,
+               :source_published_at, :source_updated_at, :captured_at, :effective_at, :tags, :status)
             ON CONFLICT (node_id) DO UPDATE SET
               source_item_id = EXCLUDED.source_item_id,
+              document_instance_id = COALESCE(EXCLUDED.document_instance_id, article_nodes.document_instance_id),
               raw_ref = EXCLUDED.raw_ref,
               source_type = EXCLUDED.source_type,
               source_published_at = EXCLUDED.source_published_at,
@@ -129,6 +130,7 @@ async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, A
             {
                 "node_id": node_id,
                 "source_item_id": fields.get("source_item_id"),
+                "document_instance_id": fields.get("document_instance_id"),
                 "raw_ref": database.jsonb(fields.get("raw_ref") or {}),
                 "source_type": fields.get("source_type"),
                 "source_published_at": fields.get("source_published_at"),

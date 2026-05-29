@@ -15,7 +15,7 @@ from kb import ingest as kb_ingest
 from kb import internal as kb_internal
 from kb import public as kb_public
 from kb import summary as kb_summary
-from routers import files, sources
+from routers import files, folders as folders_module, sources
 
 AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
@@ -38,6 +38,9 @@ app.add_middleware(
 )
 
 app.include_router(sources.router)
+app.include_router(folders_module.router)
+app.include_router(folders_module.di_router)
+app.include_router(folders_module.connector_router)
 app.include_router(kb_ingest.router)
 app.include_router(kb_summary.router)
 app.include_router(kb_index_ops.router)

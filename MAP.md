@@ -5,8 +5,10 @@
 | 路径 | 说明 |
 |---|---|
 | `services/api/` | FastAPI 主服务：入库、知识图谱、搜索、MCP 接口、job worker |
-| `services/web/` | Next.js 前端：知识图谱可视化、Source 管理、草稿编辑 |
-| `services/ingestion-worker/` | 内容抓取与入库 pipeline：RSS/URL/WeChat/PDF/图片/Word/EPUB |
+| `services/api/routers/folders.py` | **Phase B 新增**：文件夹 / 文档实例 / Connector API（三个 sub-router） |
+| `services/web/` | Next.js 前端：知识图谱可视化、资料夹文件管理器、草稿编辑 |
+| `services/web/app/sources/page.tsx` | **Phase B 新建**：三栏文件管理器 UI（资料夹树 + 内容列表 + 详情抽屉） |
+| `services/ingestion-worker/` | 内容抓取与入库 pipeline：RSS/URL/WeChat/PDF/图片/Word/EPUB；Phase B 后传递 document_instance_id |
 | `services/summarizer-worker/` | 定时触发每日简报生成的 cron 服务 |
 
 ## 配置
@@ -22,6 +24,7 @@
 | 路径 | 说明 |
 |---|---|
 | `docs/revision-progress.md` | 重构设计决议 + 各阶段实施进度（事实依据文档） |
+| `docs/revision-source-folders.md` | Source/文件夹重构设计文档（三层架构：Pool / 资料夹 / Wiki） |
 | `docs/agents/` | Agent skill 配置：issue tracker、triage labels、domain docs |
 | `docs/baseline/` | 重构前基线快照 |
 | `MEMORY.md` | 系统架构总览：数据模型、API、算法、MCP 工具 |

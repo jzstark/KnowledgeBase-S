@@ -53,7 +53,7 @@ ingested_at, published_at, created_at, updated_at
 
 | 子表 | 关键字段 |
 |---|---|
-| article_nodes | source_item_id, raw_ref JSONB, source_type, 原始时间四列, status(active\|archived) |
+| article_nodes | source_item_id, **document_instance_id FK**, raw_ref JSONB, source_type, 原始时间四列, status(active\|archived) |
 | summary_nodes | summary_of FK（取代 summarizes 边）, perspective_*, body TEXT, body_embedding, is_default |
 | entity_nodes | canonical_name, aliases TEXT[], entity_type, merged_into FK, **abstract_stale BOOLEAN** |
 | index_nodes | description, rollup_instruction, abstract_stale BOOLEAN |
@@ -71,13 +71,31 @@ UNIQUE(from_node_id, to_node_id, relation_type)
 
 **index_children**：`(index_id, child_id)` PK，position, child_role(member|chapter)
 
-### 来源层
+### 来源层（legacy，ingestion pipeline 底层）
 
 **sources**：id, name, type, config JSONB, is_primary, default_doc_kind, deleted_at（软删除）
 
-**source_items**：每条待处理/已处理内容项，含原始时间四列（source_published_at / source_updated_at / captured_at / effective_at）、doc_kind、status(pending|processing|succeeded|failed)、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
+**source_items**：每条待处理/已处理内容项，含原始时间四列、doc_kind、**document_instance_id FK**、status(pending|processing|succeeded|failed)、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
 
 source type：rss | url | wechat | pdf | image | plaintext | word | epub
+
+### 文件夹层（Phase B 新增，用户组织层）
+
+**folders**：id(`fld_`), user_id, parent_id, name, kind(normal|stream), status(active|archived)
+
+**connectors**：id(`con_`), folder_id FK, type(rss|wechat), config JSONB, status(active|inactive), last_fetched_at — stream 资料夹的外部接入，与 legacy source 一一对应（`fld_XXXX` ↔ `src_XXXX`，`con_XXXX` ↔ `src_XXXX`）
+
+**raw_assets**：id(`ra_`), user_id, storage_key（物理路径/URL，不随 UI 移动变化）, original_filename, mime_type, size, sha256
+
+**document_instances**：id(`di_`), folder_id FK, raw_asset_id FK, connector_id FK(nullable), display_name, origin_ref, origin_ref_type, doc_kind, status — 资料夹条目，与 source_items 一一对应（`di_XXXX` ↔ `si_XXXX`）
+
+查询链路：资料夹 → document_instances → raw_assets → article_nodes → wiki md
+
+ID 映射约定（同 hex 后缀，不同前缀）：
+- `src_XXXX` ↔ `fld_XXXX`（legacy source ↔ folder）
+- `src_XXXX` ↔ `con_XXXX`（stream source ↔ connector）
+- `si_XXXX` ↔ `di_XXXX`（source_item ↔ document_instance）
+- `si_XXXX` ↔ `ra_XXXX`（source_item ↔ raw_asset）
 
 ### 派生层
 
@@ -97,9 +115,7 @@ source type：rss | url | wechat | pdf | image | plaintext | word | epub
 
 ## doc_kind 继承链
 
-`sources.default_doc_kind` → `source_items.doc_kind` → 显式 `IngestRequest.doc_kind`
-
-优先级（高→低）：显式 > source_items.doc_kind > sources.default_doc_kind > config.default
+优先级（高→低）：显式 IngestRequest.doc_kind > document_instances.doc_kind > source_items.doc_kind > sources.default_doc_kind > config.default
 
 枚举值定义在 `config/system.yaml`：regulation / case / news / memo / contract / analysis / other。所有 doc_kind 输入点均需校验，非法值降级为 default。UI 下拉从 `GET /api/config/doc_kind` 获取。
 
@@ -143,9 +159,17 @@ source type：rss | url | wechat | pdf | image | plaintext | word | epub
 
 完整端点见 `services/api/kb/` 各模块。
 
-### Sources（`/api/sources/`）
+### Sources（`/api/sources/`，legacy）
 
 CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`PATCH /source-items/{id}`）
+
+### Folders（`/api/folders/`，`/api/document-instances/`，`/api/connectors/`，Phase B 新增）
+
+**Folders**：`GET /api/folders`（树形列表）、`POST /api/folders`（创建，同时生成 legacy source）、`PATCH/DELETE /api/folders/{id}`、`GET /api/folders/{id}/contents`（子资料夹 + document_instances）、`POST /api/folders/{id}/upload`（文件上传→raw_asset+document_instance+source_item）、`POST /api/folders/{id}/add-url`
+
+**Document Instances**：`GET/PATCH/DELETE /api/document-instances/{id}`、`POST .../copy`、`POST .../reprocess`
+
+**Connectors**：`GET/POST /api/connectors`、`PATCH/DELETE /api/connectors/{id}`、`POST /api/connectors/{id}/sync`（触发 ingestion-worker）
 
 ---
 
@@ -246,19 +270,22 @@ Phase 5: 兜底（分数 × 0.5 折扣）
 独立服务，不直连 DB，全部 HTTP 调用 API。
 
 ```
-main.py: 轮询 GET /api/sources → build_source() → _dispatch_pipeline()
+main.py: 轮询 GET /api/sources + GET /api/connectors（Phase B）
+         → build_source() → _dispatch_pipeline()
+
+run_once：subscription sources + active connectors（fld_ → src_ 映射，避免重复）
 
 run_pipeline（标准文章）：
   fetch_pending_source_items → 对每个 source_item：
     source.extract_text(item) → text
-    doc_kind cascade：source_item["doc_kind"] or source_config["default_doc_kind"] or settings.doc_kind.default
+    读取 source_item.document_instance_id → 传入 ArticleIngestionInput
     process_article_like_item(ArticleIngestionInput, adapters)
   → update_last_fetched
   → refresh_stale_entities()   ← 调 POST /api/kb/entities/refresh_stale
 
 process_article_like_item：
   embed → analyze_context → LLM article_analysis
-  → post_ingest(article) → post_ingest(summary)
+  → post_ingest(article, document_instance_id=...) → post_ingest(summary)
   → write_wiki_article(doc_kind 写入 frontmatter)
   → process_entity_candidates → [晋升流程]
 
@@ -269,6 +296,8 @@ run_book_pipeline（EPUB/MOBI）：
 ```
 
 `write_wiki_article` 写 frontmatter（含 doc_kind），`restore_from_wiki` 读取重建 DB。
+
+**article ID 生成优先级**（`_make_node_id`）：document_instance_id（Phase B 稳定键）> raw_ref.path > raw_ref.url > random
 
 ---
 
@@ -306,4 +335,6 @@ API 和 ingestion-worker 各有独立 `settings.py`（frozen dataclass），用 
 |---|---|
 | `POST /api/kb/nodes/{id}/summaries`（§7 规范路径） | 实际为 `/create_summary`，功能可用 |
 | Source 删除 cascade 选项（同时删 N 篇文章） | 未实现 |
-| Source 管理页显示已停用 source | 后端支持 `?include_deleted=true`，前端未接 |
+| Source 管理页显示已停用 source | 后端支持 `?include_deleted=true`，前端未接（旧 /sources 页已重建为文件管理器） |
+| Phase B: raw_ref 降级（Phase 5） | 读路径仍走 raw_ref；document_instance → raw_asset 路径尚未替换旧读取逻辑 |
+| Phase B: 旧 /sources 页 wechat 配置子页 | `/sources/[id]/page.tsx` 仍存在但入口已从新 UI 移除，微信 connector 暂通过旧页面管理 |

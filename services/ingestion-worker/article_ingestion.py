@@ -24,6 +24,7 @@ class ArticleIngestionInput:
     wiki_source_type: str | None = None
     write_summary_wiki: bool = True
     doc_kind: str | None = None
+    document_instance_id: str | None = None   # Phase B: 稳定身份键
 
 
 @dataclass
@@ -95,9 +96,11 @@ async def process_article_like_item(
         "tags": tags,
         "object_type": "article",
         "source_item_id": data.source_item_id,
-        # doc_kind 不在此显式提供——API 层 ingest() 会沿 source_items → sources → default cascade 自动填充
+        # doc_kind cascade: API 层 ingest() 沿 document_instances → source_items → sources → default 自动填充
         **data.time_payload,
     }
+    if data.document_instance_id:
+        article_payload["document_instance_id"] = data.document_instance_id
     if data.parent_index_id:
         article_payload["parent_index_id"] = data.parent_index_id
 

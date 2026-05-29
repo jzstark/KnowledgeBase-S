@@ -8,21 +8,21 @@ import {
   BookOpen,
   Bot,
   FileText,
+  FolderOpen,
   Moon,
   Newspaper,
   PanelLeftClose,
   PanelLeftOpen,
-  PenSquare,
   Rss,
+  Search,
   Sun,
-  UploadCloud,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
-  { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
+  { href: "/sources", label: "资料夹", icon: FolderOpen, key: "O", match: ["/sources"] },
   { href: "/briefing", label: "简报生成", icon: Newspaper, key: "B", match: ["/briefing", "/drafts", "/instructions", "/settings"] },
   { href: "https://chat.laughtale.co.uk/", label: "LibreChat", icon: Bot, key: "C", match: [] },
   { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
@@ -216,6 +216,18 @@ export default function Nav() {
           <div className="truncate font-medium">KnowledgeBase-S</div>
           <div className="truncate text-[10px] text-muted-foreground">local workspace</div>
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 text-muted-foreground"
+          asChild
+          aria-label="搜索知识库"
+          title="搜索 (Ctrl+F)"
+        >
+          <Link href="/knowledge?list=1">
+            <Search className="h-3.5 w-3.5" />
+          </Link>
+        </Button>
         <Button
           variant="ghost"
           size="icon"
