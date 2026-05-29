@@ -5,7 +5,10 @@ import re
 from pathlib import Path
 
 _DEFAULT_PATH = Path("/app/shared_config/prompts.md")
-_LOCAL_PATH = Path(__file__).resolve().parents[2] / "config" / "prompts.md"
+try:
+    _LOCAL_PATH = Path(__file__).resolve().parents[2] / "config" / "prompts.md"
+except IndexError:
+    _LOCAL_PATH = _DEFAULT_PATH
 
 _REQUIRED = frozenset({
     "article_analysis",

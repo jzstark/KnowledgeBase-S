@@ -19,6 +19,8 @@ class DocKindSettings:
 @dataclass(frozen=True)
 class IngestionSettings:
     max_text_chars: int = 12000
+    chunk_trigger_words: int = 5000
+    chunk_target_words: int = 1500
     max_entity_page_sources: int = 5
     max_index_children_abstracts: int = 20
     rss_lookback_days: int = 14
@@ -31,6 +33,7 @@ class IngestionSettings:
 class ModelsSettings:
     article_analysis: str = "claude-haiku-4-5-20251001"
     entity_page: str = "claude-haiku-4-5-20251001"
+    entity_update: str = "claude-haiku-4-5-20251001"
     summary_gen: str = "claude-haiku-4-5-20251001"
     index_summary: str = "claude-haiku-4-5-20251001"
     hyde_abstract: str = "claude-haiku-4-5-20251001"
@@ -39,6 +42,9 @@ class ModelsSettings:
     compare: str = "claude-sonnet-4-6"
     cite: str = "claude-sonnet-4-6"
     summarize_corpus: str = "claude-sonnet-4-6"
+    image_ocr: str = "claude-sonnet-4-6"
+    image_cleanup: str = "claude-sonnet-4-6"
+    pdf_cleanup: str = "claude-haiku-4-5-20251001"
 
 
 @dataclass(frozen=True)
@@ -61,11 +67,14 @@ class RetrievalSettings:
     use_hyde: bool = True
     similar_to_threshold: float = 0.75
     similar_to_limit: int = 20
+    co_occurs_min_articles: int = 3
     summary_top_k: int = 5
     entity_top_k: int = 10
     article_direct_top_k: int = 8
     article_top_k: int = 8
     entity_in_context: int = 5
+    article_inline_threshold: int = 2000
+    context_max_tokens: int = 100000
     draft_knowledge_chars: int = 6000
     damping_entity_to_summary: float = 0.7
     damping_hop: float = 0.3
@@ -78,12 +87,14 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class MaintenanceSettings:
+    entity_update_batch: int = 10
     rebuild_max_wait_seconds: int = 3600
     rebuild_poll_interval_seconds: int = 20
 
 
 @dataclass(frozen=True)
 class BriefingSettings:
+    topics_count: int = 5
     hours_back: int = 24
     batch_size: int = 12
     summary_chars: int = 150
@@ -103,6 +114,7 @@ class EntityInsightsSettings:
 class LlmOutputTokensSettings:
     article_analysis: int = 2048
     entity_page: int = 2048
+    entity_update: int = 2048
     summary_gen: int = 1024
     index_summary: int = 512
     hyde_abstract: int = 200
@@ -111,6 +123,9 @@ class LlmOutputTokensSettings:
     compare: int = 2048
     cite: int = 2048
     summarize_corpus: int = 3000
+    image_ocr: int = 4096
+    image_cleanup: int = 4096
+    pdf_cleanup: int = 4096
 
 
 @dataclass(frozen=True)

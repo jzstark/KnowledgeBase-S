@@ -419,6 +419,7 @@ async def update_last_fetched(source_id: str):
 
 
 def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict,
+                        doc_kind: str,
                         title_override: str | None = None, source_type_override: str | None = None):
     """Write wiki/articles/{node_id}.md with full cleaned article text."""
     title = title_override or item.title or "（无标题）"
@@ -439,6 +440,7 @@ id: {node_id}
 type: article
 title: "{title}"
 tags: {tags_yaml}
+doc_kind: {doc_kind}
 wikilinks: []
 source_type: {source_type}
 raw_ref: {raw_ref_path}
@@ -583,6 +585,11 @@ async def run_pipeline(source: BaseSource, source_config: dict):
             else:
                 raw_ref = {"type": "file", "path": file_path}
 
+            doc_kind = (
+                source_item.get("doc_kind")
+                or source_config.get("default_doc_kind")
+                or settings.doc_kind.default
+            )
             result = await process_article_like_item(
                 ArticleIngestionInput(
                     user_id=USER_ID,
@@ -595,6 +602,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     raw_ref=raw_ref,
                     time_payload=_time_payload(item),
                     use_entity_context=True,
+                    doc_kind=doc_kind,
                 ),
                 _article_ingestion_adapters(),
             )
@@ -714,6 +722,11 @@ async def run_book_pipeline(source, source_config: dict):
                         "path": f"{file_path}::chapter::{ch.order}",
                     }
 
+                    chapter_doc_kind = (
+                        source_item.get("doc_kind")
+                        or source_config.get("default_doc_kind")
+                        or settings.doc_kind.default
+                    )
                     result = await process_article_like_item(
                         ArticleIngestionInput(
                             user_id=USER_ID,
@@ -730,6 +743,7 @@ async def run_book_pipeline(source, source_config: dict):
                             use_entity_context=False,
                             wiki_source_type="book_chapter",
                             write_summary_wiki=False,
+                            doc_kind=chapter_doc_kind,
                         ),
                         _article_ingestion_adapters(),
                     )

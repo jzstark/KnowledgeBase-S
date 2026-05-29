@@ -23,6 +23,7 @@ class ArticleIngestionInput:
     use_entity_context: bool = True
     wiki_source_type: str | None = None
     write_summary_wiki: bool = True
+    doc_kind: str | None = None
 
 
 @dataclass
@@ -46,7 +47,7 @@ class ArticleIngestionAdapters:
     generate_entity_page: Callable[[str, list[str], list[str]], str]
     mark_candidate_promoted: Callable[[int, str], Awaitable[None]]
     backfill_wikilinks: Callable[[str], Awaitable[None]]
-    write_wiki_article: Callable[[str, RawItem, str, list[str], dict, str | None, str | None], None]
+    write_wiki_article: Callable[[str, RawItem, str, list[str], dict, str, str | None, str | None], None]
     write_wiki_summary: Callable[[str, str, str, str, list[str], str], None]
     write_wiki_entity: Callable[[str, str, list[str], list[str], str, list[str]], None]
     max_entity_page_sources: int
@@ -125,6 +126,7 @@ async def process_article_like_item(
         data.text,
         tags,
         data.raw_ref,
+        data.doc_kind or "",
         display_title,
         data.wiki_source_type,
     )
