@@ -141,16 +141,20 @@ async def do_delete_entity(entity_id: str) -> None:
 
     uid = row["user_id"] or USER_ID
     wiki_file = _wiki_file_path(uid, entity_id, "entity")
+
+    async with database.database.transaction():
+        for stmt, params in [
+            ("DELETE FROM entity_facts WHERE entity_id = :id", {"id": entity_id}),
+            ("DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id", {"id": entity_id}),
+            ("DELETE FROM entity_candidates WHERE promoted_entity_id = :id", {"id": entity_id}),
+            ("UPDATE entity_nodes SET merged_into = NULL WHERE merged_into = :id", {"id": entity_id}),
+            ("DELETE FROM entity_nodes WHERE node_id = :id", {"id": entity_id}),
+            ("DELETE FROM knowledge_nodes WHERE id = :id", {"id": entity_id}),
+        ]:
+            await database.database.execute(stmt, params)
+
     if wiki_file.exists():
         wiki_file.unlink()
-
-    for stmt, params in [
-        ("DELETE FROM entity_facts WHERE entity_id = :id", {"id": entity_id}),
-        ("DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id", {"id": entity_id}),
-        ("DELETE FROM entity_nodes WHERE node_id = :id", {"id": entity_id}),
-        ("DELETE FROM knowledge_nodes WHERE id = :id", {"id": entity_id}),
-    ]:
-        await database.database.execute(stmt, params)
 
 
 # ── Shared query ──────────────────────────────────────────────────────────────

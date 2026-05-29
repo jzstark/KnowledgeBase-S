@@ -445,7 +445,7 @@ async def list_nodes(
 
 
 @router.get("/graph/all")
-async def get_full_graph(limit: int = Query(300, ge=1, le=500), type: str | None = None):
+async def get_full_graph(limit: int = Query(1000, ge=1, le=2000), type: str | None = None):
     """Full node + edge dump for D3 force-directed graph. No auth required."""
     type_filter = "AND n.object_type = $2" if type else ""
     params = [USER_ID, limit] if not type else [USER_ID, type, limit]
@@ -469,14 +469,19 @@ async def get_full_graph(limit: int = Query(300, ge=1, le=500), type: str | None
             """,
             *params,
         )
-        edge_rows = await conn.raw_connection.fetch(
-            """
-            SELECT id, from_node_id, to_node_id, relation_type, weight
-            FROM knowledge_edges
-            WHERE relation_type NOT IN ('extends', 'background_of', 'supports', 'contradicts', 'part_of')
-            LIMIT 1000
-            """
-        )
+        node_ids = [r["id"] for r in node_rows]
+        edge_rows = []
+        if node_ids:
+            edge_rows = await conn.raw_connection.fetch(
+                """
+                SELECT id, from_node_id, to_node_id, relation_type, weight
+                FROM knowledge_edges
+                WHERE relation_type NOT IN ('extends', 'background_of', 'supports', 'contradicts', 'part_of')
+                  AND from_node_id = ANY($1::varchar[])
+                  AND to_node_id = ANY($1::varchar[])
+                """,
+                node_ids,
+            )
         structure_rows = await conn.raw_connection.fetch(
             """
             SELECT ROW_NUMBER() OVER (ORDER BY index_id, position, child_id) AS rn,

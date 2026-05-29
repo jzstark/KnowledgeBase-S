@@ -378,7 +378,7 @@ export default function LandingPage() {
               {dropdownOpen && (
                 <div className={styles.dropdown}>
                   <Link
-                    href="/briefing"
+                    href="/knowledge"
                     className={styles.dropdownItem}
                     onClick={() => setDropdownOpen(false)}
                   >
@@ -410,7 +410,7 @@ export default function LandingPage() {
         </p>
         <div className={styles.heroActions}>
           {authed ? (
-            <Link href="/briefing" className={`${styles.cta} ${styles.ctaPrimary}`}>
+            <Link href="/knowledge" className={`${styles.cta} ${styles.ctaPrimary}`}>
               Open Console
             </Link>
           ) : (

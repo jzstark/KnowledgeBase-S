@@ -120,18 +120,27 @@ interface OpenFile {
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
 const EDGE_COLORS: Record<string, string> = {
-  similar_to: "#60a5fa",
-  mentions: "#a78bfa",
-  part_of: "#8b5cf6",
-  contains: "#8b5cf6",
-  summarizes: "#fbbf24",
+  similar_to: "#6f8fdb",
+  mentions: "#5dc7b8",
+  part_of: "#a78bfa",
+  contains: "#a78bfa",
+  summarizes: "#d9a441",
 };
 
 const OBJECT_TYPE_COLORS: Record<string, string> = {
-  article: "#3b82f6",
-  entity: "#10b981",
-  summary: "#f59e0b",
-  index: "#8b5cf6",
+  article: "#7aa2f7",
+  entity: "#62d6b5",
+  summary: "#e0af68",
+  index: "#bb9af7",
+};
+
+const GRAPH_COLORS = {
+  selected: "#ff6b6b",
+  selectedStroke: "#ffd166",
+  neighbor: "#f6c177",
+  nodeStroke: "hsl(var(--graph-node-stroke))",
+  label: "hsl(var(--graph-label))",
+  empty: "hsl(var(--graph-empty))",
 };
 
 const SOURCE_TYPE_BADGE: Record<string, string> = {
@@ -161,6 +170,34 @@ function nodeSymbolPath(d: SimNode, selected: boolean): string {
     : d.object_type === "article" ? d3.symbolSquare
     : d3.symbolCircle;
   return d3.symbol().type(type).size(area)() ?? "";
+}
+
+function mergeGraphData(base: GraphData | null, incoming: GraphData): GraphData {
+  if (!base) return incoming;
+
+  const nodeMap = new Map<string, KBNode>();
+  for (const node of base.nodes) nodeMap.set(node.id, node);
+  let changed = false;
+  for (const node of incoming.nodes) {
+    if (!nodeMap.has(node.id)) changed = true;
+    nodeMap.set(node.id, { ...nodeMap.get(node.id), ...node });
+  }
+
+  const edgeMap = new Map<string, KBEdge>();
+  const edgeKey = (edge: KBEdge) => `${edge.relation_type}:${edge.from_node_id}:${edge.to_node_id}`;
+  for (const edge of base.edges) edgeMap.set(edgeKey(edge), edge);
+  for (const edge of incoming.edges) {
+    const key = edgeKey(edge);
+    if (!edgeMap.has(key)) changed = true;
+    edgeMap.set(key, edge);
+  }
+
+  if (!changed) return base;
+
+  return {
+    nodes: Array.from(nodeMap.values()),
+    edges: Array.from(edgeMap.values()),
+  };
 }
 
 // ── 可拖拽分隔线（保持不变） ──────────────────────────────────────────────────
@@ -1357,8 +1394,10 @@ function JobsPanel({
   onRetry: (jobId: string) => void;
   onCancel: (jobId: string) => void;
 }) {
-  if (jobs.length === 0) return null;
-  const visible = jobs.slice(0, 6);
+  const visible = jobs
+    .filter((job) => job.status !== "succeeded" && job.status !== "cancelled")
+    .slice(0, 6);
+  if (visible.length === 0) return null;
   return (
     <div className="border-t border-border bg-muted/20 px-3 py-2 space-y-1">
       <div className="text-xs font-medium text-muted-foreground">后台任务</div>
@@ -1368,11 +1407,9 @@ function JobsPanel({
           <span className="truncate flex-1">{job.job_type}</span>
           <span className={cn(
             "shrink-0 rounded px-1.5 py-0.5",
-            job.status === "succeeded" && "bg-green-100 text-green-700",
             job.status === "failed" && "bg-red-100 text-red-700",
             job.status === "running" && "bg-blue-100 text-blue-700",
             (job.status === "pending" || job.status === "retrying") && "bg-amber-100 text-amber-700",
-            job.status === "cancelled" && "bg-muted text-muted-foreground",
           )}>
             {job.status}
           </span>
@@ -1408,6 +1445,7 @@ export default function KnowledgePage() {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const simNodesRef = useRef<SimNode[]>([]);
+  const simulationRef = useRef<d3.Simulation<SimNode, undefined> | null>(null);
 
   const [openFile, setOpenFile] = useState<OpenFile | null>(null);
   const [explorerKey, setExplorerKey] = useState(0);
@@ -1450,7 +1488,7 @@ export default function KnowledgePage() {
   async function loadGraph() {
     setGraphLoading(true);
     try {
-      const r = await fetch("/api/kb/graph/all", { credentials: "include" });
+      const r = await fetch("/api/kb/graph/all?limit=1000", { credentials: "include" });
       if (r.ok) setGraphData(await r.json());
     } finally {
       setGraphLoading(false);
@@ -1503,8 +1541,17 @@ export default function KnowledgePage() {
     setOpenFile(null);
     setDetailLoading(true);
     try {
-      const r = await fetch(`/api/kb/node/${nodeId}`, { credentials: "include" });
-      if (r.ok) setDetail(await r.json());
+      const [detailRes, graphRes] = await Promise.all([
+        fetch(`/api/kb/node/${nodeId}`, { credentials: "include" }),
+        fetch(`/api/kb/graph?root=${encodeURIComponent(nodeId)}&depth=1`, {
+          credentials: "include",
+        }),
+      ]);
+      if (detailRes.ok) setDetail(await detailRes.json());
+      if (graphRes.ok) {
+        const localGraph = await graphRes.json();
+        setGraphData((prev) => mergeGraphData(prev, localGraph));
+      }
     } finally {
       setDetailLoading(false);
     }
@@ -1540,7 +1587,7 @@ export default function KnowledgePage() {
 
   useEffect(() => {
     if (!graphData || !svgRef.current) return;
-    renderGraph(graphData);
+    return renderGraph(graphData);
   }, [graphData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -1560,8 +1607,8 @@ export default function KnowledgePage() {
       .selectAll<SVGPathElement, SimNode>("path")
       .attr("d", (d) => nodeSymbolPath(d, d.id === selectedNodeId))
       .attr("fill", (d) => {
-        if (d.id === selectedNodeId) return "#ef4444";
-        if (neighborIds.has(d.id)) return "#f97316";
+        if (d.id === selectedNodeId) return GRAPH_COLORS.selected;
+        if (neighborIds.has(d.id)) return GRAPH_COLORS.neighbor;
         return OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6";
       })
       .attr("fill-opacity", (d) => {
@@ -1569,8 +1616,8 @@ export default function KnowledgePage() {
         if (d.id === selectedNodeId || neighborIds.has(d.id)) return 1;
         return 0.18;
       })
-      .attr("stroke", "#fff")
-      .attr("stroke-width", (d) => d.id === selectedNodeId ? 3 : 1.5);
+      .attr("stroke", (d) => d.id === selectedNodeId ? GRAPH_COLORS.selectedStroke : GRAPH_COLORS.nodeStroke)
+      .attr("stroke-width", (d) => d.id === selectedNodeId ? 2.5 : 1.25);
 
     svgSel
       .selectAll<SVGLineElement, SimLink>("line")
@@ -1580,12 +1627,14 @@ export default function KnowledgePage() {
           typeof d.source === "string" ? d.source : (d.source as SimNode).id;
         const tgtId =
           typeof d.target === "string" ? d.target : (d.target as SimNode).id;
-        return srcId === selectedNodeId || tgtId === selectedNodeId ? 0.9 : 0.08;
+        return srcId === selectedNodeId || tgtId === selectedNodeId ? 0.85 : 0.06;
       });
 
     if (selectedNodeId && zoomRef.current) {
       const target = simNodesRef.current.find((n) => n.id === selectedNodeId);
       if (target && target.x != null && target.y != null) {
+        target.fx = target.x;
+        target.fy = target.y;
         const svgEl = svgRef.current;
         const w = svgEl.clientWidth || 600;
         const h = svgEl.clientHeight || 256;
@@ -1600,6 +1649,11 @@ export default function KnowledgePage() {
             d3.zoomIdentity.translate(tx, ty).scale(scale),
           );
       }
+    } else if (!selectedNodeId) {
+      simNodesRef.current.forEach((n) => {
+        n.fx = null;
+        n.fy = null;
+      });
     }
   }, [selectedNodeId, graphData]);
 
@@ -1634,6 +1688,7 @@ export default function KnowledgePage() {
   function renderGraph(data: GraphData) {
     const svgEl = svgRef.current!;
     const svg = d3.select(svgEl);
+    simulationRef.current?.stop();
     svg.selectAll("*").remove();
 
     const width = svgEl.clientWidth || 600;
@@ -1653,7 +1708,7 @@ export default function KnowledgePage() {
         .append("text")
         .attr("x", width / 2).attr("y", height / 2)
         .attr("text-anchor", "middle")
-        .attr("fill", "#9ca3af").attr("font-size", 14)
+        .attr("fill", GRAPH_COLORS.empty).attr("font-size", 14)
         .text("暂无知识节点");
       return;
     }
@@ -1666,7 +1721,19 @@ export default function KnowledgePage() {
       id: e.id,
     }));
 
-    const nodes: SimNode[] = data.nodes.map((n) => ({ ...n }));
+    const previousNodes = new Map(simNodesRef.current.map((n) => [n.id, n]));
+    const nodes: SimNode[] = data.nodes.map((n) => {
+      const prev = previousNodes.get(n.id);
+      return {
+        ...n,
+        x: prev?.x,
+        y: prev?.y,
+        vx: prev?.vx,
+        vy: prev?.vy,
+        fx: prev?.fx,
+        fy: prev?.fy,
+      };
+    });
     simNodesRef.current = nodes;
 
     const link = g
@@ -1674,8 +1741,8 @@ export default function KnowledgePage() {
       .selectAll<SVGLineElement, SimLink>("line")
       .data(links).enter().append("line")
       .attr("stroke", (d) => EDGE_COLORS[d.relation_type] || "#d1d5db")
-      .attr("stroke-width", 1.5)
-      .attr("stroke-opacity", 0.6);
+      .attr("stroke-width", 1.15)
+      .attr("stroke-opacity", 0.34);
 
     const node = g
       .append("g")
@@ -1684,8 +1751,8 @@ export default function KnowledgePage() {
       .attr("d", (d) => nodeSymbolPath(d, false))
       .attr("fill", (d) => OBJECT_TYPE_COLORS[d.object_type || "article"] || "#3b82f6")
       .attr("fill-opacity", 0.85)
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 1.5)
+      .attr("stroke", GRAPH_COLORS.nodeStroke)
+      .attr("stroke-width", 1.25)
       .attr("cursor", "pointer")
       .on("click", (_, d) => selectNode(d.id))
       .call(
@@ -1708,7 +1775,8 @@ export default function KnowledgePage() {
       .data(nodes).enter().append("text")
       .text((d) => (d.title || d.id).slice(0, 12))
       .attr("font-size", 9)
-      .attr("fill", "#374151")
+      .attr("fill", GRAPH_COLORS.label)
+      .attr("fill-opacity", 0.72)
       .attr("pointer-events", "none");
 
     const simulation = d3
@@ -1726,8 +1794,12 @@ export default function KnowledgePage() {
         node.attr("transform", (d) => `translate(${d.x ?? 0},${d.y ?? 0})`);
         label.attr("x", (d) => (d.x ?? 0) + 14).attr("y", (d) => (d.y ?? 0) + 4);
       });
+    simulationRef.current = simulation;
 
-    return () => simulation.stop();
+    return () => {
+      simulation.stop();
+      if (simulationRef.current === simulation) simulationRef.current = null;
+    };
   }
 
   async function handleMaintenance() {
@@ -1827,7 +1899,10 @@ export default function KnowledgePage() {
           />
 
           {/* 下：图谱 */}
-          <div style={{ height: graphHeight }} className="shrink-0 relative bg-muted/20 border-t border-border">
+          <div
+            style={{ height: graphHeight }}
+            className="shrink-0 relative border-t border-border bg-[hsl(var(--graph-bg))]"
+          >
             <div className="absolute top-2 left-3 z-10 flex items-center gap-2 flex-wrap">
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">图谱</span>
               {(["article", "entity", "summary", "index"] as const).map((t) => (

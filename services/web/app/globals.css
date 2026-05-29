@@ -37,6 +37,10 @@
     --sidebar-border: 240 6% 88%;
     --sidebar-accent: 0 0% 100%;
     --sidebar-accent-foreground: 240 10% 3.9%;
+    --graph-bg: 0 0% 98%;
+    --graph-label: 240 10% 18%;
+    --graph-node-stroke: 0 0% 100%;
+    --graph-empty: 240 5% 48%;
   }
 
   .dark {
@@ -69,6 +73,10 @@
     --sidebar-border: 240 4% 16%;
     --sidebar-accent: 240 4% 16%;
     --sidebar-accent-foreground: 0 0% 98%;
+    --graph-bg: 220 28% 5%;
+    --graph-label: 220 20% 72%;
+    --graph-node-stroke: 220 32% 8%;
+    --graph-empty: 220 12% 54%;
   }
 }
 

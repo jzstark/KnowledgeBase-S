@@ -21,15 +21,15 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { href: "/briefing", label: "简报", icon: Newspaper, key: "B", match: ["/briefing"] },
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
-  { href: "/drafts", label: "工作室", icon: PenSquare, key: "S", match: ["/drafts", "/instructions", "/settings"] },
   { href: "/sources", label: "来源", icon: UploadCloud, key: "O", match: ["/sources"] },
+  { href: "/briefing", label: "简报生成", icon: Newspaper, key: "B", match: ["/briefing", "/drafts", "/instructions", "/settings"] },
   { href: "https://chat.laughtale.co.uk/", label: "LibreChat", icon: Bot, key: "C", match: [] },
   { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
 ];
 
 const studioLinks = [
+  { href: "/briefing", label: "简报", activePath: "/briefing" },
   { href: "/drafts", label: "草稿历史", activePath: "/drafts" },
   { href: "/instructions#templates", label: "写作模板", activePath: "/instructions" },
   { href: "/settings", label: "系统设置", activePath: "/settings" },
@@ -152,7 +152,7 @@ export default function Nav() {
                   </Link>
                   )}
                 </Button>
-                {label === "工作室" && active && !collapsed && (
+                {label === "简报生成" && active && !collapsed && (
                   <div className="ml-5 mt-1 hidden space-y-0.5 border-l border-sidebar-border pl-2 md:block">
                     {studioLinks.map((item) => {
                       const itemActive = item.activePath
