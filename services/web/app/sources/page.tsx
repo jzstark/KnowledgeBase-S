@@ -726,6 +726,12 @@ function NewFolderModal({
   );
 }
 
+interface WechatSubscription {
+  feed_id: string;
+  name: string;
+  enabled: boolean;
+}
+
 function NewStreamFolderModal({
   open, onClose, onCreated,
 }: {
@@ -737,22 +743,59 @@ function NewStreamFolderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // WeChat-specific
+  const [subscriptions, setSubscriptions] = useState<WechatSubscription[]>([]);
+  const [loadingWechat, setLoadingWechat] = useState(false);
+  const [selectedFeedId, setSelectedFeedId] = useState("");
+
+  useEffect(() => {
+    if (type !== "wechat") return;
+    setError("");
+    setLoadingWechat(true);
+    fetch("/api/sources/wechat2rss/subscriptions", { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) {
+          const b = await res.json().catch(() => ({}));
+          throw new Error(b.detail || `加载公众号失败 (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        const subs: WechatSubscription[] = data.subscriptions ?? [];
+        setSubscriptions(subs);
+        const first = subs.find((s) => !s.enabled);
+        setSelectedFeedId(first?.feed_id ?? "");
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "加载公众号失败"))
+      .finally(() => setLoadingWechat(false));
+  }, [type]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) { setError("请填写名称"); return; }
-    if (type === "rss" && !url.trim()) { setError("请填写 Feed URL"); return; }
+    if (type === "rss") {
+      if (!name.trim()) { setError("请填写名称"); return; }
+      if (!url.trim()) { setError("请填写 Feed URL"); return; }
+    }
+    if (type === "wechat" && !selectedFeedId) { setError("请选择公众号"); return; }
     setSaving(true); setError("");
     try {
-      const config: Record<string, string> = {};
-      if (type === "rss") config.url = url.trim();
+      let config: Record<string, string> = {};
+      let folderName = name.trim();
+      if (type === "rss") {
+        config = { url: url.trim() };
+      } else {
+        const selected = subscriptions.find((s) => s.feed_id === selectedFeedId);
+        config = { provider: "wechat2rss", feed_id: selectedFeedId };
+        if (!folderName) folderName = selected?.name ?? selectedFeedId;
+      }
       const r = await fetch("/api/connectors", {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_name: name.trim(), type, config }),
+        body: JSON.stringify({ folder_name: folderName, type, config }),
       });
       if (!r.ok) { const b = await r.json().catch(() => ({})); setError(b.detail || "创建失败"); return; }
       onCreated();
-      setName(""); setUrl(""); setType("rss");
+      setName(""); setUrl(""); setType("rss"); setSelectedFeedId("");
     } finally { setSaving(false); }
   }
 
@@ -765,32 +808,70 @@ function NewStreamFolderModal({
             <Label>类型</Label>
             <select
               value={type}
-              onChange={(e) => setType(e.target.value as "rss" | "wechat")}
+              onChange={(e) => { setType(e.target.value as "rss" | "wechat"); setError(""); }}
               className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <option value="rss">RSS</option>
               <option value="wechat">微信公众号</option>
             </select>
           </div>
-          <div className="space-y-1.5">
-            <Label>名称</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：科技早报" autoFocus />
-          </div>
+
           {type === "rss" && (
-            <div className="space-y-1.5">
-              <Label>Feed URL</Label>
-              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/feed.xml" type="url" />
-            </div>
+            <>
+              <div className="space-y-1.5">
+                <Label>名称</Label>
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：科技早报" autoFocus />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Feed URL</Label>
+                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/feed.xml" type="url" />
+              </div>
+            </>
           )}
+
           {type === "wechat" && (
-            <p className="text-xs text-muted-foreground">
-              请在 Wechat2RSS 管理界面添加公众号后，在「订阅来源管理」→ 旧版界面中添加微信 source。
-            </p>
+            <>
+              {loadingWechat ? (
+                <p className="text-xs text-muted-foreground">正在加载公众号列表…</p>
+              ) : subscriptions.length === 0 && !error ? (
+                <p className="text-xs text-muted-foreground">暂无可选公众号，请先在 Wechat2RSS 管理界面添加订阅。</p>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>选择公众号</Label>
+                  <select
+                    value={selectedFeedId}
+                    onChange={(e) => setSelectedFeedId(e.target.value)}
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    {!selectedFeedId && <option value="" disabled>请选择…</option>}
+                    {subscriptions.map((s) => (
+                      <option key={s.feed_id} value={s.feed_id} disabled={s.enabled}>
+                        {s.name}（{s.feed_id}）{s.enabled ? " — 已追踪" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">资料夹名称默认与公众号同名，可在下方自定义。</p>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label>资料夹名称（可选）</Label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={subscriptions.find((s) => s.feed_id === selectedFeedId)?.name ?? "留空则使用公众号名称"}
+                />
+              </div>
+            </>
           )}
+
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onClose}>取消</Button>
-            <Button type="submit" size="sm" disabled={saving}>{saving ? "创建中…" : "创建"}</Button>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={saving || loadingWechat || (type === "wechat" && !selectedFeedId)}
+            >{saving ? "创建中…" : "创建"}</Button>
           </div>
         </form>
       </DialogContent>
