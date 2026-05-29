@@ -18,14 +18,15 @@ from typing import Any
 import anthropic
 
 sys.path.insert(0, os.path.dirname(__file__))
-import config_loader
 import database
 import entity_insights
 import index_structure
 import object_nodes
+from settings import settings
+from prompts import prompts
 
 USER_ID = "default"
-CLAUDE_MODEL = config_loader.get("models.entity_page", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL = settings.models.entity_page
 LEGACY_LLM_EDGE_TYPES = ("extends", "background_of", "supports", "contradicts")
 
 
@@ -81,9 +82,9 @@ async def promote_entity_candidates(user_id: str) -> dict:
         max_salience = float(row["max_salience"] or 0)
 
         should_promote = (
-            (max_salience >= config_loader.get("entity.promotion_salience", 0.7)
-             and mention_count >= config_loader.get("entity.promotion_salience_mentions", 2))
-            or mention_count >= config_loader.get("entity.promotion_min_mentions", 3)
+            (max_salience >= settings.entity.promotion_salience
+             and mention_count >= settings.entity.promotion_salience_mentions)
+            or mention_count >= settings.entity.promotion_min_mentions
         )
         if not should_promote:
             continue
@@ -91,7 +92,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
         source_ids = list(row["source_article_ids"] or [])
         # Fetch abstracts for source articles
         source_abstracts = []
-        for art_id in source_ids[:config_loader.get("ingestion.max_entity_page_sources", 5)]:
+        for art_id in source_ids[:settings.ingestion.max_entity_page_sources]:
             art = await database.database.fetch_one(
                 "SELECT title, abstract FROM knowledge_nodes WHERE id = :id",
                 {"id": art_id},
@@ -103,9 +104,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
 
         # Call Claude to generate entity page
         try:
-            import prompt_loader
-            prompt = prompt_loader.fill(
-                "entity_page",
+            prompt = prompts.entity_page(
                 entity_name=row["canonical_name"],
                 aliases="、".join(aliases) if aliases else "无",
                 source_abstracts="\n\n".join(source_abstracts) or "（暂无来源信息）",
@@ -113,8 +112,8 @@ async def promote_entity_candidates(user_id: str) -> dict:
             claude_api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
             claude_client = anthropic.AsyncAnthropic(api_key=claude_api_key)
             resp = await claude_client.messages.create(
-                model=config_loader.get("models.entity_page", CLAUDE_MODEL),
-                max_tokens=config_loader.get("llm_output_tokens.entity_page", 2048),
+                model=settings.models.entity_page,
+                max_tokens=settings.llm_output_tokens.entity_page,
                 messages=[{"role": "user", "content": prompt}],
             )
             entity_body = getattr(resp.content[0], "text", "").strip()
@@ -319,7 +318,7 @@ async def detect_embedding_model_drift(user_id: str = USER_ID) -> dict:
 
     返回：{current_model, mismatched_total, by_model, by_object_type, sample_ids}
     """
-    current_model = config_loader.get("embedding.model", "text-embedding-3-small")
+    current_model = settings.embedding.model
 
     summary_row = await database.database.fetch_one(
         """
@@ -422,7 +421,7 @@ async def aggregate_index_abstracts(
     更新 DB 中的 abstract 和 embedding，并刷新 wiki 文件 frontmatter。
     幂等：每次运行都用最新子节点状态覆盖。
     """
-    import prompt_loader
+
     from openai import AsyncOpenAI
     from kb.wiki import write_wiki_node
 
@@ -433,7 +432,7 @@ async def aggregate_index_abstracts(
 
     claude_client = anthropic.AsyncAnthropic(api_key=claude_api_key)
     openai_client = AsyncOpenAI(api_key=openai_api_key)
-    max_children  = config_loader.get("ingestion.max_index_children_abstracts", 20)
+    max_children  = settings.ingestion.max_index_children_abstracts
 
     # 1. 找所有 index 节点
     filters = ["kn.user_id = :uid", "kn.object_type = 'index'"]
@@ -508,16 +507,15 @@ async def aggregate_index_abstracts(
 
         # 5. 调用 LLM 生成聚合 abstract
         try:
-            prompt = prompt_loader.fill(
-                "index_summary",
+            prompt = prompts.index_summary(
                 index_title=idx_title,
                 child_abstracts=(
                     f"Rollup instruction: {rollup_instruction}\n\n" if rollup_instruction else ""
                 ) + "\n".join(child_abstracts),
             )
             resp = await claude_client.messages.create(
-                model=config_loader.get("models.index_summary", "claude-haiku-4-5-20251001"),
-                max_tokens=config_loader.get("llm_output_tokens.index_summary", 512),
+                model=settings.models.index_summary,
+                max_tokens=settings.llm_output_tokens.index_summary,
                 messages=[{"role": "user", "content": prompt}],
             )
             new_abstract = getattr(resp.content[0], "text", "").strip()
@@ -529,9 +527,9 @@ async def aggregate_index_abstracts(
         # 6. 生成 embedding
         try:
             embed_resp = await openai_client.embeddings.create(
-                model=config_loader.get("embedding.model", "text-embedding-3-small"),
-                input=new_abstract[:config_loader.get("embedding.max_chars", 8000)],
-                dimensions=config_loader.get("embedding.dimensions", 1536),
+                model=settings.embedding.model,
+                input=new_abstract[:settings.embedding.max_chars],
+                dimensions=settings.embedding.dimensions,
             )
             embedding  = embed_resp.data[0].embedding
             emb_lit    = "[" + ",".join(repr(x) for x in embedding) + "]"
@@ -553,7 +551,7 @@ async def aggregate_index_abstracts(
             {
                 "abstract": new_abstract,
                 "id": idx_id,
-                "embedding_model": config_loader.get("embedding.model", "text-embedding-3-small"),
+                "embedding_model": settings.embedding.model,
             },
         )
         await object_nodes.upsert_object_node(
@@ -694,15 +692,15 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
         try:
             embed_text = (abstract or str(m.get("title") or node_id))
             resp = await openai_client.embeddings.create(
-                model=config_loader.get("embedding.model", "text-embedding-3-small"),
-                input=embed_text[:config_loader.get("embedding.max_chars", 8000)],
-                dimensions=config_loader.get("embedding.dimensions", 1536),
+                model=settings.embedding.model,
+                input=embed_text[:settings.embedding.max_chars],
+                dimensions=settings.embedding.dimensions,
             )
             emb = resp.data[0].embedding
             emb_lit = "[" + ",".join(repr(x) for x in emb) + "]"
         except Exception as e:
             print(f"[restore] embed failed {node_id}: {e}", flush=True)
-            dim = config_loader.get("embedding.dimensions", 1536)
+            dim = settings.embedding.dimensions
             emb_lit = "[" + ",".join(["0.0"] * dim) + "]"
 
         # tags
@@ -781,8 +779,8 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "object_type": object_type,
                     "published_at": published_at,
                     "created_at": created_at,
-                    "doc_kind": m.get("doc_kind") or config_loader.get("doc_kind.default", "other"),
-                    "embedding_model": config_loader.get("embedding.model", "text-embedding-3-small"),
+                    "doc_kind": m.get("doc_kind") or settings.doc_kind.default,
+                    "embedding_model": settings.embedding.model,
                 },
             )
             await object_nodes.upsert_object_node(
@@ -1146,8 +1144,8 @@ async def rebuild_from_raw(
             f"[rebuild] Step 4: 等待 {len(item_ids)} 个 source_items 完成（最长 60 分钟）...",
             flush=True,
         )
-        max_wait = config_loader.get("maintenance.rebuild_max_wait_seconds", 3600)
-        interval = config_loader.get("maintenance.rebuild_poll_interval_seconds", 20)
+        max_wait = settings.maintenance.rebuild_max_wait_seconds
+        interval = settings.maintenance.rebuild_poll_interval_seconds
         elapsed = 0
         pending_count = len(item_ids)
 

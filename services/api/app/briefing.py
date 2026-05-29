@@ -18,18 +18,18 @@ import anthropic
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-import config_loader
 import database
-import prompt_loader
 from auth import require_auth
 from app.settings import get_settings_dict
+from settings import settings
+from prompts import prompts
 from kb.public_service import fetch_briefing_source_articles
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
 USER_ID = "default"
 claude = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
-BATCH_SIZE = config_loader.get("briefing.batch_size", 12)
+BATCH_SIZE = settings.briefing.batch_size
 KNOWLEDGE_TIME_SQL = "COALESCE(n.published_at, n.ingested_at, n.created_at)"
 
 
@@ -89,9 +89,9 @@ async def generate_briefing(
     force=true（重新生成模式，用于写作方向修改后）：
       - 删除今日已有选题，从最近 N 小时节点重新生成
     """
-    settings = await get_settings_dict()
-    hours_back = int(settings.get("briefing_hours_back", config_loader.get("briefing.hours_back", 24)))
-    topics_setting = settings.get("topics", "")
+    user_prefs = await get_settings_dict()
+    hours_back = int(user_prefs.get("briefing_hours_back", settings.briefing.hours_back))
+    topics_setting = user_prefs.get("topics", "")
     today = date.today()
 
     if force:
@@ -183,17 +183,13 @@ async def _generate_topics_batch(batch: list[dict], topics_setting: str) -> list
         return []
 
     summaries = "\n".join(
-        f"[{i+1}] {n['title']}：{n.get('summary', '')[:config_loader.get('briefing.summary_chars', 150)]}"
+        f"[{i+1}] {n['title']}：{n.get('summary', '')[:settings.briefing.summary_chars]}"
         for i, n in enumerate(batch)
     )
-    prompt = prompt_loader.fill(
-        "briefing_topics",
-        topics_setting=topics_setting,
-        summaries=summaries,
-    )
+    prompt = prompts.briefing_topics(topics_setting=topics_setting, summaries=summaries)
     message = claude.messages.create(
-        model=config_loader.get("models.briefing_topics", "claude-haiku-4-5-20251001"),
-        max_tokens=config_loader.get("llm_output_tokens.briefing_topics", 8192),
+        model=settings.models.briefing_topics,
+        max_tokens=settings.llm_output_tokens.briefing_topics,
         messages=[{"role": "user", "content": prompt}],
     )
 

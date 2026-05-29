@@ -22,10 +22,10 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-import config_loader
 import database
 import object_nodes
-import prompt_loader
+from settings import settings
+from prompts import prompts
 from auth import require_auth_or_service_token
 from kb.common import USER_ID, _is_visible_edge, _vector_literal
 from kb.retrieval import _embed_query, claude_client
@@ -59,7 +59,7 @@ def _csv(value: Optional[str]) -> list[str]:
 def _validate_doc_kinds(values: list[str]) -> list[str]:
     if not values:
         return []
-    allowed = set(config_loader.get("doc_kind.values", []) or [])
+    allowed = set(settings.doc_kind.values)
     invalid = set(values) - allowed
     if invalid:
         raise HTTPException(400, f"invalid doc_kind values: {sorted(invalid)}")
@@ -168,8 +168,8 @@ async def search(
     _: dict = Depends(require_auth_or_service_token),
 ):
     """Hybrid 向量 + 关键词搜索。filters 全部可选。"""
-    top_k = top_k or config_loader.get("kb_public.search_top_k", 10)
-    top_k_max = config_loader.get("kb_public.search_top_k_max", 50)
+    top_k = top_k or settings.kb_public.search_top_k
+    top_k_max = settings.kb_public.search_top_k_max
     top_k = min(max(int(top_k or 0), 1), top_k_max)
 
     type_list = _csv(type)
@@ -356,7 +356,7 @@ async def _fetch_one(
     }
 
     if include_body:
-        body_chars = config_loader.get("kb_public.fetch_body_chars", 100000)
+        body_chars = settings.kb_public.fetch_body_chars
         result["body"] = (
             _read_wiki_body(USER_ID, node_id, object_type, limit=body_chars)
             if object_type == "article" else None
@@ -400,7 +400,7 @@ async def fetch_nodes_batch(
     body: FetchBatchRequest,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    max_batch = config_loader.get("kb_public.fetch_max_batch", 20)
+    max_batch = settings.kb_public.fetch_max_batch
     if len(body.ids) > max_batch:
         raise HTTPException(400, f"max {max_batch} ids per batch")
     nodes = []
@@ -478,8 +478,8 @@ async def related(
     limit: Optional[int] = None,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    limit = limit or config_loader.get("kb_public.related_default_limit", 20)
-    limit_max = config_loader.get("kb_public.related_limit_max", 100)
+    limit = limit or settings.kb_public.related_default_limit
+    limit_max = settings.kb_public.related_limit_max
     limit = min(max(int(limit or 0), 1), limit_max)
 
     rows = await database.database.fetch_all(
@@ -518,8 +518,8 @@ async def timeline(
     if not entity_id and not topic_query:
         raise HTTPException(400, "must provide entity_id or topic_query")
 
-    limit = limit or config_loader.get("kb_public.timeline_default_limit", 50)
-    limit_max = config_loader.get("kb_public.timeline_limit_max", 200)
+    limit = limit or settings.kb_public.timeline_default_limit
+    limit_max = settings.kb_public.timeline_limit_max
     limit = min(max(int(limit or 0), 1), limit_max)
 
     if entity_id:
@@ -583,7 +583,7 @@ async def timeline(
     assert topic_query
     embedding = await _embed_query(topic_query)
     embedding_literal = _vector_literal(embedding)
-    threshold = config_loader.get("kb_public.timeline_min_score", 0.3)
+    threshold = settings.kb_public.timeline_min_score
 
     params_list: list[Any] = [USER_ID]
     conds = [
@@ -708,7 +708,7 @@ async def compare(
     body: CompareRequest,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    body_chars = config_loader.get("kb_public.compare_body_chars", 4000)
+    body_chars = settings.kb_public.compare_body_chars
     docs: list[dict[str, Any]] = []
     for nid in body.node_ids:
         d = await _load_doc_context(nid, body_chars)
@@ -720,16 +720,15 @@ async def compare(
         "\n".join(f"- {d}" for d in body.dimensions)
         if body.dimensions else "（自动判断关键维度）"
     )
-    prompt = prompt_loader.fill(
-        "compare_nodes",
+    prompt = prompts.compare_nodes(
         documents=_docs_to_prompt_text(docs),
         dimensions=dims_text,
         focus=body.focus or "（无）",
     )
 
     resp = await claude_client.messages.create(
-        model=config_loader.get("models.compare", "claude-sonnet-4-6"),
-        max_tokens=config_loader.get("llm_output_tokens.compare", 2048),
+        model=settings.models.compare,
+        max_tokens=settings.llm_output_tokens.compare,
         messages=[{"role": "user", "content": prompt}],
     )
     output = getattr(resp.content[0], "text", "").strip()
@@ -795,9 +794,9 @@ async def cite(
     body: CiteRequest,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    max_results = body.max_results or config_loader.get("kb_public.cite_max_results", 5)
-    candidate_count = config_loader.get("kb_public.cite_candidate_count", 20)
-    body_chars = config_loader.get("kb_public.cite_body_chars", 3000)
+    max_results = body.max_results or settings.kb_public.cite_max_results
+    candidate_count = settings.kb_public.cite_candidate_count
+    body_chars = settings.kb_public.cite_body_chars
 
     # Stage 1: 向量粗筛
     embedding = await _embed_query(body.claim)
@@ -851,15 +850,14 @@ async def cite(
         })
 
     # Stage 2: LLM 精确匹配
-    prompt = prompt_loader.fill(
-        "cite_match",
+    prompt = prompts.cite_match(
         claim=body.claim,
         context=body.context or "（无）",
         candidates=_docs_to_prompt_text(docs_for_prompt),
     )
     resp = await claude_client.messages.create(
-        model=config_loader.get("models.cite", "claude-sonnet-4-6"),
-        max_tokens=config_loader.get("llm_output_tokens.cite", 2048),
+        model=settings.models.cite,
+        max_tokens=settings.llm_output_tokens.cite,
         messages=[{"role": "user", "content": prompt}],
     )
     raw_text = getattr(resp.content[0], "text", "")
@@ -914,8 +912,8 @@ async def summarize_corpus(
     if not body.node_ids and not body.query:
         raise HTTPException(400, "must provide node_ids or query")
 
-    max_sources = body.max_sources or config_loader.get("kb_public.summarize_max_sources", 10)
-    body_chars = config_loader.get("kb_public.summarize_body_chars", 2500)
+    max_sources = body.max_sources or settings.kb_public.summarize_max_sources
+    body_chars = settings.kb_public.summarize_body_chars
 
     # 解析语料 ids
     if body.node_ids:
@@ -928,7 +926,7 @@ async def summarize_corpus(
         assert body.query  # non-None guaranteed by earlier validation
         embedding = await _embed_query(body.query)
         embedding_literal = _vector_literal(embedding)
-        min_score = config_loader.get("kb_public.summarize_summary_min_score", 0.3)
+        min_score = settings.kb_public.summarize_summary_min_score
 
         summary_rows = await database.database.fetch_all(
             f"""
@@ -984,15 +982,14 @@ async def summarize_corpus(
     if not docs:
         return {"summary": "", "sources_used": [], "coverage_note": "未找到匹配的文档"}
 
-    prompt = prompt_loader.fill(
-        "summarize_corpus",
+    prompt = prompts.summarize_corpus(
         documents=_docs_to_prompt_text(docs),
         focus=body.focus or "（整体综述）",
         output_format=body.output_format,
     )
     resp = await claude_client.messages.create(
-        model=config_loader.get("models.summarize_corpus", "claude-sonnet-4-6"),
-        max_tokens=config_loader.get("llm_output_tokens.summarize_corpus", 3000),
+        model=settings.models.summarize_corpus,
+        max_tokens=settings.llm_output_tokens.summarize_corpus,
         messages=[{"role": "user", "content": prompt}],
     )
     summary_text = getattr(resp.content[0], "text", "").strip()

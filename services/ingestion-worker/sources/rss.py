@@ -5,10 +5,10 @@ import feedparser
 import httpx
 import trafilatura
 
-import config_loader
 from .base import BaseSource, RawItem
+from settings import settings
 
-RSS_LOOKBACK_DAYS = config_loader.get("ingestion.rss_lookback_days", 14)
+RSS_LOOKBACK_DAYS = settings.ingestion.rss_lookback_days
 
 
 def _parse_struct_time(value) -> datetime | None:

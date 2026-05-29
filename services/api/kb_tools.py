@@ -8,10 +8,10 @@ from typing import Any
 import anthropic
 from openai import AsyncOpenAI
 
-import config_loader
 import database
 import object_nodes
-import prompt_loader
+from settings import settings
+from prompts import prompts
 
 USER_ID = "default"
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
@@ -94,21 +94,21 @@ def _is_visible_edge(relation_type: str | None) -> bool:
 
 async def _embed_text(text: str) -> list[float]:
     resp = await openai_client.embeddings.create(
-        model=config_loader.get("embedding.model", "text-embedding-3-small"),
-        input=text[: config_loader.get("embedding.max_chars", 8000)],
-        dimensions=config_loader.get("embedding.dimensions", 1536),
+        model=settings.embedding.model,
+        input=text[: settings.embedding.max_chars],
+        dimensions=settings.embedding.dimensions,
     )
     return resp.data[0].embedding
 
 
 async def _embed_query(text: str) -> list[float]:
-    if not config_loader.get("retrieval.use_hyde", True):
+    if not settings.retrieval.use_hyde:
         return await _embed_text(text)
     try:
         hypo = await claude_client.messages.create(
-            model=config_loader.get("models.hyde_abstract", "claude-haiku-4-5-20251001"),
-            max_tokens=config_loader.get("llm_output_tokens.hyde_abstract", 200),
-            messages=[{"role": "user", "content": prompt_loader.fill("hyde_abstract", topic=text)}],
+            model=settings.models.hyde_abstract,
+            max_tokens=settings.llm_output_tokens.hyde_abstract,
+            messages=[{"role": "user", "content": prompts.hyde_abstract(topic=text)}],
         )
         hypo_text = getattr(hypo.content[0], "text", "").strip()
         if hypo_text:

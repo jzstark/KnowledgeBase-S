@@ -24,9 +24,9 @@ import httpx
 import trafilatura
 from openai import AsyncOpenAI
 
-import config_loader
-import prompt_loader
 from article_ingestion import ArticleIngestionAdapters, ArticleIngestionInput, process_article_like_item
+from settings import settings
+from prompts import prompts
 from sources.base import BaseSource, RawItem
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,8 @@ USER_ID = "default"
 claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-MAX_TEXT_CHARS = config_loader.get("ingestion.max_text_chars", 12000)
-MAX_ENTITY_PAGE_SOURCES = config_loader.get("ingestion.max_entity_page_sources", 5)
+MAX_TEXT_CHARS = settings.ingestion.max_text_chars
+MAX_ENTITY_PAGE_SOURCES = settings.ingestion.max_entity_page_sources
 
 
 def _message_text(message: Any) -> str:
@@ -268,13 +268,12 @@ def analyze_article(
     ) or "（库中暂无 tag）"
 
     message = claude.messages.create(
-        model=config_loader.get("models.article_analysis", "claude-haiku-4-5-20251001"),
-        max_tokens=config_loader.get("llm_output_tokens.article_analysis", 2048),
+        model=settings.models.article_analysis,
+        max_tokens=settings.llm_output_tokens.article_analysis,
         messages=[
             {
                 "role": "user",
-                "content": prompt_loader.fill(
-                    "article_analysis",
+                "content": prompts.article_analysis(
                     text=truncated,
                     existing_entities=existing_entities_str,
                     candidate_entities=candidate_entities_str,
@@ -318,13 +317,12 @@ def analyze_article(
 def generate_entity_page(canonical_name: str, aliases: list[str], source_abstracts: list[str]) -> str:
     """Call Claude to generate a Wikipedia-style entity page body (markdown)."""
     message = claude.messages.create(
-        model=config_loader.get("models.entity_page", "claude-haiku-4-5-20251001"),
-        max_tokens=config_loader.get("llm_output_tokens.entity_page", 2048),
+        model=settings.models.entity_page,
+        max_tokens=settings.llm_output_tokens.entity_page,
         messages=[
             {
                 "role": "user",
-                "content": prompt_loader.fill(
-                    "entity_page",
+                "content": prompts.entity_page(
                     entity_name=canonical_name,
                     aliases="、".join(aliases) if aliases else "无",
                     source_abstracts="\n\n".join(source_abstracts) or "（暂无来源信息）",
@@ -337,9 +335,9 @@ def generate_entity_page(canonical_name: str, aliases: list[str], source_abstrac
 
 async def embed(text: str) -> list[float]:
     resp = await openai_client.embeddings.create(
-        model=config_loader.get("embedding.model", "text-embedding-3-small"),
-        input=text[:config_loader.get("embedding.max_chars", 8000)],
-        dimensions=config_loader.get("embedding.dimensions", 1536),
+        model=settings.embedding.model,
+        input=text[:settings.embedding.max_chars],
+        dimensions=settings.embedding.dimensions,
     )
     return resp.data[0].embedding
 
@@ -532,7 +530,7 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
         write_wiki_summary=write_wiki_summary,
         write_wiki_entity=write_wiki_entity,
         max_entity_page_sources=MAX_ENTITY_PAGE_SOURCES,
-        embedding_model=config_loader.get("embedding.model", "text-embedding-3-small"),
+        embedding_model=settings.embedding.model,
     )
 
 

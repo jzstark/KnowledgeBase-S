@@ -1,8 +1,8 @@
 import math
 from typing import Any
 
-import config_loader
 import database
+from settings import settings
 
 
 def _ordered_pair(a: str, b: str) -> tuple[str, str]:
@@ -195,7 +195,7 @@ async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
         ORDER BY fact_time DESC NULLS LAST, updated_at DESC
         LIMIT :facts_limit
         """,
-        {"entity_id": entity_id, "facts_limit": config_loader.get("entity_insights.refresh_facts_limit", 12)},
+        {"entity_id": entity_id, "facts_limit": settings.entity_insights.refresh_facts_limit},
     )
     facts_count_row = await database.database.fetch_one(
         "SELECT COUNT(*) AS count FROM entity_facts WHERE entity_id = :entity_id",

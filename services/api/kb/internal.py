@@ -8,13 +8,13 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-import config_loader
 import database
 import entity_insights
 import index_structure
 import jobs
 import object_nodes
-import prompt_loader
+from settings import settings
+from prompts import prompts
 from auth import require_auth, require_auth_or_service_token
 from kb.common import USER_DATA_DIR, USER_ID, _is_visible_edge, _vector_literal
 from kb.retrieval import _embed_text, claude_client
@@ -26,11 +26,11 @@ router = APIRouter(prefix="/api/kb", tags=["KB Internal"])
 
 
 def _current_embedding_model() -> str:
-    return config_loader.get("embedding.model", "text-embedding-3-small")
+    return settings.embedding.model
 
 
 def _default_doc_kind() -> str:
-    return config_loader.get("doc_kind.default", "other")
+    return settings.doc_kind.default
 
 def _make_node_id(
     object_type: str,
@@ -183,16 +183,14 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
         if s_row and s_row["default_doc_kind"]:
             doc_kind = s_row["default_doc_kind"]
     if not doc_kind:
-        doc_kind = config_loader.get("doc_kind.default", "other")
+        doc_kind = settings.doc_kind.default
     # 仅接受合法枚举；非法值降级为 default 而非 400（ingestion 不应被 prompt 噪声打断）
-    allowed_kinds = set(config_loader.get("doc_kind.values", []) or [])
+    allowed_kinds = set(settings.doc_kind.values)
     if allowed_kinds and doc_kind not in allowed_kinds:
-        doc_kind = config_loader.get("doc_kind.default", "other")
+        doc_kind = settings.doc_kind.default
 
     # embedding_model：显式 > 当前 config 中的默认（记录当时所用模型，便于将来 drift 检测）
-    embedding_model = body.embedding_model or config_loader.get(
-        "embedding.model", "text-embedding-3-small"
-    )
+    embedding_model = body.embedding_model or settings.embedding.model
     if body.object_type == "summary":
         perspective_label, perspective_instruction, is_default = _summary_perspective(
             body.perspective_label,
@@ -286,8 +284,8 @@ async def ingest(body: IngestRequest, background_tasks: BackgroundTasks):
 
 async def build_similar_edges(node_id: str, user_id: str):
     """找 cosine 相似度超过阈值的节点，建 similar_to 边。"""
-    limit = config_loader.get("retrieval.similar_to_limit", 20)
-    threshold = config_loader.get("retrieval.similar_to_threshold", 0.75)
+    limit = settings.retrieval.similar_to_limit
+    threshold = settings.retrieval.similar_to_threshold
     async with database.database.connection() as conn:
         raw = await conn.raw_connection.fetch(
             f"""
@@ -416,13 +414,13 @@ async def _hyde_embed_query(text: str) -> list[float]:
     knowledge-base abstract for the topic, then embeds that instead of the raw query.
     Falls back to direct embedding on any error.
     """
-    if not config_loader.get("retrieval.use_hyde", True):
+    if not settings.retrieval.use_hyde:
         return await _embed_query(text)
     try:
         hypo = await claude_client.messages.create(
-            model=config_loader.get("models.hyde_abstract", "claude-haiku-4-5-20251001"),
-            max_tokens=config_loader.get("llm_output_tokens.hyde_abstract", 200),
-            messages=[{"role": "user", "content": prompt_loader.fill("hyde_abstract", topic=text)}],
+            model=settings.models.hyde_abstract,
+            max_tokens=settings.llm_output_tokens.hyde_abstract,
+            messages=[{"role": "user", "content": prompts.hyde_abstract(topic=text)}],
         )
         hypo_text = getattr(hypo.content[0], "text", "").strip()
         if hypo_text:
@@ -670,7 +668,7 @@ async def create_index(body: CreateIndexRequest, background_tasks: BackgroundTas
         raise HTTPException(400, "title 不能为空")
     description = (body.description or "").strip()
     doc_kind = body.doc_kind or _default_doc_kind()
-    allowed = set(config_loader.get("doc_kind.values", []) or [])
+    allowed = set(settings.doc_kind.values)
     if allowed and doc_kind not in allowed:
         raise HTTPException(400, f"无效的 doc_kind；可选值：{', '.join(sorted(allowed))}")
     embedding_model = _current_embedding_model()
@@ -827,7 +825,7 @@ async def rollup_index(index_id: str, _: dict = Depends(require_auth)):
         {"index_id": index_id, "only_stale": False},
         user_id=USER_ID,
         provider="anthropic",
-        model=config_loader.get("models.index_summary", "claude-haiku-4-5-20251001"),
+        model=settings.models.index_summary,
         priority=10,
         idempotency_key=f"aggregate_index_abstract:{USER_ID}:{index_id}",
     )
@@ -862,8 +860,7 @@ async def generate_summary_job(
     prompt_perspective_instruction = (
         f"\n\n请从以下视角撰写摘要：{perspective_instruction}" if not is_default else ""
     )
-    prompt = prompt_loader.fill(
-        "summary_gen",
+    prompt = prompts.summary_gen(
         title=source["title"] or node_id,
         abstract=source["abstract"] or "",
         body=(source["abstract"] or "")[:3000],
@@ -871,8 +868,8 @@ async def generate_summary_job(
     )
 
     message = await claude_client.messages.create(
-        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
-        max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+        model=settings.models.summary_gen,
+        max_tokens=settings.llm_output_tokens.summary_gen,
         messages=[{"role": "user", "content": prompt}],
     )
     summary_content = getattr(message.content[0], "text", "").strip()
@@ -969,7 +966,7 @@ async def create_summary(
         },
         user_id=user_id,
         provider="anthropic",
-        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        model=settings.models.summary_gen,
         priority=5,
         idempotency_key=key,
     )
@@ -1029,8 +1026,8 @@ async def revise_summary_job(
         "- 使用 3-6 句中文，纯文本输出，不含标题行或 Markdown 格式"
     )
     message = await claude_client.messages.create(
-        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
-        max_tokens=config_loader.get("llm_output_tokens.summary_gen", 1024),
+        model=settings.models.summary_gen,
+        max_tokens=settings.llm_output_tokens.summary_gen,
         messages=[{"role": "user", "content": prompt}],
     )
     revised_content = getattr(message.content[0], "text", "").strip()
@@ -1133,7 +1130,7 @@ async def revise_summary(
         },
         user_id=user_id,
         provider="anthropic",
-        model=config_loader.get("models.summary_gen", "claude-haiku-4-5-20251001"),
+        model=settings.models.summary_gen,
         priority=5,
     )
     return {"status": job["status"], "job_id": job["id"], "job": job}
@@ -1237,7 +1234,7 @@ async def update_node_metadata(
         raise HTTPException(404, "节点不存在")
 
     if body.doc_kind is not None:
-        allowed = config_loader.get("doc_kind.values", [])
+        allowed = settings.doc_kind.values
         if body.doc_kind not in allowed:
             raise HTTPException(400, f"无效的 doc_kind；可选值：{', '.join(allowed)}")
 
@@ -1537,9 +1534,9 @@ async def entity_analyze_context(body: dict):
         return {"nearby_entities": [], "top_candidates": [], "popular_tags": []}
 
     embedding_literal = "[" + ",".join(repr(x) for x in embedding) + "]"
-    nearby_limit = config_loader.get("ingestion.context_nearby_entities", 20)
-    candidate_limit = config_loader.get("ingestion.context_top_candidates", 20)
-    tags_limit = config_loader.get("ingestion.context_popular_tags", 50)
+    nearby_limit = settings.ingestion.context_nearby_entities
+    candidate_limit = settings.ingestion.context_top_candidates
+    tags_limit = settings.ingestion.context_popular_tags
 
     async with database.database.connection() as conn:
         entity_rows = await conn.raw_connection.fetch(
@@ -1702,10 +1699,10 @@ async def process_entity_candidates(body: ProcessCandidatesRequest):
         source_article_ids = list(cand_row["source_article_ids"] or [])
 
         should_promote = (
-            max_salience >= config_loader.get("entity.promotion_max_salience", 0.9)
-            or (max_salience >= config_loader.get("entity.promotion_salience", 0.7)
-                and mention_count >= config_loader.get("entity.promotion_salience_mentions", 2))
-            or mention_count >= config_loader.get("entity.promotion_min_mentions", 3)
+            max_salience >= settings.entity.promotion_max_salience
+            or (max_salience >= settings.entity.promotion_salience
+                and mention_count >= settings.entity.promotion_salience_mentions)
+            or mention_count >= settings.entity.promotion_min_mentions
         )
         if should_promote:
             cand_aliases = list(cand_row["aliases"]) if cand_row["aliases"] else []

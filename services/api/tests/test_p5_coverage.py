@@ -17,7 +17,7 @@ class CitationPromptBodyTests(unittest.TestCase):
     """Unit tests for the excerpt-selection helper used in Stage 1 of /cite."""
 
     def setUp(self):
-        # kb.public can't be imported in test environment (prompt_loader reads a file at import
+        # kb.public can't be imported in test environment (prompts reads a file at import
         # time). Extract just the pure function + its regex dependency via exec instead.
         import ast as _ast
         source = PUBLIC_API.read_text(encoding="utf-8")

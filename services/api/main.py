@@ -7,9 +7,8 @@ from pydantic import BaseModel
 
 import database
 from auth import create_token, require_auth, verify_password
-import config_loader
-import prompt_loader
-from app import briefing, drafts, settings
+from settings import settings
+from app import briefing, drafts, settings as user_settings_module
 from kb import internal as kb_internal
 from kb import public as kb_public
 from routers import files, sources
@@ -19,8 +18,6 @@ AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config_loader.validate_required_keys()
-    prompt_loader.validate_required_prompts()
     await database.init()
     yield
     await database.database.disconnect()
@@ -40,7 +37,7 @@ app.include_router(sources.router)
 app.include_router(kb_internal.router)
 app.include_router(files.router)
 app.include_router(briefing.router)
-app.include_router(settings.router)
+app.include_router(user_settings_module.router)
 app.include_router(drafts.router)
 
 # KB Public — MCP 稳定接口子应用。挂在 /api/kb/v1/，
@@ -93,6 +90,6 @@ async def health():
 async def get_doc_kind_config():
     """UI 下拉枚举源——前端不允许自由文本，所有 doc_kind 输入处都拉取此端点。"""
     return {
-        "values": config_loader.get("doc_kind.values", []) or [],
-        "default": config_loader.get("doc_kind.default", "other"),
+        "values": settings.doc_kind.values,
+        "default": settings.doc_kind.default,
     }

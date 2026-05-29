@@ -19,9 +19,9 @@ from pathlib import Path
 import anthropic
 from PIL import Image
 
-import config_loader
-import prompt_loader
 from sources.base import RawItem
+from settings import settings
+from prompts import prompts
 from sources.file_base import FileSourceMixin
 
 _MEDIA_TYPES = {
@@ -63,12 +63,12 @@ def _image_to_b64(img: Image.Image, media_type: str) -> str:
 
 
 def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
-    prompt = prompt_loader.get("image_ocr")
+    prompt = prompts.image_ocr()
     if tile_info:
         prompt += f"（{tile_info}）"
     msg = _claude.messages.create(
-        model=config_loader.get("models.image_ocr", "claude-sonnet-4-6"),
-        max_tokens=config_loader.get("llm_output_tokens.image_ocr", 4096),
+        model=settings.models.image_ocr,
+        max_tokens=settings.llm_output_tokens.image_ocr,
         messages=[{
             "role": "user",
             "content": [
@@ -83,11 +83,11 @@ def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
 def _cleanup(raw_text: str) -> str:
     """第二步：用 LLM 清洗 OCR 原文，去除界面噪音，保留正文。"""
     msg = _claude.messages.create(
-        model=config_loader.get("models.image_cleanup", "claude-sonnet-4-6"),
-        max_tokens=config_loader.get("llm_output_tokens.image_cleanup", 4096),
+        model=settings.models.image_cleanup,
+        max_tokens=settings.llm_output_tokens.image_cleanup,
         messages=[{
             "role": "user",
-            "content": f"{prompt_loader.get('image_cleanup')}\n\n---\n\n{raw_text}",
+            "content": f"{prompts.image_cleanup()}\n\n---\n\n{raw_text}",
         }],
     )
     return getattr(msg.content[0], "text", "").strip() if msg.content else ""

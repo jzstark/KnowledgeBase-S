@@ -2,8 +2,8 @@ import asyncio
 import json
 from datetime import datetime
 
-import config_loader
 import database
+from settings import settings
 from kb.common import USER_ID
 from kb.retrieval import embed_query
 
@@ -132,18 +132,18 @@ async def layered_retrieval(
     exclude_ids: list[str],
     user_id: str = USER_ID,
 ) -> dict[str, list[dict]]:
-    summary_top_k = config_loader.get("retrieval.summary_top_k", 5)
-    entity_top_k = config_loader.get("retrieval.entity_top_k", 10)
-    article_direct_top_k = config_loader.get("retrieval.article_direct_top_k", 8)
-    article_top_k = config_loader.get("retrieval.article_top_k", 8)
-    entity_in_context = config_loader.get("retrieval.entity_in_context", 5)
-    damping_e2s = config_loader.get("retrieval.damping_entity_to_summary", 0.7)
-    damping_hop = config_loader.get("retrieval.damping_hop", 0.3)
-    expansion_anchor_k = config_loader.get("retrieval.expansion_anchor_k", 5)
-    expansion_min_score = config_loader.get("retrieval.expansion_min_score", 0.3)
-    index_expand_thr = config_loader.get("retrieval.index_expand_threshold", 0.4)
-    index_expand_limit = config_loader.get("retrieval.index_expand_limit", 3)
-    fallback_discount = config_loader.get("retrieval.fallback_score_discount", 0.5)
+    summary_top_k = settings.retrieval.summary_top_k
+    entity_top_k = settings.retrieval.entity_top_k
+    article_direct_top_k = settings.retrieval.article_direct_top_k
+    article_top_k = settings.retrieval.article_top_k
+    entity_in_context = settings.retrieval.entity_in_context
+    damping_e2s = settings.retrieval.damping_entity_to_summary
+    damping_hop = settings.retrieval.damping_hop
+    expansion_anchor_k = settings.retrieval.expansion_anchor_k
+    expansion_min_score = settings.retrieval.expansion_min_score
+    index_expand_thr = settings.retrieval.index_expand_threshold
+    index_expand_limit = settings.retrieval.index_expand_limit
+    fallback_discount = settings.retrieval.fallback_score_discount
 
     q_vec = await embed_query(query)
     emb_lit = "[" + ",".join(repr(x) for x in q_vec) + "]"

@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from pydantic import BaseModel
 
-import config_loader
 import database
+from settings import settings
 from auth import require_auth
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -45,7 +45,7 @@ def _validate_doc_kind(value: str | None) -> str | None:
     """对外接口的 doc_kind 校验：必须在 config 枚举内，否则 400。"""
     if value is None or value == "":
         return None
-    allowed = set(config_loader.get("doc_kind.values", []) or [])
+    allowed = set(settings.doc_kind.values)
     if allowed and value not in allowed:
         raise HTTPException(400, f"invalid doc_kind '{value}'; allowed: {sorted(allowed)}")
     return value
