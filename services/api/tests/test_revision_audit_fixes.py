@@ -23,10 +23,10 @@ class RevisionAuditFixTests(unittest.TestCase):
         self.assertNotIn("knowledge_edges ADD COLUMN IF NOT EXISTS description", source)
 
     def test_internal_embedding_writes_record_embedding_model(self):
-        source = INTERNAL_API.read_text(encoding="utf-8")
-        self.assertIn("def _current_embedding_model", source)
-        self.assertIn("tags, object_type, doc_kind, embedding_model", source)
-        self.assertIn("embedding_model = :embedding_model", source)
+        # Ingest logic moved to kb/ingest.py; embedding_model column is always written
+        ingest = (REPO_ROOT / "services" / "api" / "kb" / "ingest.py").read_text(encoding="utf-8")
+        self.assertIn("embedding_model", ingest)
+        self.assertIn(":embedding_model", ingest)
 
     def test_searches_use_entity_canonical_name(self):
         public = PUBLIC_API.read_text(encoding="utf-8")

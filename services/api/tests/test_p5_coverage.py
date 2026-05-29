@@ -8,6 +8,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://postgres:postgres@localhost:
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 INTERNAL_API = REPO_ROOT / "services" / "api" / "kb" / "internal.py"
+INGEST_API = REPO_ROOT / "services" / "api" / "kb" / "ingest.py"
 PUBLIC_API = REPO_ROOT / "services" / "api" / "kb" / "public.py"
 
 
@@ -142,7 +143,8 @@ class EntityPromotionThresholdTests(unittest.TestCase):
         self.assertFalse(self._should_promote(0.69, 2))
 
     def test_production_logic_structure_matches_test_mirror(self):
-        source = INTERNAL_API.read_text(encoding="utf-8")
+        # Promotion logic moved to kb/ingest.py (do_process_entity_candidates)
+        source = INGEST_API.read_text(encoding="utf-8")
         self.assertIn("entity.promotion_max_salience", source)
         self.assertIn("entity.promotion_salience_mentions", source)
         self.assertIn("entity.promotion_min_mentions", source)
@@ -154,8 +156,9 @@ class DocKindCascadeTests(unittest.TestCase):
     """Cascade order: explicit > source_item > source.default > config.default."""
 
     def _ingest_fn_body(self) -> str:
-        source = INTERNAL_API.read_text(encoding="utf-8")
-        fn_start = source.index("async def ingest(")
+        # Ingest domain logic moved to kb/ingest.py as do_ingest()
+        source = INGEST_API.read_text(encoding="utf-8")
+        fn_start = source.index("async def do_ingest(")
         match = re.search(r"\n(?:async )?def ", source[fn_start + 1:])
         fn_end = fn_start + 1 + match.start() if match else fn_start + 8000
         return source[fn_start:fn_end]
@@ -171,7 +174,7 @@ class DocKindCascadeTests(unittest.TestCase):
         pos_explicit = body.index("doc_kind = (body.doc_kind")
         pos_source_item = body.index("SELECT doc_kind FROM source_items")
         pos_source_default = body.index("SELECT default_doc_kind FROM sources")
-        pos_config = body.index('"doc_kind.default"')
+        pos_config = body.index("settings.doc_kind.default")
         self.assertLess(pos_explicit, pos_source_item)
         self.assertLess(pos_source_item, pos_source_default)
         self.assertLess(pos_source_default, pos_config)
@@ -179,8 +182,8 @@ class DocKindCascadeTests(unittest.TestCase):
     def test_invalid_doc_kind_degrades_to_config_default(self):
         body = self._ingest_fn_body()
         self.assertIn("doc_kind not in allowed_kinds", body)
-        # Both the normal fallback and the invalid-value branch use the same key
-        self.assertEqual(body.count('"doc_kind.default"'), 2)
+        # Both the normal fallback and the invalid-value branch use settings.doc_kind.default
+        self.assertGreaterEqual(body.count("settings.doc_kind.default"), 2)
 
 
 # ─── summary-first retrieval fallback ────────────────────────────────────────

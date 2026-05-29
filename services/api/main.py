@@ -9,8 +9,12 @@ import database
 from auth import create_token, require_auth, verify_password
 from settings import settings
 from app import briefing, drafts, settings as user_settings_module
+from kb import entity as kb_entity
+from kb import index_ops as kb_index_ops
+from kb import ingest as kb_ingest
 from kb import internal as kb_internal
 from kb import public as kb_public
+from kb import summary as kb_summary
 from routers import files, sources
 
 AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
@@ -34,6 +38,10 @@ app.add_middleware(
 )
 
 app.include_router(sources.router)
+app.include_router(kb_ingest.router)
+app.include_router(kb_summary.router)
+app.include_router(kb_index_ops.router)
+app.include_router(kb_entity.router)
 app.include_router(kb_internal.router)
 app.include_router(files.router)
 app.include_router(briefing.router)

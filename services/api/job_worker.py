@@ -15,18 +15,18 @@ async def run_job(job: dict) -> dict:
     user_id = job["user_id"]
 
     if job_type == "generate_summary":
-        from kb import internal as kb
+        from kb.summary import generate_summary_job
 
-        return await kb.generate_summary_job(
+        return await generate_summary_job(
             payload["node_id"],
             payload.get("perspective_label"),
             payload.get("perspective_instruction"),
             user_id,
         )
     if job_type == "revise_summary":
-        from kb import internal as kb
+        from kb.summary import revise_summary_job
 
-        return await kb.revise_summary_job(
+        return await revise_summary_job(
             payload["node_id"],
             payload["instruction"],
             payload.get("perspective_label"),
