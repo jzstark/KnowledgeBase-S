@@ -349,6 +349,22 @@ async def post_ingest(payload: dict) -> str:
         return resp.json()["id"]
 
 
+async def refresh_stale_entities() -> None:
+    """Pipeline 结束后调用，触发 API 批量刷新 abstract_stale=true 的 entity。"""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                f"{API_BASE_URL}/api/kb/entities/refresh_stale",
+                timeout=300,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("stale_found", 0) > 0:
+                logger.info("[entity-refresh] %s", result)
+        except Exception as exc:
+            logger.warning("[entity-refresh] failed: %s", exc)
+
+
 async def _post_ingest_full(payload: dict) -> dict:
     """Like post_ingest but returns the full response dict (includes 'duplicate' flag)."""
     async with httpx.AsyncClient() as client:
@@ -627,6 +643,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
+    await refresh_stale_entities()
 
 
 async def run_book_pipeline(source, source_config: dict):
@@ -769,3 +786,4 @@ async def run_book_pipeline(source, source_config: dict):
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] book pipeline done")
+    await refresh_stale_entities()

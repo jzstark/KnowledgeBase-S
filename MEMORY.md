@@ -55,7 +55,7 @@ ingested_at, published_at, created_at, updated_at
 |---|---|
 | article_nodes | source_item_id, raw_ref JSONB, source_type, 原始时间四列, status(active\|archived) |
 | summary_nodes | summary_of FK（取代 summarizes 边）, perspective_*, body TEXT, body_embedding, is_default |
-| entity_nodes | canonical_name, aliases TEXT[], entity_type, merged_into FK |
+| entity_nodes | canonical_name, aliases TEXT[], entity_type, merged_into FK, **abstract_stale BOOLEAN** |
 | index_nodes | description, rollup_instruction, abstract_stale BOOLEAN |
 
 ### 关系层
@@ -135,6 +135,7 @@ source type：rss | url | wechat | pdf | image | plaintext | word | epub
 - `POST /kb/entity_candidates/process` — upsert 候选，返回晋升列表
 - `POST /kb/entity_candidates/{id}/mark_promoted`
 - `POST /kb/entities/{id}/backfill_wikilinks`
+- `POST /kb/entities/refresh_stale` — 批量 LLM 刷新 abstract_stale=true 的 entity（ingestion-worker 每轮 pipeline 结束后调用）
 
 **节点/图谱**：`GET /kb/search`，`GET /kb/node/{id}`，`GET /kb/nodes`，`GET /kb/graph`
 
@@ -218,12 +219,19 @@ Phase 5: 兜底（分数 × 0.5 折扣）
    → {abstract, tags[], entities[{canonical_name, salience, matches_existing_id}]}
 4. process_entity_candidates(article_id, entities)：
    - 有 matches_existing_id → INSERT mentions edge + upsert entity_fact
+                            → entity_nodes.abstract_stale = true
    - 无 → UPSERT entity_candidates(mention_count+1, max_salience=GREATEST, source_article_ids+=)
    - 检查晋升：max_salience >= 0.9
                 OR (max_salience >= 0.7 AND mention_count >= 2)
                 OR mention_count >= 3
 5. 晋升 → ingestion-worker 生成 entity_page（LLM）→ post_ingest entity → backfill_wikilinks
 ```
+
+### Entity Abstract 持续更新
+新 mention → `entity_nodes.abstract_stale = true`；merge → target 置 stale。
+每轮 ingestion pipeline 结束后 ingestion-worker 调 `POST /api/kb/entities/refresh_stale`，
+每批最多 `entity_update_batch`（默认 10）个 entity 用 `entity_update` prompt + Claude Haiku 重写 abstract 并重算 embedding。
+实现：`kb/graph.py:lm_refresh_entity_abstract()` + `refresh_stale_entity_abstracts()`。
 
 ### Tag 收敛机制
 入库分析时，top-50 常用 tags 注入 `article_analysis` prompt `<<<existing_tags>>>`，引导 Claude 优先复用已有 tags，只在真正新主题时创造新词。
@@ -245,6 +253,8 @@ run_pipeline（标准文章）：
     source.extract_text(item) → text
     doc_kind cascade：source_item["doc_kind"] or source_config["default_doc_kind"] or settings.doc_kind.default
     process_article_like_item(ArticleIngestionInput, adapters)
+  → update_last_fetched
+  → refresh_stale_entities()   ← 调 POST /api/kb/entities/refresh_stale
 
 process_article_like_item：
   embed → analyze_context → LLM article_analysis
@@ -255,6 +265,7 @@ process_article_like_item：
 run_book_pipeline（EPUB/MOBI）：
   extract_chapters → post_ingest(index_node)
   → 对每章 process_article_like_item(use_entity_context=False)
+  → refresh_stale_entities()
 ```
 
 `write_wiki_article` 写 frontmatter（含 doc_kind），`restore_from_wiki` 读取重建 DB。
@@ -296,4 +307,3 @@ API 和 ingestion-worker 各有独立 `settings.py`（frozen dataclass），用 
 | `POST /api/kb/nodes/{id}/summaries`（§7 规范路径） | 实际为 `/create_summary`，功能可用 |
 | Source 删除 cascade 选项（同时删 N 篇文章） | 未实现 |
 | Source 管理页显示已停用 source | 后端支持 `?include_deleted=true`，前端未接 |
-| entity abstract 自动批量更新 | 只有手动 `/entities/{id}/regenerate` |

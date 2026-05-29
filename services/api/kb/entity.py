@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import database
-from kb.graph import refresh_entity_profile
+from kb.graph import lm_refresh_entity_abstract, refresh_stale_entity_abstracts
 from auth import require_auth
 from kb.common import USER_ID
 from kb.wiki import _wiki_file_path
@@ -128,6 +128,10 @@ async def do_merge_entities(source_id: str, target_id: str) -> None:
     await database.database.execute(
         "UPDATE entity_nodes SET merged_into = :target WHERE node_id = :source",
         {"source": source_id, "target": target_id},
+    )
+    await database.database.execute(
+        "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() WHERE node_id = :target",
+        {"target": target_id},
     )
 
 
@@ -255,8 +259,8 @@ async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=1
 
 @router.post("/entities/{entity_id}/regenerate")
 async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_auth)):
-    result = await refresh_entity_profile(entity_id)
-    if not result.get("refreshed"):
+    result = await lm_refresh_entity_abstract(entity_id)
+    if result.get("reason") == "not_found":
         raise HTTPException(404, "entity 不存在")
     return result
 
@@ -290,6 +294,13 @@ async def delete_entity(entity_id: str, _: dict = Depends(require_auth)):
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {"ok": True}
+
+
+@router.post("/entities/refresh_stale")
+async def trigger_refresh_stale_entities():
+    """由 ingestion-worker 在每轮 pipeline 结束后调用，批量刷新 abstract_stale=true 的 entity。"""
+    result = await refresh_stale_entity_abstracts()
+    return result
 
 
 @router.get("/entity_candidates")

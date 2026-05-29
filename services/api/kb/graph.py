@@ -24,17 +24,23 @@ Public surface:
     upsert_entity_fact(entity_id, article_id, fact_text, ...)
     upsert_fact_from_mention(entity_id, article_id, ...)
     backfill_entity_facts_from_mentions(user_id)
-    refresh_entity_profile(entity_id)
+    refresh_entity_profile(entity_id)          -- 确定性拼接，无 LLM（保留用于兜底）
+    lm_refresh_entity_abstract(entity_id)      -- LLM 更新 abstract + embedding
+    refresh_stale_entity_abstracts(user_id)    -- 批量刷新 abstract_stale=true 的 entity
     rebuild_entity_pair_signals(user_id)
 """
 from __future__ import annotations
 
 import json
+import logging
 import math
 from typing import Any
 
 import database
+from prompts import prompts
 from settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -658,6 +664,116 @@ async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
         {"abstract": new_abstract, "entity_id": entity_id},
     )
     return {"entity_id": entity_id, "refreshed": True, "facts_count": facts_count}
+
+
+async def lm_refresh_entity_abstract(entity_id: str) -> dict[str, Any]:
+    """用 LLM 更新 entity abstract，同时重算 embedding。abstract_stale 置 false。"""
+    from kb.retrieval import claude_client, embed_text
+    from kb.common import vector_literal
+
+    entity = await database.database.fetch_one(
+        """
+        SELECT n.id, COALESCE(en.canonical_name, n.title) AS canonical_name,
+               en.aliases, n.abstract
+        FROM knowledge_nodes n
+        JOIN entity_nodes en ON en.node_id = n.id
+        WHERE n.id = :id AND n.object_type = 'entity'
+        """,
+        {"id": entity_id},
+    )
+    if not entity:
+        return {"entity_id": entity_id, "refreshed": False, "reason": "not_found"}
+
+    articles = await database.database.fetch_all(
+        """
+        SELECT n.title, n.abstract
+        FROM knowledge_edges ke
+        JOIN knowledge_nodes n ON n.id = ke.from_node_id
+        WHERE ke.to_node_id = :entity_id
+          AND ke.relation_type = 'mentions'
+          AND n.object_type = 'article'
+          AND n.abstract IS NOT NULL AND n.abstract != ''
+        ORDER BY n.published_at DESC NULLS LAST
+        LIMIT :limit
+        """,
+        {"entity_id": entity_id, "limit": settings.ingestion.max_entity_page_sources},
+    )
+    if not articles:
+        await database.database.execute(
+            "UPDATE entity_nodes SET abstract_stale = false, updated_at = NOW() WHERE node_id = :id",
+            {"id": entity_id},
+        )
+        return {"entity_id": entity_id, "refreshed": False, "reason": "no_mentions"}
+
+    source_abstracts = "\n\n".join(
+        f"《{a['title'] or entity_id}》: {a['abstract']}" for a in articles
+    )
+    existing_body = entity["abstract"] or ""
+
+    message = await claude_client.messages.create(
+        model=settings.models.entity_update,
+        max_tokens=settings.llm_output_tokens.entity_update,
+        messages=[{"role": "user", "content": prompts.entity_update(
+            entity_name=entity["canonical_name"],
+            existing_body=existing_body,
+            new_source_abstracts=source_abstracts,
+        )}],
+    )
+    new_abstract = getattr(message.content[0], "text", "").strip()
+    if not new_abstract:
+        return {"entity_id": entity_id, "refreshed": False, "reason": "empty_response"}
+
+    new_embedding = await embed_text(new_abstract)
+    embedding_literal = vector_literal(new_embedding)
+
+    await database.database.execute(
+        f"""
+        UPDATE knowledge_nodes
+        SET abstract = :abstract,
+            embedding = '{embedding_literal}'::vector,
+            embedding_model = :model,
+            updated_at = NOW()
+        WHERE id = :id
+        """,
+        {"abstract": new_abstract, "model": settings.embedding.model, "id": entity_id},
+    )
+    await database.database.execute(
+        "UPDATE entity_nodes SET abstract_stale = false, updated_at = NOW() WHERE node_id = :id",
+        {"id": entity_id},
+    )
+    return {"entity_id": entity_id, "refreshed": True}
+
+
+async def refresh_stale_entity_abstracts(
+    user_id: str = "default",
+    batch_size: int | None = None,
+) -> dict[str, int]:
+    """批量 LLM 刷新 abstract_stale=true 的 entity，每次处理 entity_update_batch 个。"""
+    limit = batch_size or settings.maintenance.entity_update_batch
+    rows = await database.database.fetch_all(
+        """
+        SELECT en.node_id
+        FROM entity_nodes en
+        JOIN knowledge_nodes n ON n.id = en.node_id
+        WHERE n.user_id = :user_id
+          AND en.abstract_stale = true
+          AND en.merged_into IS NULL
+        ORDER BY n.updated_at ASC
+        LIMIT :limit
+        """,
+        {"user_id": user_id, "limit": limit},
+    )
+    refreshed = 0
+    failed = 0
+    for row in rows:
+        try:
+            result = await lm_refresh_entity_abstract(row["node_id"])
+            if result.get("refreshed"):
+                refreshed += 1
+        except Exception as exc:
+            logger.warning("[entity-refresh] %s failed: %s", row["node_id"], exc)
+            failed += 1
+    return {"stale_found": len(rows), "refreshed": refreshed, "failed": failed}
 
 
 async def rebuild_entity_pair_signals(user_id: str = "default") -> dict[str, int]:

@@ -413,6 +413,10 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
                 salience=ent.salience,
                 user_id=USER_ID,
             )
+            await database.database.execute(
+                "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() WHERE node_id = :id",
+                {"id": ent.matches_existing_entity_id},
+            )
             matched_existing.append(ent.matches_existing_entity_id)
             continue
 

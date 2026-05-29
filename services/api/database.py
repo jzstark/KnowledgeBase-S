@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS entity_nodes (
     aliases TEXT[] DEFAULT '{}',
     entity_type VARCHAR,
     merged_into VARCHAR REFERENCES knowledge_nodes(id),
+    abstract_stale BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -338,6 +339,7 @@ ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS canonical_name TEXT;
 ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
 ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS entity_type VARCHAR;
 ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS merged_into VARCHAR;
+ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS abstract_stale BOOLEAN DEFAULT false;
 ALTER TABLE IF EXISTS entity_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE IF EXISTS index_nodes ADD COLUMN IF NOT EXISTS rollup_instruction TEXT;
@@ -678,4 +680,26 @@ async def init():
         await database.execute(
             "ALTER TABLE knowledge_edges ADD CONSTRAINT uq_edges_from_to_type "
             "UNIQUE (from_node_id, to_node_id, relation_type)"
+        )
+
+    # entity_nodes.abstract_stale 迁移：标记所有有 mentions 边的存量 entity 为 stale，
+    # 以便 ingestion-worker 在下次 pipeline 后触发首次 LLM 摘要更新。
+    has_entity_stale_col = await database.fetch_one(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='entity_nodes' AND column_name='abstract_stale'"
+    )
+    if not has_entity_stale_col:
+        await database.execute(
+            "ALTER TABLE entity_nodes ADD COLUMN abstract_stale BOOLEAN DEFAULT false"
+        )
+        await database.execute(
+            """
+            UPDATE entity_nodes SET abstract_stale = true
+            WHERE merged_into IS NULL
+              AND EXISTS (
+                SELECT 1 FROM knowledge_edges ke
+                WHERE ke.to_node_id = entity_nodes.node_id
+                  AND ke.relation_type = 'mentions'
+              )
+            """
         )
