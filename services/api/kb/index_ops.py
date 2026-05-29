@@ -23,9 +23,18 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 import database
-import index_structure
 import jobs
-import object_nodes
+from kb.graph import (
+    add_child,
+    fetch_node_with_object_fields,
+    get_ancestors,
+    get_children,
+    get_descendants,
+    get_parents,
+    remove_child,
+    reorder_children,
+    upsert_object_node,
+)
 from settings import settings
 from auth import require_auth
 from kb.common import USER_ID
@@ -76,7 +85,7 @@ def _serialize_index_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _get_index_or_404(index_id: str) -> dict[str, Any]:
-    node = await object_nodes.fetch_node_with_object_fields(index_id)
+    node = await fetch_node_with_object_fields(index_id)
     if not node or node.get("object_type") != "index":
         raise HTTPException(404, "index 不存在")
     node.pop("embedding", None)
@@ -125,7 +134,7 @@ async def do_create_index(body: CreateIndexRequest) -> str:
             "embedding_model": settings.embedding.model,
         },
     )
-    await object_nodes.upsert_object_node(
+    await upsert_object_node(
         index_id,
         "index",
         {
@@ -160,7 +169,7 @@ async def do_update_index(index_id: str, body: UpdateIndexRequest) -> None:
         """,
         {"id": index_id, "user_id": USER_ID, "title": title, "description": description or "", "tags": tags},
     )
-    await object_nodes.upsert_object_node(
+    await upsert_object_node(
         index_id,
         "index",
         {
@@ -203,13 +212,13 @@ async def update_index(index_id: str, body: UpdateIndexRequest, background_tasks
 @router.get("/indices/{index_id}/children")
 async def get_index_children(index_id: str):
     await _get_index_or_404(index_id)
-    return {"children": _serialize_index_rows(await index_structure.get_children(index_id, USER_ID))}
+    return {"children": _serialize_index_rows(await get_children(index_id, USER_ID))}
 
 
 @router.post("/indices/{index_id}/children")
 async def add_index_child(index_id: str, body: AddIndexChildRequest, background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
     try:
-        child = await index_structure.add_child(
+        child = await add_child(
             index_id, body.child_id, user_id=USER_ID, position=body.position, child_role=body.child_role,
         )
     except ValueError as e:
@@ -221,7 +230,7 @@ async def add_index_child(index_id: str, body: AddIndexChildRequest, background_
 @router.delete("/indices/{index_id}/children/{child_id}")
 async def remove_index_child(index_id: str, child_id: str, background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
     try:
-        deleted = await index_structure.remove_child(index_id, child_id, USER_ID)
+        deleted = await remove_child(index_id, child_id, USER_ID)
     except ValueError as e:
         raise HTTPException(404, str(e))
     background_tasks.add_task(write_wiki_node, index_id, USER_ID)
@@ -231,27 +240,27 @@ async def remove_index_child(index_id: str, child_id: str, background_tasks: Bac
 @router.patch("/indices/{index_id}/children/order")
 async def reorder_index_children(index_id: str, body: ReorderIndexChildrenRequest, background_tasks: BackgroundTasks, _: dict = Depends(require_auth)):
     try:
-        await index_structure.reorder_children(index_id, body.child_ids, USER_ID)
+        await reorder_children(index_id, body.child_ids, USER_ID)
     except ValueError as e:
         raise HTTPException(400, str(e))
     background_tasks.add_task(write_wiki_node, index_id, USER_ID)
-    return {"ok": True, "children": _serialize_index_rows(await index_structure.get_children(index_id, USER_ID))}
+    return {"ok": True, "children": _serialize_index_rows(await get_children(index_id, USER_ID))}
 
 
 @router.get("/objects/{object_id}/parents")
 async def get_object_parents(object_id: str):
-    return {"parents": _serialize_index_rows(await index_structure.get_parents(object_id, USER_ID))}
+    return {"parents": _serialize_index_rows(await get_parents(object_id, USER_ID))}
 
 
 @router.get("/objects/{object_id}/ancestors")
 async def get_object_ancestors(object_id: str):
-    return {"ancestors": _serialize_index_rows(await index_structure.get_ancestors(object_id, USER_ID))}
+    return {"ancestors": _serialize_index_rows(await get_ancestors(object_id, USER_ID))}
 
 
 @router.get("/indices/{index_id}/descendants")
 async def get_index_descendants(index_id: str):
     await _get_index_or_404(index_id)
-    return {"descendants": _serialize_index_rows(await index_structure.get_descendants(index_id, USER_ID))}
+    return {"descendants": _serialize_index_rows(await get_descendants(index_id, USER_ID))}
 
 
 @router.post("/indices/{index_id}/rollup")

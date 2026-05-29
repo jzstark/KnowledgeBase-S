@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import database
 import jobs
-import object_nodes
+from kb.graph import upsert_object_node
 from settings import settings
 from prompts import prompts
 from auth import require_auth
@@ -118,7 +118,7 @@ async def generate_summary_job(
             "embedding_model": settings.embedding.model,
         },
     )
-    await object_nodes.upsert_object_node(
+    await upsert_object_node(
         summary_id,
         "summary",
         {
@@ -231,7 +231,7 @@ async def revise_summary_job(
         """,
         {"id": node_id, "abstract": revised_content, "embedding_model": settings.embedding.model},
     )
-    await object_nodes.upsert_object_node(
+    await upsert_object_node(
         node_id,
         "summary",
         {

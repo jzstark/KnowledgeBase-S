@@ -1,7 +1,7 @@
 import json
 
 import database
-import object_nodes
+from kb.graph import fetch_node_with_object_fields
 from kb.common import USER_DATA_DIR, is_visible_edge
 
 
@@ -39,7 +39,7 @@ def read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int | No
 
 async def write_wiki_node(node_id: str, user_id: str) -> None:
     """Write one knowledge node to its wiki markdown file."""
-    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    node = await fetch_node_with_object_fields(node_id)
     if not node:
         return
 

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import database
-import entity_insights
+from kb.graph import refresh_entity_profile
 from auth import require_auth
 from kb.common import USER_ID
 from kb.wiki import _wiki_file_path
@@ -251,7 +251,7 @@ async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=1
 
 @router.post("/entities/{entity_id}/regenerate")
 async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_auth)):
-    result = await entity_insights.refresh_entity_profile(entity_id)
+    result = await refresh_entity_profile(entity_id)
     if not result.get("refreshed"):
         raise HTTPException(404, "entity 不存在")
     return result

@@ -19,11 +19,16 @@ import anthropic
 
 sys.path.insert(0, os.path.dirname(__file__))
 import database
-import entity_insights
-import index_structure
-import object_nodes
 from settings import settings
 from prompts import prompts
+from kb.graph import (
+    add_child,
+    backfill_entity_facts_from_mentions,
+    rebuild_entity_pair_signals,
+    refresh_entity_profile,
+    upsert_fact_from_mention,
+    upsert_object_node,
+)
 
 USER_ID = "default"
 CLAUDE_MODEL = settings.models.entity_page
@@ -152,14 +157,14 @@ async def promote_entity_candidates(user_id: str) -> dict:
                 {"eid": entity_node_id, "cid": row["id"]},
             )
             for article_id in source_ids:
-                await entity_insights.upsert_fact_from_mention(
+                await upsert_fact_from_mention(
                     entity_node_id,
                     article_id,
                     canonical_name=row["canonical_name"],
                     salience=max_salience or 0.5,
                     user_id=user_id,
                 )
-            await entity_insights.refresh_entity_profile(entity_node_id)
+            await refresh_entity_profile(entity_node_id)
             promoted_count += 1
         except Exception as e:
             print(f"[maintenance] failed to ingest entity {row['canonical_name']}: {e}")
@@ -257,7 +262,7 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             """,
             {"from_id": art["id"], "to_id": entity_id, "weight": salience},
         )
-        await entity_insights.upsert_fact_from_mention(
+        await upsert_fact_from_mention(
             entity_id,
             art["id"],
             canonical_name=canonical,
@@ -554,7 +559,7 @@ async def aggregate_index_abstracts(
                 "embedding_model": settings.embedding.model,
             },
         )
-        await object_nodes.upsert_object_node(
+        await upsert_object_node(
             idx_id,
             "index",
             {"abstract_stale": False},
@@ -783,7 +788,7 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
                     "embedding_model": settings.embedding.model,
                 },
             )
-            await object_nodes.upsert_object_node(
+            await upsert_object_node(
                 node_id,
                 object_type,
                 {
@@ -843,7 +848,7 @@ async def restore_from_wiki(user_id: str = USER_ID) -> dict:
             for rel in relations:
                 if isinstance(rel, dict) and rel.get("type") == "part_of" and rel.get("id"):
                     try:
-                        await index_structure.add_child(
+                        await add_child(
                             rel["id"],
                             node_id,
                             user_id=user_id,
@@ -1229,11 +1234,11 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     wikilink_result = {"entities_processed": len(entity_rows), "wikilinks_added": wikilink_total}
     print(f"[maintenance] Wikilink backfill: {wikilink_result}", flush=True)
 
-    facts_result = await entity_insights.backfill_entity_facts_from_mentions(user_id)
+    facts_result = await backfill_entity_facts_from_mentions(user_id)
     print(f"[maintenance] Entity facts backfill: {facts_result}", flush=True)
 
     # entity_profiles 表已删除；entity 描述统一回到 nodes.abstract（regenerate 端点按需更新）
-    relatedness_result = await entity_insights.rebuild_entity_pair_signals(user_id)
+    relatedness_result = await rebuild_entity_pair_signals(user_id)
     print(f"[maintenance] Entity relatedness refresh: {relatedness_result}", flush=True)
 
     orphan_result = await cleanup_orphan_entities(user_id)

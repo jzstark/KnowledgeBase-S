@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 import database
 import jobs
-import object_nodes
+from kb.graph import fetch_node_with_object_fields
 from settings import settings
 from auth import require_auth, require_auth_or_service_token
 from kb.common import USER_DATA_DIR, USER_ID, _is_visible_edge, _vector_literal
@@ -178,7 +178,7 @@ async def search(
 @router.get("/node/{node_id}")
 async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token)):
     """Fetch a single node with all its edges."""
-    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    node = await fetch_node_with_object_fields(node_id)
     if not node:
         raise HTTPException(404, "节点不存在")
 

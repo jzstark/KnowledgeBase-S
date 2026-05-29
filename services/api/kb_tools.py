@@ -9,7 +9,7 @@ import anthropic
 from openai import AsyncOpenAI
 
 import database
-import object_nodes
+from kb.graph import fetch_node_with_object_fields
 from settings import settings
 from prompts import prompts
 
@@ -340,7 +340,7 @@ async def search(query: str, filters: dict[str, Any] | None = None, user_id: str
 
 
 async def get_node(node_id: str, user_id: str = USER_ID) -> dict[str, Any]:
-    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    node = await fetch_node_with_object_fields(node_id)
     if not node or node.get("user_id") != user_id:
         return {"tool": "kb_get_node", "error": "node not found", "references": []}
     for key in ("embedding", "body_embedding", "perspective_embedding"):

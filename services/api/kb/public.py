@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import database
-import object_nodes
+from kb.graph import fetch_node_with_object_fields
 from settings import settings
 from prompts import prompts
 from auth import require_auth_or_service_token
@@ -288,7 +288,7 @@ async def _fetch_one(
     include_body: bool,
     include_related_ids: bool,
 ) -> Optional[dict[str, Any]]:
-    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    node = await fetch_node_with_object_fields(node_id)
     if not node or node.get("user_id") != USER_ID:
         return None
     for key in ("embedding", "body_embedding", "perspective_embedding"):
@@ -636,7 +636,7 @@ async def timeline(
 # ─────────────────────────────────────────────────────────────────────────
 
 async def _load_doc_context(node_id: str, body_chars: int) -> Optional[dict[str, Any]]:
-    node = await object_nodes.fetch_node_with_object_fields(node_id)
+    node = await fetch_node_with_object_fields(node_id)
     if not node or node.get("user_id") != USER_ID:
         return None
     object_type = node.get("object_type") or "article"

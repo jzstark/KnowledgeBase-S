@@ -19,10 +19,14 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 import database
-import entity_insights
-import object_nodes
 from settings import settings
 from kb.common import USER_DATA_DIR, USER_ID, _vector_literal
+from kb.graph import (
+    add_child,
+    upsert_object_node,
+    upsert_fact_from_mention,
+    refresh_entity_profile,
+)
 from kb.retrieval import _embed_text
 from kb.wiki import write_wiki_node
 
@@ -246,7 +250,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
             "embedding_model": embedding_model,
         },
     )
-    await object_nodes.upsert_object_node(
+    await upsert_object_node(
         node_id,
         body.object_type,
         {
@@ -272,8 +276,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
         },
     )
     if body.parent_index_id:
-        import index_structure
-        await index_structure.add_child(
+        await add_child(
             body.parent_index_id,
             node_id,
             user_id=body.user_id,
@@ -403,7 +406,7 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
 
     for ent in body.entities:
         if ent.matches_existing_entity_id:
-            await entity_insights.upsert_fact_from_mention(
+            await upsert_fact_from_mention(
                 ent.matches_existing_entity_id,
                 body.article_id,
                 summary_hint=ent.summary_hint,
@@ -521,7 +524,7 @@ async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -
     for article_id in article_ids:
         if not article_id:
             continue
-        created = await entity_insights.upsert_fact_from_mention(
+        created = await upsert_fact_from_mention(
             entity_node_id,
             article_id,
             canonical_name=cand["canonical_name"],
@@ -575,7 +578,7 @@ async def mark_candidate_promoted(candidate_id: int, body: dict):
         {"eid": entity_node_id, "cid": candidate_id},
     )
     facts_result = await _materialize_candidate_facts(candidate_id, entity_node_id)
-    await entity_insights.refresh_entity_profile(entity_node_id)
+    await refresh_entity_profile(entity_node_id)
     return {"ok": True, **facts_result}
 
 
