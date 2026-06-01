@@ -7,7 +7,7 @@ BEGIN;
 INSERT INTO raw_assets (id, user_id, storage_key, created_at)
 SELECT
     'ra_' || substring(node_id FROM 5),
-    user_id,
+    'default',
     raw_ref->>'path',
     NOW()
 FROM article_nodes
@@ -18,7 +18,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO document_instances (id, user_id, raw_asset_id, origin_ref, origin_ref_type, status, created_at, updated_at)
 SELECT
     'di_' || substring(node_id FROM 5),
-    user_id,
+    'default',
     'ra_' || substring(node_id FROM 5),
     raw_ref->>'path',
     'file',
