@@ -10,7 +10,6 @@ import {
   FileText,
   FolderOpen,
   Moon,
-  Newspaper,
   PanelLeftClose,
   PanelLeftOpen,
   Rss,
@@ -23,16 +22,9 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/knowledge", label: "知识库", icon: BookOpen, key: "K", match: ["/knowledge"] },
   { href: "/sources", label: "资料夹", icon: FolderOpen, key: "O", match: ["/sources"] },
-  { href: "/briefing", label: "简报生成", icon: Newspaper, key: "B", match: ["/briefing", "/drafts", "/instructions", "/settings"] },
+  { href: "/settings", label: "系统设置", icon: FileText, key: "S", match: ["/settings"] },
   { href: "https://chat.laughtale.co.uk/", label: "LibreChat", icon: Bot, key: "C", match: [] },
   { href: "https://rss.laughtale.co.uk/wechat-admin/", label: "Wechat2RSS", icon: Rss, key: "W", match: [] },
-];
-
-const studioLinks = [
-  { href: "/briefing", label: "简报", activePath: "/briefing" },
-  { href: "/drafts", label: "草稿历史", activePath: "/drafts" },
-  { href: "/instructions#templates", label: "写作模板", activePath: "/instructions" },
-  { href: "/settings", label: "系统设置", activePath: "/settings" },
 ];
 
 const sidebarShortcutLabel = "⌘\\";
@@ -152,29 +144,6 @@ export default function Nav() {
                   </Link>
                   )}
                 </Button>
-                {label === "简报生成" && active && !collapsed && (
-                  <div className="ml-5 mt-1 hidden space-y-0.5 border-l border-sidebar-border pl-2 md:block">
-                    {studioLinks.map((item) => {
-                      const itemActive = item.activePath
-                        ? pathname === item.activePath || pathname.startsWith(`${item.activePath}/`)
-                        : false;
-                      return (
-                        <Link
-                          key={item.href}
-                          href={item.href}
-                          className={cn(
-                            "flex h-7 items-center gap-2 rounded-md px-2 text-[12px] transition-colors",
-                            itemActive
-                              ? "bg-accent text-foreground"
-                              : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                          )}
-                        >
-                          <span className="flex-1 truncate">{item.label}</span>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             );
           })}
