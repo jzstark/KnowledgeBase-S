@@ -104,7 +104,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     perspective_label = node.get("perspective_label") or perspective_val
     perspective_instruction = node.get("perspective_instruction") or perspective_val
     is_default = "true" if node.get("is_default") else "false"
-    extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nraw_ref: {raw_ref_str}"
+    extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nstorage_key: {raw_ref_str}"
     if object_type == "entity":
         extra_fm = f"\ncanonical_name: {node.get('canonical_name') or title}\naliases: {aliases_yaml}\nsources: {sources_yaml}"
     elif object_type == "summary":
@@ -114,7 +114,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
             f"\nperspective_instruction: {perspective_instruction}\nis_default: {is_default}"
         )
     elif object_type == "index":
-        extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nraw_ref: {raw_ref_str}\nperspective: {perspective_val}"
+        extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nstorage_key: {raw_ref_str}\nperspective: {perspective_val}"
 
     content = f"""---
 id: {node_id}
