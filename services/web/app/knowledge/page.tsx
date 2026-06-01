@@ -1466,12 +1466,18 @@ export default function KnowledgePage() {
     setSelectedNodeId(null);
     setDetail(null);
     setOpenFile(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("node");
+    window.history.replaceState(null, "", url.toString());
   }
 
   async function selectNode(nodeId: string) {
     if (selectedNodeId === nodeId) return;
     setSelectedNodeId(nodeId);
     setOpenFile(null);
+    const url = new URL(window.location.href);
+    url.searchParams.set("node", nodeId);
+    window.history.replaceState(null, "", url.toString());
     setDetailLoading(true);
     try {
       const [detailRes, graphRes] = await Promise.all([
