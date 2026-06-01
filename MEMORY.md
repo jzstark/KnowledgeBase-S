@@ -4,7 +4,7 @@
 
 以**法律/合规知识**为主要领域的个人知识库后端。核心价值：多源文章自动入库 → 结构化知识图谱（article/entity/summary/index 节点 + mentions/similar_to/contains 边）→ 通过 MCP 工具向 AI Agent 提供高质量检索与推理支持。
 
-**应用层**（briefing、drafts）与 KB 核心解耦，后续可能整体删除。KB 核心只负责节点/关系/来源/搜索/MCP 工具。
+KB 核心只负责节点/关系/来源/搜索/MCP 工具。应用层（briefing、drafts）已完全移除。
 
 MCP adapter 实现位于外部仓库 `~/Code/kb-chat/`，封装 `/api/kb/v1/` 稳定接口。KB-S 本身不内置 MCP server。
 
@@ -20,7 +20,6 @@ api (FastAPI, :8000)         ← 主服务，含 job_worker 逻辑
 postgres (pgvector:pg16)     ← 数据库 + 向量索引（1536 维）
 
 ingestion-worker             ← 内容抓取 + 入库 pipeline（只通过 HTTP 调用 api）
-summarizer-worker            ← 定时触发简报生成（只 HTTP 调用 api）
 job-worker                   ← 后台 job 队列消费者（运行在 api 镜像内）
 maintenance-worker           ← --profile maintenance，手动触发维护任务
 web (Next.js)                ← 前端
@@ -106,10 +105,6 @@ ID 映射约定（同 hex 后缀，不同前缀）：
 **entity_pair_signals**：co_occurrence + embedding_similarity + graph_proximity + temporal → relatedness_score
 
 **jobs**：job_type + status + payload JSONB + idempotency_key，供 job_worker 消费
-
-### 应用层（后续可能删除）
-
-`drafts` / `briefings` / `topics` / `user_settings`
 
 ---
 
@@ -221,7 +216,7 @@ user_query → LLM(hyde_abstract, haiku-4-5, 200 tokens) → hypothetical_abstra
 ```
 config 控制：`retrieval.use_hyde: true`
 
-### Summary-first 分层检索（内部 RAG，drafts/compare/cite/summarize_corpus 共用）
+### Summary-first 分层检索（内部 RAG，compare/cite/summarize_corpus 共用）
 ```
 Phase 1a: summary_nodes.body_embedding 向量搜索 top 5
 Phase 1b: entity 节点向量搜索 top 10
@@ -322,7 +317,7 @@ run_book_pipeline（EPUB/MOBI）：
 ## 配置管理
 
 **所有参数外置**，不允许硬编码：
-- 数值/枚举 → `config/system.yaml`（分区：doc_kind / ingestion / models / embedding / entity / retrieval / maintenance / briefing / drafts / entity_insights / llm_output_tokens / kb_public）
+- 数值/枚举 → `config/system.yaml`（分区：doc_kind / ingestion / models / embedding / entity / retrieval / maintenance / entity_insights / llm_output_tokens / kb_public）
 - Prompt 字符串 → `config/prompts.md`（section 标题即 key，`## section_name`）
 
 API 和 ingestion-worker 各有独立 `settings.py`（frozen dataclass），用 `**sub(key)` 反序列化。YAML 新增 key 时两份均需同步，否则启动报 `TypeError: unexpected keyword argument`。
