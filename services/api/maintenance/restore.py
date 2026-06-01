@@ -56,7 +56,7 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
             except Exception:
                 # fallback: extract id and title with regex
                 meta = {}
-                for key in ("id", "type", "source_type", "storage_key", "raw_ref", "summary_of", "canonical_name"):
+                for key in ("id", "type", "source_type", "storage_key", "summary_of", "canonical_name"):
                     m = re.search(rf'^{key}:\s*(.+)$', fm_raw, re.MULTILINE)
                     if m:
                         meta[key] = m.group(1).strip().strip('"')
@@ -156,8 +156,7 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
         source_type = (m.get("source_type") or "plaintext").lower()
         source_id = f"restored_{source_type}"
 
-        # raw_ref (storage_key is the current field; raw_ref is the legacy fallback)
-        raw_ref_str = str(m.get("storage_key") or m.get("raw_ref") or "")
+        raw_ref_str = str(m.get("storage_key") or "")
         if raw_ref_str.startswith("http"):
             raw_ref_dict: dict = {"type": "url", "url": raw_ref_str}
         elif "::chapter::" in raw_ref_str:

@@ -62,14 +62,13 @@ async def get_tree():
     raw: dict[str, list[dict]] = {t: [] for t in RAW_TYPES}
     raw_dir = base / "raw"
     if raw_dir.exists():
-        # 批量查出所有文件路径 → node_id 的映射（Phase B 优先取 raw_assets.storage_key）
         rows = await database.database.fetch_all(
             """
-            SELECT n.id, COALESCE(ra.storage_key, an.raw_ref->>'path') AS path
+            SELECT n.id, ra.storage_key AS path
             FROM knowledge_nodes n
             JOIN article_nodes an ON an.node_id = n.id
-            LEFT JOIN document_instances di ON di.id = an.document_instance_id
-            LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
+            JOIN document_instances di ON di.id = an.document_instance_id
+            JOIN raw_assets ra ON ra.id = di.raw_asset_id
             WHERE n.user_id = :uid
             """,
             {"uid": USER_ID},
