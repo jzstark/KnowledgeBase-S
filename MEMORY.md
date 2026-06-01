@@ -336,5 +336,5 @@ API 和 ingestion-worker 各有独立 `settings.py`（frozen dataclass），用 
 | `POST /api/kb/nodes/{id}/summaries`（§7 规范路径） | 实际为 `/create_summary`，功能可用 |
 | Source 删除 cascade 选项（同时删 N 篇文章） | 未实现 |
 | Source 管理页显示已停用 source | 后端支持 `?include_deleted=true`，前端未接（旧 /sources 页已重建为文件管理器） |
-| Phase B: raw_ref 降级（Phase 5） | ✓ 已完成：wiki.py 写 storage_key:，restore.py 只读 storage_key，files.py 改用 JOIN 路径（DB 列 raw_ref 保留作 COALESCE fallback，仍服务无 document_instance_id 的旧 RSS 文章） |
+| Phase B: raw_ref 降级（Phase 5） | ✓ 完全完成：孤立文章回填 raw_assets+document_instances，files.py 改纯 INNER JOIN，restore.py 只读 storage_key，wiki.py 写 storage_key。raw_ref 列仍存在但不再作为任何读路径的依赖 |
 | Phase B: 旧 /sources 页 wechat 配置子页 | `/sources/[id]/page.tsx` 仍存在但入口已从新 UI 移除，微信 connector 暂通过旧页面管理 |
