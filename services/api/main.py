@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import database
 from auth import create_token, require_auth, verify_password
 from settings import settings
-from app import briefing, drafts, settings as user_settings_module
+from app import settings as user_settings_module
 from kb import entity as kb_entity
 from kb import index_ops as kb_index_ops
 from kb import ingest as kb_ingest
@@ -47,9 +47,7 @@ app.include_router(kb_index_ops.router)
 app.include_router(kb_entity.router)
 app.include_router(kb_internal.router)
 app.include_router(files.router)
-app.include_router(briefing.router)
 app.include_router(user_settings_module.router)
-app.include_router(drafts.router)
 
 # KB Public — MCP 稳定接口子应用。挂在 /api/kb/v1/，
 # 独立 OpenAPI 文档位于 /api/kb/v1/docs，由 ~/Code/kb-chat/ 的 MCP adapter 调用。

@@ -14,7 +14,6 @@ _REQUIRED = frozenset({
     "entity_page",
     "entity_update",
     "summary_gen",
-    "briefing_topics",
     "hyde_abstract",
     "index_summary",
     "compare_nodes",
@@ -65,9 +64,6 @@ class Prompts:
 
     def index_summary(self, *, index_title: str, child_abstracts: str) -> str:
         return _fill(self._raw["index_summary"], index_title=index_title, child_abstracts=child_abstracts)
-
-    def briefing_topics(self, *, topics_setting: str, summaries: str) -> str:
-        return _fill(self._raw["briefing_topics"], topics_setting=topics_setting, summaries=summaries)
 
     def compare_nodes(self, *, documents: str, dimensions: str, focus: str) -> str:
         return _fill(self._raw["compare_nodes"], documents=documents, dimensions=dimensions, focus=focus)

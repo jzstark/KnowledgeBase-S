@@ -1,6 +1,5 @@
 import asyncio
 import json
-from datetime import datetime
 
 import database
 from settings import settings
@@ -15,24 +14,6 @@ async def fetch_node_light(node_id: str) -> dict | None:
     )
     return dict(row) if row else None
 
-
-async def fetch_briefing_source_articles(user_id: str, node_cutoff_sql: str) -> list[dict]:
-    knowledge_time_sql = "COALESCE(n.published_at, n.ingested_at, n.created_at)"
-    rows = await database.database.fetch_all(
-        f"""
-        SELECT n.id, n.title, n.abstract, n.tags, n.created_at,
-               {knowledge_time_sql} AS knowledge_time
-        FROM knowledge_nodes n
-        JOIN sources s ON s.id = n.source_id
-        WHERE n.user_id = :user_id
-          AND s.is_primary = true
-          AND n.object_type = 'article'
-          AND {node_cutoff_sql}
-        ORDER BY knowledge_time DESC
-        """,
-        {"user_id": user_id},
-    )
-    return [dict(r) for r in rows]
 
 
 def _coerce_json_dict(value) -> dict:

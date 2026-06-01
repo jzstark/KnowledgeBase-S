@@ -35,8 +35,6 @@ models:
   summary_gen:       "claude-haiku-4-5-20251001"
   index_summary:     "claude-haiku-4-5-20251001"  # 聚合子节点 abstract 生成 index abstract
   hyde_abstract:     "claude-haiku-4-5-20251001"  # HyDE 查询扩展
-  briefing_topics:   "claude-sonnet-4-6"
-  draft_generation:  "claude-sonnet-4-6"
   compare:           "claude-sonnet-4-6"          # MCP compare 工具
   cite:              "claude-sonnet-4-6"          # MCP cite 工具 Stage 2
   summarize_corpus:  "claude-sonnet-4-6"          # MCP summarize_corpus 工具
@@ -67,7 +65,6 @@ retrieval:
   entity_in_context:            5     # 最终进入 context 的 entity 数
   article_inline_threshold:     2000  # token 数低于此值时插入全文，否则只插 abstract
   context_max_tokens:           100000
-  draft_knowledge_chars:        6000  # 草稿生成时知识上下文的最大字符数
   damping_entity_to_summary:    0.7   # Phase 2a entity→summary 路径衰减
   damping_hop:                  0.3   # Phase 3 article→entity→article 二跳衰减
   expansion_anchor_k:           5     # Phase 3 最多以几篇 article 作为扩展锚点
@@ -81,15 +78,6 @@ maintenance:
   rebuild_max_wait_seconds:     3600  # rebuild_from_raw 等待所有 source_items 完成的总超时
   rebuild_poll_interval_seconds: 20   # rebuild_from_raw 的轮询间隔
 
-briefing:
-  topics_count:                 5
-  hours_back:                   24
-  batch_size:                   12
-  summary_chars:                150
-
-drafts:
-  min_remaining_chars:          100   # 知识上下文组装时，剩余字符低于此值则停止追加
-
 entity_insights:
   refresh_facts_limit:          12    # refresh_entity_profile 查询最近 N 条 entity_facts
 
@@ -100,8 +88,6 @@ llm_output_tokens:
   summary_gen:                  1024
   index_summary:                512
   hyde_abstract:                200
-  briefing_topics:              8192
-  draft_generation:             4096
   compare:                      2048
   cite:                         2048
   summarize_corpus:             3000

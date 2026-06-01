@@ -205,40 +205,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at TIMESTAMPTZ
 );
 
-CREATE TABLE IF NOT EXISTS drafts (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    template_name VARCHAR,
-    selected_node_ids TEXT[],
-    draft_content TEXT,
-    final_content TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS briefings (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    date DATE NOT NULL DEFAULT CURRENT_DATE,
-    groups JSONB NOT NULL DEFAULT '[]',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, date)
-);
-
-CREATE TABLE IF NOT EXISTS topics (
-    id VARCHAR PRIMARY KEY,
-    user_id VARCHAR NOT NULL,
-    date DATE NOT NULL DEFAULT CURRENT_DATE,
-    title TEXT NOT NULL,
-    description TEXT,
-    source_node_ids TEXT[] DEFAULT '{}',
-    status VARCHAR DEFAULT 'pending',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS user_settings (
-    user_id VARCHAR PRIMARY KEY,
-    settings JSONB NOT NULL DEFAULT '{}'
-);
 
 -- Phase B: 文件夹 / 文档实例模型
 
@@ -312,7 +278,6 @@ ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS last_accessed_at;
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS access_count;
 
 -- 延后项 1：node 级 is_primary 删除（保留 sources.is_primary）
--- briefing 改为 JOIN sources.is_primary 过滤
 ALTER TABLE IF EXISTS knowledge_nodes DROP COLUMN IF EXISTS is_primary;
 
 -- 延后项 2：entity_profiles 表删除（entity 描述统一回到 nodes.abstract）
@@ -520,10 +485,6 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority DESC, created
 CREATE INDEX IF NOT EXISTS idx_jobs_user_idempotency_key
     ON jobs(user_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
-CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date);
-CREATE INDEX IF NOT EXISTS idx_topics_user_date ON topics(user_id, date);
-
 -- Phase B 索引
 CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_id);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);

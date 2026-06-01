@@ -74,18 +74,6 @@ services:
         condition: service_healthy
     profiles: ["workers"]
 
-  summarizer-worker:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/summarizer-worker:latest
-    build:
-      context: ./services/summarizer-worker
-    restart: unless-stopped
-    environment:
-      API_BASE_URL: http://api:8000
-      AUTH_PASSWORD: ${AUTH_PASSWORD}
-    depends_on:
-      api:
-        condition: service_healthy
-    profiles: ["workers"]
 
   job-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/api:latest

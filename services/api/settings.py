@@ -37,8 +37,6 @@ class ModelsSettings:
     summary_gen: str = "claude-haiku-4-5-20251001"
     index_summary: str = "claude-haiku-4-5-20251001"
     hyde_abstract: str = "claude-haiku-4-5-20251001"
-    briefing_topics: str = "claude-haiku-4-5-20251001"
-    draft_generation: str = "claude-sonnet-4-6"
     compare: str = "claude-sonnet-4-6"
     cite: str = "claude-sonnet-4-6"
     summarize_corpus: str = "claude-sonnet-4-6"
@@ -75,7 +73,6 @@ class RetrievalSettings:
     entity_in_context: int = 5
     article_inline_threshold: int = 2000
     context_max_tokens: int = 100000
-    draft_knowledge_chars: int = 6000
     damping_entity_to_summary: float = 0.7
     damping_hop: float = 0.3
     expansion_anchor_k: int = 5
@@ -93,19 +90,6 @@ class MaintenanceSettings:
 
 
 @dataclass(frozen=True)
-class BriefingSettings:
-    topics_count: int = 5
-    hours_back: int = 24
-    batch_size: int = 12
-    summary_chars: int = 150
-
-
-@dataclass(frozen=True)
-class DraftsSettings:
-    min_remaining_chars: int = 100
-
-
-@dataclass(frozen=True)
 class EntityInsightsSettings:
     refresh_facts_limit: int = 12
 
@@ -118,8 +102,6 @@ class LlmOutputTokensSettings:
     summary_gen: int = 1024
     index_summary: int = 512
     hyde_abstract: int = 200
-    briefing_topics: int = 8192
-    draft_generation: int = 4096
     compare: int = 2048
     cite: int = 2048
     summarize_corpus: int = 3000
@@ -157,8 +139,6 @@ class Settings:
     entity: EntitySettings
     retrieval: RetrievalSettings
     maintenance: MaintenanceSettings
-    briefing: BriefingSettings
-    drafts: DraftsSettings
     entity_insights: EntityInsightsSettings
     llm_output_tokens: LlmOutputTokensSettings
     kb_public: KbPublicSettings
@@ -182,8 +162,6 @@ class Settings:
             entity=EntitySettings(**sub("entity")),
             retrieval=RetrievalSettings(**sub("retrieval")),
             maintenance=MaintenanceSettings(**sub("maintenance")),
-            briefing=BriefingSettings(**sub("briefing")),
-            drafts=DraftsSettings(**sub("drafts")),
             entity_insights=EntityInsightsSettings(**sub("entity_insights")),
             llm_output_tokens=LlmOutputTokensSettings(**sub("llm_output_tokens")),
             kb_public=KbPublicSettings(**sub("kb_public")),

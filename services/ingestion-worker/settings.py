@@ -31,8 +31,6 @@ class ModelsSettings:
     summary_gen: str = "claude-haiku-4-5-20251001"
     index_summary: str = "claude-haiku-4-5-20251001"
     hyde_abstract: str = "claude-haiku-4-5-20251001"
-    briefing_topics: str = "claude-haiku-4-5-20251001"
-    draft_generation: str = "claude-sonnet-4-6"
     compare: str = "claude-sonnet-4-6"
     cite: str = "claude-sonnet-4-6"
     summarize_corpus: str = "claude-sonnet-4-6"
@@ -62,8 +60,6 @@ class LlmOutputTokensSettings:
     summary_gen: int = 1024
     index_summary: int = 512
     hyde_abstract: int = 200
-    briefing_topics: int = 8192
-    draft_generation: int = 4096
     compare: int = 2048
     cite: int = 2048
     summarize_corpus: int = 3000
