@@ -5,7 +5,7 @@ echo "==> Pulling latest images..."
 docker compose pull
 
 echo "==> Starting services..."
-docker compose up -d --remove-orphans
+docker compose --profile workers up -d --remove-orphans
 
 echo "==> Cleaning up old images..."
 docker image prune -f
