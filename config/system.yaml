@@ -45,7 +45,7 @@ models:
 embedding:
   model:      "text-embedding-3-small"
   dimensions: 1536
-  max_chars:  8000             # embed() 截断长度
+  max_chars:  3000             # embed() 截断长度（中文约 2 token/字，3000 字 ≈ 6000 tokens，安全边际）
 
 entity:
   promotion_max_salience:       0.9   # 单篇 max_salience >= 此值则晋升

@@ -66,7 +66,7 @@ async def process_article_like_item(
     popular_tags: list[dict] = []
 
     if data.use_entity_context:
-        initial_embedding = await adapters.embed(data.text[:8000])
+        initial_embedding = await adapters.embed(data.text)
         context = await adapters.get_analysis_context(initial_embedding)
         nearby_entities = context.get("nearby_entities", [])
         top_candidates = context.get("top_candidates", [])
@@ -82,7 +82,7 @@ async def process_article_like_item(
     elif initial_embedding is not None:
         embedding = initial_embedding
     else:
-        embedding = await adapters.embed(analysis_text[:8000])
+        embedding = await adapters.embed(analysis_text)
 
     article_payload = {
         "user_id": data.user_id,
