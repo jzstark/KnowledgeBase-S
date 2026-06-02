@@ -43,6 +43,14 @@ class RevisionAuditFixTests(unittest.TestCase):
         self.assertIn("SET doc_kind = :doc_kind", source)
         self.assertIn("FROM article_nodes an", source)
 
+    def test_source_items_materialize_folder_document_instances(self):
+        source = SOURCES.read_text(encoding="utf-8")
+        self.assertIn("async def _ensure_document_instance_for_source_item", source)
+        self.assertIn("INSERT INTO raw_assets", source)
+        self.assertIn("INSERT INTO document_instances", source)
+        self.assertIn("SET document_instance_id = :document_instance_id", source)
+        self.assertIn("UPDATE document_instances", source)
+
     def test_worker_text_access_is_guarded(self):
         for path in (INGESTION_PIPELINE, IMAGE_SOURCE, PDF_SOURCE):
             source = path.read_text(encoding="utf-8")

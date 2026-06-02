@@ -134,6 +134,113 @@ def _serialize_source_item(row) -> dict[str, Any]:
     return d
 
 
+def _mapped_folder_id(source_id: str) -> str | None:
+    if not source_id.startswith("src_"):
+        return None
+    return "fld_" + source_id[4:]
+
+
+def _mapped_connector_id(source_id: str) -> str | None:
+    if not source_id.startswith("src_"):
+        return None
+    return "con_" + source_id[4:]
+
+
+async def _ensure_document_instance_for_source_item(source_row, item_row) -> dict[str, Any]:
+    source = dict(source_row)
+    item = dict(item_row)
+    if item.get("document_instance_id"):
+        return item
+
+    folder_id = _mapped_folder_id(source["id"])
+    if not folder_id:
+        return item
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": folder_id, "uid": source["user_id"]},
+    )
+    if not folder:
+        return item
+
+    suffix = item["id"][3:]
+    raw_asset_id = f"ra_{suffix}"
+    document_instance_id = f"di_{suffix}"
+    storage_key = item.get("raw_snapshot_ref") or item.get("extracted_text_ref") or item.get("origin_ref")
+    connector_id = None
+    if source.get("type") in ("rss", "wechat") and source.get("fetch_mode") == "subscription":
+        candidate_connector_id = _mapped_connector_id(source["id"])
+        if candidate_connector_id:
+            connector = await database.database.fetch_one(
+                "SELECT id FROM connectors WHERE id = :id AND user_id = :uid",
+                {"id": candidate_connector_id, "uid": source["user_id"]},
+            )
+            if connector:
+                connector_id = candidate_connector_id
+
+    await database.database.execute(
+        """
+        INSERT INTO raw_assets (id, user_id, storage_key, original_filename, mime_type, sha256, created_at)
+        VALUES (:id, :uid, :storage_key, :filename, 'text/html', :sha256, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          storage_key = COALESCE(EXCLUDED.storage_key, raw_assets.storage_key),
+          original_filename = COALESCE(EXCLUDED.original_filename, raw_assets.original_filename),
+          sha256 = COALESCE(EXCLUDED.sha256, raw_assets.sha256)
+        """,
+        {
+            "id": raw_asset_id,
+            "uid": source["user_id"],
+            "storage_key": storage_key,
+            "filename": item.get("title"),
+            "sha256": item.get("content_hash"),
+        },
+    )
+    await database.database.execute(
+        """
+        INSERT INTO document_instances
+          (id, user_id, folder_id, raw_asset_id, connector_id,
+           display_name, origin_ref, origin_ref_type, doc_kind, status, created_at, updated_at)
+        VALUES
+          (:id, :uid, :folder_id, :raw_asset_id, :connector_id,
+           :display_name, :origin_ref, :origin_ref_type, :doc_kind, :status, NOW(), NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          connector_id = COALESCE(EXCLUDED.connector_id, document_instances.connector_id),
+          display_name = COALESCE(EXCLUDED.display_name, document_instances.display_name),
+          origin_ref = COALESCE(EXCLUDED.origin_ref, document_instances.origin_ref),
+          origin_ref_type = COALESCE(EXCLUDED.origin_ref_type, document_instances.origin_ref_type),
+          doc_kind = COALESCE(EXCLUDED.doc_kind, document_instances.doc_kind),
+          status = EXCLUDED.status,
+          updated_at = NOW()
+        """,
+        {
+            "id": document_instance_id,
+            "uid": source["user_id"],
+            "folder_id": folder_id,
+            "raw_asset_id": raw_asset_id,
+            "connector_id": connector_id,
+            "display_name": item.get("title") or item.get("origin_ref"),
+            "origin_ref": item.get("origin_ref"),
+            "origin_ref_type": item.get("origin_ref_type"),
+            "doc_kind": item.get("doc_kind") or source.get("default_doc_kind"),
+            "status": item.get("status") or "pending",
+        },
+    )
+    updated = await database.database.fetch_one(
+        """
+        UPDATE source_items
+        SET document_instance_id = :document_instance_id,
+            updated_at = NOW()
+        WHERE id = :id
+          AND document_instance_id IS NULL
+        RETURNING *
+        """,
+        {"id": item["id"], "document_instance_id": document_instance_id},
+    )
+    if updated:
+        return dict(updated)
+    item["document_instance_id"] = document_instance_id
+    return item
+
+
 async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, Any]:
     if not item.origin_ref:
         raise HTTPException(400, "origin_ref 不能为空")
@@ -190,6 +297,7 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
             "status": item.status,
         },
     )
+    row = await _ensure_document_instance_for_source_item(source_row, row)
     return _serialize_source_item(row)
 
 
@@ -384,7 +492,11 @@ async def list_source_items(source_id: str, status: str | None = None, limit: in
 @router.post("/{source_id}/source-items", status_code=status.HTTP_201_CREATED)
 async def create_source_items(source_id: str, body: SourceItemsCreate):
     row = await database.database.fetch_one(
-        "SELECT id, user_id, type FROM sources WHERE id = :id AND deleted_at IS NULL",
+        """
+        SELECT id, user_id, type, fetch_mode, default_doc_kind
+        FROM sources
+        WHERE id = :id AND deleted_at IS NULL
+        """,
         {"id": source_id},
     )
     if not row:
@@ -434,6 +546,17 @@ async def update_source_item_status(item_id: str, body: SourceItemStatusUpdate):
     )
     if not row:
         raise HTTPException(404, "source item 不存在")
+    if row["document_instance_id"]:
+        await database.database.execute(
+            """
+            UPDATE document_instances
+            SET status = :status,
+                display_name = COALESCE(:title, display_name),
+                updated_at = NOW()
+            WHERE id = :id
+            """,
+            {"id": row["document_instance_id"], "status": body.status, "title": body.title},
+        )
     return _serialize_source_item(row)
 
 
@@ -450,6 +573,11 @@ async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
     )
     if not row:
         raise HTTPException(404, "failed source item 不存在")
+    if row["document_instance_id"]:
+        await database.database.execute(
+            "UPDATE document_instances SET status = 'pending', updated_at = NOW() WHERE id = :id",
+            {"id": row["document_instance_id"]},
+        )
     return _serialize_source_item(row)
 
 
@@ -468,6 +596,11 @@ async def update_source_item(item_id: str, body: SourceItemUpdate, _: dict = Dep
     )
     if not row:
         raise HTTPException(404, "source item 不存在")
+    if row["document_instance_id"]:
+        await database.database.execute(
+            "UPDATE document_instances SET doc_kind = :doc_kind, updated_at = NOW() WHERE id = :id",
+            {"id": row["document_instance_id"], "doc_kind": doc_kind},
+        )
 
     # 如果该 source item 已经入库为 article node，同步 node.doc_kind，避免 item/node 显示不一致。
     await database.database.execute(
