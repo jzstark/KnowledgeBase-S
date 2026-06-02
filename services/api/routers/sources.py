@@ -867,6 +867,12 @@ async def update_source(source_id: str, body: SourceUpdate):
         await database.database.execute(
             f"UPDATE sources SET {', '.join(updates)} WHERE id = :id", params
         )
+        if body.last_fetched_at is not None:
+            await database.database.execute(
+                "UPDATE connectors SET last_fetched_at = :ts, updated_at = NOW() WHERE id = :con_id",
+                {"ts": datetime.fromisoformat(body.last_fetched_at),
+                 "con_id": "con_" + source_id[4:]},
+            )
 
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
