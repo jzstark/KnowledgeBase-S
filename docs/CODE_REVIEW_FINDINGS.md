@@ -147,27 +147,39 @@ Throughout `kb/public.py` (e.g. `compare` line 734, `cite` line 863) and `pipeli
 Move to a real migration tool (Alembic) with versioned, run-once migrations, and have exactly one component own schema management.
 
 ### C2. The ingestion worker drives the pipeline through ~10 unauthenticated HTTP round-trips per item
-**Severity: Medium**
+**Severity: Medium** — 🟡 **Security hardened 2026-06-10; architecture deferred**
+
+> The dangerous half — the internal endpoints being open — is fixed. The worker-facing `/api/kb/*` write endpoints (`ingest`, `entity_candidates/analyze_context|process|{id}/mark_promoted`, `entities/{id}/backfill_wikilinks`, `entities/refresh_stale`) now require `require_auth_or_service_token`, and the worker presents `KB_SERVICE_TOKEN` on every API call. Notably `/api/kb/ingest` was an unauthenticated **write** open to the internet (anyone could inject nodes / drive LLM cost) — now closed. (This also fixed a latent 401 on the worker's already-gated `/api/kb/node/{id}` call.)
+>
+> **Deferred (not done):** the chattiness / lack of cross-step transactionality is inherent to the worker being a separate service that talks HTTP. Eliminating it means a real rearchitecture (shared in-process DB/service layer or a single batched ingest call) — high-risk and out of proportion to a Medium finding on a working system. Tracked for a future dedicated effort.
 
 For each article, `pipeline.py` calls the API over HTTP for analysis context, candidate processing, node fetch, candidate promotion, wikilink backfill, ingest, and status updates (`pipeline.py:103-435`). This is chatty (network N+1), gives no cross-step transactionality (a failure mid-way leaves partial state — article ingested, candidates half-processed), and depends on the internal endpoints being open (see A3). For a co-located worker, calling a shared service/DB layer in-process (or a single batched ingest call) would be simpler, atomic, and secure.
 
 ### C3. Hard-coded single tenant, but `user_id` is threaded everywhere
-**Severity: Low (design debt)**
+**Severity: Low (design debt)** — ✅ **Resolved 2026-06-10 (decision recorded)**
+
+> Resolved as a documented decision rather than a rip-out. Ripping `user_id` out of every table/query (or wiring real per-user authz) is a large, risky change for low-severity debt on a live system. Instead, `docs/adr/0001-single-tenant.md` records that single-user is intentional, that `user_id` is forward-compat scaffolding **not** an isolation boundary, and that access control is the shared password + service token. This removes the "false sense of isolation" by making the non-guarantee explicit; the columns remain to make a future multi-tenant migration tractable.
 
 `USER_ID = "default"` is hard-coded in `kb/common.py:4`, `routers/files.py:18`, `routers/sources.py:25`, `pipeline.py:38`, etc., and the JWT subject is the constant string `"user"` (`auth.py:21,27`). Meanwhile every table carries a `user_id` column and queries filter on it. The schema is shaped for multi-tenancy that the app neither provides nor enforces. Either commit to single-user and drop the ceremony, or actually derive `user_id` from the token. As-is, the `user_id` filters give a false sense of isolation (e.g. `_fetch_one` checks `node.user_id != USER_ID` against a constant).
 
 ### C4. Service-token scope is returned but never enforced
-**Severity: Low**
+**Severity: Low** — ✅ **Resolved 2026-06-10**
+
+> The misleading `scope: "kb:read"` was actively wrong after A3 (the same token now legitimately writes during ingest). Fixed by making the model honest: the service token is a single trusted-internal credential (`scope: "service"`), and the **real** enforcement boundary is documented in `require_auth_or_service_token` — endpoints reachable by the service use it; user-only/destructive endpoints (delete/merge/settings) use cookie-only `require_auth`, which I verified they already do. Added a "don't attach this to a destructive endpoint" note so the boundary isn't eroded later. `test_auth.py` updated.
 
 `verify_service_token` returns `{"scope": "kb:read"}` (`auth.py:53`) but no endpoint inspects the scope. Today `require_auth_or_service_token` is only attached to read endpoints, so the invariant holds by convention; a future mutating endpoint that reuses the same dependency would silently accept a read-only service token. Enforce the scope where it matters.
 
 ### C5. Workers run only under a compose profile
-**Severity: Low (footgun)**
+**Severity: Low (footgun)** — ✅ **Resolved 2026-06-10 (documented)**
+
+> Kept the profile (separate worker lifecycle is intentional) but made the footgun impossible to miss: a prominent header comment in `docker-compose.yml` and a ⚠️ callout in `docs/VPS.md` both state that `--profile workers` is required or ingestion/jobs silently don't run, and that `deploy.sh`/`Makefile` already pass it.
 
 `ingestion-worker` and `job-worker` are gated behind `profiles: ["workers"]` (`docker-compose.yml`). `deploy.sh` and the `Makefile` correctly pass `--profile workers`, but a plain `docker compose up` starts only api/web/postgres/nginx — uploads never get ingested and summary/maintenance jobs never run, with no visible error. Document this prominently or make the workers part of the default stack.
 
 ### C6. `published_at` fallback logic is duplicated and inconsistent
-**Severity: Low**
+**Severity: Low** — ✅ **Resolved 2026-06-10**
+
+> Fixed the sort-vs-display divergence. The SQL authority everywhere is `COALESCE(published_at, ingested_at, created_at)` (`KNOWLEDGE_TIME_SQL`), but the Python `_published_at` also consulted `effective_at/source_published_at/captured_at`. Those are redundant: `ingest.py` sets `published_at = effective_at or source_published_at or captured_at` at write time, so the column already folds them in. Simplified `_published_at` to `published_at | ingested_at | created_at` so fetch/display matches search/sort, with a comment marking it the single source of truth.
 
 "Effective publish time" is computed in at least three places with different precedence: SQL `COALESCE(n.published_at, n.ingested_at, n.created_at)` (`public.py:77`), the Python `_published_at` (`public.py:81-89`, which also consults `effective_at`/`source_published_at`/`captured_at`), and the DDL backfill (`database.py:569-575`). The same node can sort by one rule in search and display another rule in fetch. Centralize the precedence in one helper/generated column.
 

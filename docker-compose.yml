@@ -1,3 +1,9 @@
+# NOTE: `ingestion-worker` and `job-worker` are gated behind `profiles: ["workers"]`,
+# and `maintenance-worker` behind `profiles: ["maintenance"]`. A plain
+# `docker compose up` starts ONLY postgres/api/web/nginx — ingestion and the job
+# queue will NOT run and nothing surfaces an error. Always bring the stack up with
+# the workers profile (deploy.sh and the Makefile already do this):
+#     docker compose --profile workers up -d
 services:
   postgres:
     image: pgvector/pgvector:pg16

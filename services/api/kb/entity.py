@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import database
 from kb.graph import lm_refresh_entity_abstract, refresh_stale_entity_abstracts
-from auth import require_auth
+from auth import require_auth, require_auth_or_service_token
 from kb.common import USER_ID
 from kb.wiki import _wiki_file_path
 
@@ -297,7 +297,7 @@ async def delete_entity(entity_id: str, _: dict = Depends(require_auth)):
 
 
 @router.post("/entities/refresh_stale")
-async def trigger_refresh_stale_entities():
+async def trigger_refresh_stale_entities(_: dict = Depends(require_auth_or_service_token)):
     """由 ingestion-worker 在每轮 pipeline 结束后调用，批量刷新 abstract_stale=true 的 entity。"""
     result = await refresh_stale_entity_abstracts()
     return result

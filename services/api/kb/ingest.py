@@ -15,7 +15,9 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+
+from auth import require_auth_or_service_token
 from pydantic import BaseModel
 
 import database
@@ -576,8 +578,12 @@ async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 @router.post("/ingest")
-async def ingest_endpoint(body: IngestRequest, background_tasks: BackgroundTasks):
-    """Content ingest entry point — called by ingestion-worker, no auth required."""
+async def ingest_endpoint(
+    body: IngestRequest,
+    background_tasks: BackgroundTasks,
+    _: dict = Depends(require_auth_or_service_token),
+):
+    """Content ingest entry point — called by the ingestion worker (service token)."""
     result = await do_ingest(body)
     if isinstance(result, dict):
         return result
@@ -589,7 +595,7 @@ async def ingest_endpoint(body: IngestRequest, background_tasks: BackgroundTasks
 
 
 @router.post("/entity_candidates/analyze_context")
-async def entity_analyze_context(body: dict):
+async def entity_analyze_context(body: dict, _: dict = Depends(require_auth_or_service_token)):
     """Return analysis context for ingestion-worker: nearby entities, top candidates, popular tags."""
     embedding = body.get("embedding", [])
     if not embedding:
@@ -598,13 +604,20 @@ async def entity_analyze_context(body: dict):
 
 
 @router.post("/entity_candidates/process")
-async def process_entity_candidates(body: ProcessCandidatesRequest):
+async def process_entity_candidates(
+    body: ProcessCandidatesRequest,
+    _: dict = Depends(require_auth_or_service_token),
+):
     """Process entity candidates submitted by ingestion-worker; return which are ready to promote."""
     return await do_process_entity_candidates(body)
 
 
 @router.post("/entity_candidates/{candidate_id}/mark_promoted")
-async def mark_candidate_promoted(candidate_id: int, body: dict):
+async def mark_candidate_promoted(
+    candidate_id: int,
+    body: dict,
+    _: dict = Depends(require_auth_or_service_token),
+):
     """Called by ingestion-worker after generating an entity page to mark the candidate promoted."""
     entity_node_id = body.get("entity_node_id")
     if not entity_node_id:
@@ -619,7 +632,10 @@ async def mark_candidate_promoted(candidate_id: int, body: dict):
 
 
 @router.post("/entities/{entity_id}/backfill_wikilinks")
-async def backfill_entity_wikilinks(entity_id: str):
+async def backfill_entity_wikilinks(
+    entity_id: str,
+    _: dict = Depends(require_auth_or_service_token),
+):
     """Re-scan all article bodies and inject wikilinks for a newly promoted entity."""
     from maintenance import backfill_wikilinks_for_entity
     result = await backfill_wikilinks_for_entity(entity_id, USER_ID)

@@ -351,7 +351,7 @@ async def embed(text: str) -> list[float]:
 
 
 async def post_ingest(payload: dict) -> str:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(f"{API_BASE_URL}/api/kb/ingest", json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()["id"]
@@ -359,7 +359,7 @@ async def post_ingest(payload: dict) -> str:
 
 async def refresh_stale_entities() -> None:
     """Pipeline 结束后调用，触发 API 批量刷新 abstract_stale=true 的 entity。"""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         try:
             resp = await client.post(
                 f"{API_BASE_URL}/api/kb/entities/refresh_stale",
@@ -375,7 +375,7 @@ async def refresh_stale_entities() -> None:
 
 async def _post_ingest_full(payload: dict) -> dict:
     """Like post_ingest but returns the full response dict (includes 'duplicate' flag)."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(f"{API_BASE_URL}/api/kb/ingest", json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()
@@ -383,7 +383,7 @@ async def _post_ingest_full(payload: dict) -> dict:
 
 async def get_analysis_context(embedding: list[float]) -> dict:
     """Fetch nearby entity titles and top candidates from API."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(
             f"{API_BASE_URL}/api/kb/entity_candidates/analyze_context",
             json={"embedding": embedding},
@@ -396,7 +396,7 @@ async def get_analysis_context(embedding: list[float]) -> dict:
 
 async def process_entity_candidates(article_id: str, entities: list[dict]) -> dict:
     """Send entity candidate list to API for DB processing. Returns promoted candidates."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(
             f"{API_BASE_URL}/api/kb/entity_candidates/process",
             json={"article_id": article_id, "entities": entities},
@@ -408,7 +408,7 @@ async def process_entity_candidates(article_id: str, entities: list[dict]) -> di
 
 
 async def get_node(node_id: str) -> dict | None:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.get(f"{API_BASE_URL}/api/kb/node/{node_id}", timeout=10)
         if resp.status_code == 200:
             return resp.json()
@@ -416,7 +416,7 @@ async def get_node(node_id: str) -> dict | None:
 
 
 async def mark_candidate_promoted(candidate_id: int, entity_node_id: str):
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         await client.post(
             f"{API_BASE_URL}/api/kb/entity_candidates/{candidate_id}/mark_promoted",
             json={"entity_node_id": entity_node_id},
@@ -425,7 +425,7 @@ async def mark_candidate_promoted(candidate_id: int, entity_node_id: str):
 
 
 async def backfill_wikilinks(entity_id: str) -> None:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         await client.post(
             f"{API_BASE_URL}/api/kb/entities/{entity_id}/backfill_wikilinks",
             timeout=30,

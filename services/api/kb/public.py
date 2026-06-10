@@ -79,11 +79,12 @@ ARTICLE_TIME_SQL = "COALESCE(art.published_at, art.ingested_at, art.created_at)"
 
 
 def _published_at(node: dict[str, Any]) -> Optional[datetime]:
+    # Single source of truth for "knowledge time", matching KNOWLEDGE_TIME_SQL so
+    # display (fetch) and sort (search SQL) agree. published_at is populated at
+    # ingest as effective_at|source_published_at|captured_at, so it already folds
+    # those in; only the ingest/creation fallbacks remain.
     return (
         node.get("published_at")
-        or node.get("effective_at")
-        or node.get("source_published_at")
-        or node.get("captured_at")
         or node.get("ingested_at")
         or node.get("created_at")
     )

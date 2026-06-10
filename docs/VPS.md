@@ -69,12 +69,13 @@ In the AWS console, add inbound rules to the instance's Security Group:
 # Pull all pre-built images from ghcr.io
 docker compose pull
 
-# Start core services (postgres, api, web, nginx, watchtower)
-docker compose up -d
-
-# Start workers (ingestion, summarizer, feedback)
+# Start the full stack INCLUDING workers in one command.
 docker compose --profile workers up -d
 ```
+
+> ⚠️ **Always include `--profile workers`.** Without it, `ingestion-worker` and
+> `job-worker` do not start — ingestion and the job queue silently do nothing and
+> no error is shown. `deploy.sh` and the `Makefile` already pass this flag.
 
 Check everything is running:
 

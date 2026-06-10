@@ -50,7 +50,11 @@ def verify_service_token(token: str | None) -> dict | None:
     if not KB_SERVICE_TOKEN or not isinstance(token, str) or not token:
         return None
     if hmac.compare_digest(token, KB_SERVICE_TOKEN):
-        return {"sub": "service", "scope": "kb:read"}
+        # A single trusted-internal credential, shared by the kb-chat MCP adapter
+        # (read-only) and the ingestion worker (which legitimately writes during
+        # ingest). It is NOT a least-privilege scope: access is bounded by *which
+        # dependency* an endpoint uses, not by this value (see below).
+        return {"sub": "service", "scope": "service"}
     return None
 
 
@@ -59,6 +63,13 @@ def require_auth_or_service_token(
     authorization: str | None = Header(default=None),
     x_kb_service_token: str | None = Header(default=None),
 ) -> dict:
+    """Accept a logged-in user (cookie) OR the trusted service token.
+
+    This is the trust boundary: endpoints safe for the service token (reads and
+    the worker's ingest path) use this; user-only/destructive endpoints (delete,
+    merge, settings, …) use ``require_auth`` so the service token cannot reach
+    them. Do not attach this to a new destructive endpoint.
+    """
     if isinstance(token, str) and token:
         return verify_token(token)
 

@@ -19,12 +19,12 @@ class AuthTests(unittest.TestCase):
     def test_service_token_accepts_x_header_value(self):
         identity = auth.require_auth_or_service_token(x_kb_service_token="service-secret")
 
-        self.assertEqual(identity, {"sub": "service", "scope": "kb:read"})
+        self.assertEqual(identity, {"sub": "service", "scope": "service"})
 
     def test_service_token_accepts_bearer_authorization(self):
         identity = auth.require_auth_or_service_token(authorization="Bearer service-secret")
 
-        self.assertEqual(identity, {"sub": "service", "scope": "kb:read"})
+        self.assertEqual(identity, {"sub": "service", "scope": "service"})
 
     def test_service_token_rejects_wrong_value(self):
         with self.assertRaises(HTTPException) as ctx:
