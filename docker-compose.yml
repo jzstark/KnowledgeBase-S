@@ -23,6 +23,9 @@ services:
       - ./config:/app/shared_config:ro
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      # api is the single Alembic migrator (`alembic upgrade head` on startup);
+      # workers share this image but leave RUN_MIGRATIONS unset.
+      RUN_MIGRATIONS: "1"
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       AUTH_PASSWORD: ${AUTH_PASSWORD}

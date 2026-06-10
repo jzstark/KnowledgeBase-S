@@ -116,7 +116,13 @@ Throughout `kb/public.py` (e.g. `compare` line 734, `cite` line 863) and `pipeli
 ## C. System / architecture design problems
 
 ### C1. The entire schema + data migrations run on every process startup
-**Severity: High (operational risk)**
+**Severity: High (operational risk)** — ✅ **Resolved 2026-06-10 (Alembic)**
+
+> Fixed: introduced Alembic. `database.init()` now only opens the pool; the schema lives in `services/api/alembic/versions/0001_baseline.py` (final-form DDL adopted from the old `SCHEMA_SQL`, with one-time backfills and legacy ALTER/DROP/rename steps removed and the 3 ALTER-only columns folded in). Migrations run via `alembic upgrade head` from the api container entrypoint (`docker-entrypoint.sh`), gated on `RUN_MIGRATIONS=1` which is set **only on the api service** — so api is the single migrator and the api+job-worker concurrent-DDL race is gone.
+>
+> **Prod adoption (no manual stamp needed):** the baseline is idempotent (`CREATE … IF NOT EXISTS`, guarded constraint), so on the existing DB `alembic upgrade head` no-ops the DDL and just records revision `0001_baseline`. Verified end-to-end against ephemeral pgvector: fresh build (17 tables/58 indexes/23 FKs/constraint), double-apply idempotency, real `alembic upgrade head` stamping, and the exact cutover (pre-built schema + a data row, no `alembic_version`) → DDL no-ops, **data preserved**, version stamped.
+>
+> Future schema changes: `alembic revision -m "…"` → edit `upgrade()/downgrade()` → ships via the same entrypoint. The `;`-split fragility and per-boot graph re-scans are gone.
 
 `database.init()` (`database.py:504-510`) executes a ~500-statement `SCHEMA_SQL` blob plus a long sequence of imperative migrations on **every** API and job-worker start. Concerns:
 
@@ -168,6 +174,6 @@ For each article, `pipeline.py` calls the API over HTTP for analysis context, ca
 
 1. ~~**A1 + A2** (unauthenticated file read/write/delete + traversal)~~ — ✅ done.
 2. ~~**A3** (unauthenticated source mutations) and **A4** (CORS)~~ — ✅ done.
-3. **C1** (replace boot-time migrations with versioned migrations).
+3. ~~**C1** (replace boot-time migrations with versioned migrations)~~ — ✅ done (Alembic).
 4. **B1/B2** (job-queue idempotency + stuck-job recovery), **B3** (lost ingestion triggers).
 5. **B4** (wiki frontmatter escaping), then the remaining design-debt items.
