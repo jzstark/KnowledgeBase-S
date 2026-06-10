@@ -22,6 +22,7 @@ from typing import Any
 import anthropic
 import httpx
 import trafilatura
+import yaml
 from openai import AsyncOpenAI
 
 from article_ingestion import ArticleIngestionAdapters, ArticleIngestionInput, process_article_like_item
@@ -441,6 +442,19 @@ async def update_last_fetched(source_id: str):
         )
 
 
+def _wiki_document(frontmatter: dict, title: str, body: str) -> str:
+    """Assemble a wiki markdown file: YAML frontmatter + heading + body.
+
+    Frontmatter is serialized with yaml.safe_dump so titles/tags/aliases that
+    contain quotes, colons, newlines, brackets or '---' can't corrupt the file.
+    """
+    fm = yaml.safe_dump(
+        frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096
+    )
+    heading = (title or "").replace("\n", " ").strip()
+    return f"---\n{fm}---\n\n# {heading}\n\n{body}\n"
+
+
 def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], raw_ref: dict,
                         doc_kind: str,
                         title_override: str | None = None, source_type_override: str | None = None):
@@ -451,34 +465,24 @@ def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], 
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
     raw_ref_path = raw_ref.get("path") or raw_ref.get("url", "")
-    tags_yaml = "[" + ", ".join(tags) + "]"
     created = item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-    source_published_at = item.source_published_at.isoformat() if item.source_published_at else ""
-    source_updated_at = item.source_updated_at.isoformat() if item.source_updated_at else ""
-    captured_at = item.captured_at.isoformat() if item.captured_at else ""
-    effective_at = item.effective_at.isoformat() if item.effective_at else ""
-
-    content = f"""---
-id: {node_id}
-type: article
-title: "{title}"
-tags: {tags_yaml}
-doc_kind: {doc_kind}
-wikilinks: []
-source_type: {source_type}
-raw_ref: {raw_ref_path}
-created_at: {created}
-source_published_at: {source_published_at}
-source_updated_at: {source_updated_at}
-captured_at: {captured_at}
-effective_at: {effective_at}
-updated_at: {created}
----
-
-# {title}
-
-{text}
-"""
+    frontmatter = {
+        "id": node_id,
+        "type": "article",
+        "title": title,
+        "tags": list(tags),
+        "doc_kind": doc_kind,
+        "wikilinks": [],
+        "source_type": source_type,
+        "raw_ref": raw_ref_path,
+        "created_at": created,
+        "source_published_at": item.source_published_at.isoformat() if item.source_published_at else "",
+        "source_updated_at": item.source_updated_at.isoformat() if item.source_updated_at else "",
+        "captured_at": item.captured_at.isoformat() if item.captured_at else "",
+        "effective_at": item.effective_at.isoformat() if item.effective_at else "",
+        "updated_at": created,
+    }
+    content = _wiki_document(frontmatter, title, text)
     (wiki_dir / f"{node_id}.md").write_text(content, encoding="utf-8")
 
 
@@ -488,24 +492,19 @@ def write_wiki_summary(summary_id: str, article_id: str, article_title: str,
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "summaries"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
-    tags_yaml = "[" + ", ".join(tags) + "]"
-
-    content = f"""---
-id: {summary_id}
-type: summary
-title: "摘要：{article_title}"
-tags: {tags_yaml}
-wikilinks: []
-summary_of: {article_id}
-sources: [{article_id}]
-created_at: {created}
-updated_at: {created}
----
-
-# 摘要：{article_title}
-
-{abstract}
-"""
+    summary_title = f"摘要：{article_title}"
+    frontmatter = {
+        "id": summary_id,
+        "type": "summary",
+        "title": summary_title,
+        "tags": list(tags),
+        "wikilinks": [],
+        "summary_of": article_id,
+        "sources": [article_id],
+        "created_at": created,
+        "updated_at": created,
+    }
+    content = _wiki_document(frontmatter, summary_title, abstract)
     (wiki_dir / f"{summary_id}.md").write_text(content, encoding="utf-8")
 
 
@@ -515,28 +514,20 @@ def write_wiki_entity(entity_id: str, canonical_name: str, aliases: list[str],
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "entities"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
-    tags_yaml = "[" + ", ".join(tags) + "]"
-    aliases_yaml = "[" + ", ".join(f'"{a}"' for a in aliases) + "]"
-    sources_yaml = "[" + ", ".join(source_ids) + "]"
     created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    content = f"""---
-id: {entity_id}
-type: entity
-title: "{canonical_name}"
-tags: {tags_yaml}
-wikilinks: []
-canonical_name: {canonical_name}
-aliases: {aliases_yaml}
-sources: {sources_yaml}
-created_at: {created}
-updated_at: {created}
----
-
-# {canonical_name}
-
-{body}
-"""
+    frontmatter = {
+        "id": entity_id,
+        "type": "entity",
+        "title": canonical_name,
+        "tags": list(tags),
+        "wikilinks": [],
+        "canonical_name": canonical_name,
+        "aliases": list(aliases),
+        "sources": list(source_ids),
+        "created_at": created,
+        "updated_at": created,
+    }
+    content = _wiki_document(frontmatter, canonical_name, body)
     (wiki_dir / f"{entity_id}.md").write_text(content, encoding="utf-8")
 
 

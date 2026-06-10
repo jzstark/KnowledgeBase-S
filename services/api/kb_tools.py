@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 import database
 from kb.graph import fetch_node_with_object_fields
+from kb.common import split_frontmatter
 from settings import settings
 from prompts import prompts
 
@@ -133,8 +134,7 @@ def _read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int = 4
     if not path.exists():
         return ""
     raw = path.read_text(encoding="utf-8")
-    parts = raw.split("---", 2)
-    body = parts[2].strip() if len(parts) >= 3 else raw.strip()
+    body = split_frontmatter(raw)[1].strip()
     for marker in ("\n## 关联节点\n", "\n## 関連節点\n"):
         if marker in body:
             body = body[: body.index(marker)].strip()

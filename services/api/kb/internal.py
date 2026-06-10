@@ -35,7 +35,7 @@ import jobs
 from kb.graph import fetch_node_with_object_fields
 from settings import settings
 from auth import require_auth, require_auth_or_service_token
-from kb.common import USER_DATA_DIR, USER_ID, _is_visible_edge, _vector_literal
+from kb.common import USER_DATA_DIR, USER_ID, _is_visible_edge, _vector_literal, split_frontmatter
 from kb.retrieval import embed_text
 from kb.wiki import _wiki_file_path
 
@@ -211,9 +211,8 @@ async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token
     wiki_file = _wiki_file_path(node.get("user_id") or USER_ID, node_id, object_type)
     if wiki_file.exists():
         raw_wiki = wiki_file.read_text(encoding="utf-8")
-        parts = raw_wiki.split("---", 2)
-        if len(parts) >= 3:
-            body_section = parts[2].strip()
+        body_section = split_frontmatter(raw_wiki)[1].strip()
+        if body_section:
             for sentinel in ("\n## 関連節点\n", "\n## 关联节点\n"):
                 if sentinel in body_section:
                     body_section = body_section[: body_section.index(sentinel)].strip()

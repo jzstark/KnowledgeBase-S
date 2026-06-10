@@ -91,7 +91,9 @@ These are the endpoints the ingestion worker calls, but they share the public `/
 After upload/add-url, the API calls `POST {INGESTION_WORKER_URL}/trigger/{id}` inside `try/except Exception: pass` (`sources.py:762-768`, `sources.py:810-816`). If the worker is down or the call fails, the user gets `{"ok": true}` but nothing is ever ingested and no error is surfaced or recorded. The worker's hourly poll only covers `subscription` sources, not `manual` uploads, so a missed trigger means the item sits `pending` indefinitely. At minimum, log the failure; better, rely on the worker polling `pending` items for all source types rather than on a best-effort HTTP ping.
 
 ### B4. Wiki frontmatter is built with unescaped f-strings — LLM output can corrupt the file
-**Severity: Medium**
+**Severity: Medium** — ✅ **Resolved 2026-06-10**
+
+> Fixed on both sides. **Writers** (`ingestion-worker/pipeline.py` article/summary/entity and the API rebuild path `kb/wiki.write_wiki_node`) now build a dict and serialize with `yaml.safe_dump(..., allow_unicode=True, sort_keys=False)`, so titles/tags/aliases containing quotes, colons, brackets, newlines or `---` can't corrupt the frontmatter; heading newlines are collapsed. **Readers** — a value containing `---` would still break a substring split, so all four (`kb/wiki`, `kb/internal`, `kb_tools`, `maintenance/restore`) now use a shared, line-anchored `split_frontmatter()` in `kb/common.py`. `restore.py` already `yaml.safe_load`ed the block (with fancy-quote/regex hacks because the old output was frequently invalid YAML); valid output makes it reliable. Verified with adversarial round-trips (exact value preservation, body with a `---` rule, legacy-file back-compat).
 
 `write_wiki_article` / `write_wiki_summary` / `write_wiki_entity` (`pipeline.py:455-475, 487-503, 517-534`) interpolate titles, tags, and aliases directly into YAML frontmatter:
 
@@ -182,4 +184,4 @@ For each article, `pipeline.py` calls the API over HTTP for analysis context, ca
 2. ~~**A3** (unauthenticated source mutations) and **A4** (CORS)~~ — ✅ done.
 3. ~~**C1** (replace boot-time migrations with versioned migrations)~~ — ✅ done (Alembic).
 4. ~~**B1/B2** (job-queue idempotency + stuck-job recovery), **B3** (lost ingestion triggers)~~ — ✅ done.
-5. **B4** (wiki frontmatter escaping), then the remaining design-debt items.
+5. ~~**B4** (wiki frontmatter escaping)~~ — ✅ done. Then the remaining design-debt items.

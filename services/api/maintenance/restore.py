@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 
 import database
 from settings import settings
+from kb.common import split_frontmatter
 from kb.graph import add_child, upsert_object_node
 
 
@@ -44,11 +45,10 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
     def _parse(path: pathlib.Path) -> dict | None:
         try:
             text = path.read_text(encoding="utf-8")
-            parts = text.split("---", 2)
-            if len(parts) < 3:
+            fm_raw, body = split_frontmatter(text)
+            if not fm_raw:
                 return None
-            fm_raw = parts[1]
-            body = parts[2].strip()
+            body = body.strip()
             # Sanitize curly/fancy quotes in frontmatter values before yaml parse
             fm_safe = re.sub(r'["""]', '"', fm_raw)
             try:

@@ -1,8 +1,10 @@
 import json
 
+import yaml
+
 import database
 from kb.graph import fetch_node_with_object_fields
-from kb.common import USER_DATA_DIR, is_visible_edge
+from kb.common import USER_DATA_DIR, is_visible_edge, split_frontmatter
 
 
 def wiki_subdir(object_type: str) -> str:
@@ -24,8 +26,8 @@ def read_wiki_body(user_id: str, node_id: str, object_type: str, limit: int | No
     if not path.exists():
         return ""
     raw = path.read_text(encoding="utf-8")
-    parts = raw.split("---", 2)
-    body = parts[2].strip() if len(parts) >= 3 else raw.strip()
+    _, body = split_frontmatter(raw)
+    body = body.strip()
     for marker in ("\n## 关联节点\n", "\n## 関連節点\n"):
         if marker in body:
             body = body[: body.index(marker)].strip()
@@ -82,18 +84,8 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
         else:
             relations.append({"id": other, "type": ed["relation_type"]})
 
-    tags_yaml = "[" + ", ".join(tags) + "]"
-    wikilinks_yaml = "[" + ", ".join(wikilinks) + "]"
     source_node_ids = list(node.get("source_node_ids") or [])
-    sources_yaml = "[" + ", ".join(source_node_ids) + "]"
     aliases = list(node.get("aliases") or [])
-    aliases_yaml = "[" + ", ".join(f'"{a}"' for a in aliases) + "]"
-
-    relations_yaml = ""
-    if relations:
-        relations_yaml = "\nrelations:"
-        for rel in relations:
-            relations_yaml += f"\n  - id: {rel['id']}\n    type: {rel['type']}"
 
     title = node["title"] or node_id
     wiki_file = wiki_file_path(user_id, node_id, object_type)
@@ -103,39 +95,51 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
     perspective_val = node.get("perspective") or ""
     perspective_label = node.get("perspective_label") or perspective_val
     perspective_instruction = node.get("perspective_instruction") or perspective_val
-    is_default = "true" if node.get("is_default") else "false"
-    extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nstorage_key: {raw_ref_str}"
+
+    frontmatter: dict = {
+        "id": node_id,
+        "type": object_type,
+        "title": title,
+        "tags": tags,
+        "wikilinks": wikilinks,
+    }
     if object_type == "entity":
-        extra_fm = f"\ncanonical_name: {node.get('canonical_name') or title}\naliases: {aliases_yaml}\nsources: {sources_yaml}"
+        frontmatter["canonical_name"] = node.get("canonical_name") or title
+        frontmatter["aliases"] = aliases
+        frontmatter["sources"] = source_node_ids
     elif object_type == "summary":
-        extra_fm = (
-            f"\nsummary_of: {node.get('summary_of') or ''}\nsources: {sources_yaml}"
-            f"\nperspective: {perspective_val}\nperspective_label: {perspective_label}"
-            f"\nperspective_instruction: {perspective_instruction}\nis_default: {is_default}"
-        )
+        frontmatter["summary_of"] = node.get("summary_of") or ""
+        frontmatter["sources"] = source_node_ids
+        frontmatter["perspective"] = perspective_val
+        frontmatter["perspective_label"] = perspective_label
+        frontmatter["perspective_instruction"] = perspective_instruction
+        frontmatter["is_default"] = bool(node.get("is_default"))
     elif object_type == "index":
-        extra_fm = f"\nsource_type: {node.get('source_type') or ''}\nstorage_key: {raw_ref_str}\nperspective: {perspective_val}"
+        frontmatter["source_type"] = node.get("source_type") or ""
+        frontmatter["storage_key"] = raw_ref_str
+        frontmatter["perspective"] = perspective_val
+    else:
+        frontmatter["source_type"] = node.get("source_type") or ""
+        frontmatter["storage_key"] = raw_ref_str
+    frontmatter.update({
+        "created_at": created_at,
+        "ingested_at": ingested_at,
+        "published_at": published_at,
+        "source_published_at": source_published_at,
+        "source_updated_at": source_updated_at,
+        "captured_at": captured_at,
+        "effective_at": effective_at,
+        "updated_at": updated_at,
+    })
+    if relations:
+        frontmatter["relations"] = [{"id": r["id"], "type": r["type"]} for r in relations]
 
-    content = f"""---
-id: {node_id}
-type: {object_type}
-title: "{title}"
-tags: {tags_yaml}
-wikilinks: {wikilinks_yaml}{extra_fm}
-created_at: {created_at}
-ingested_at: {ingested_at}
-published_at: {published_at}
-source_published_at: {source_published_at}
-source_updated_at: {source_updated_at}
-captured_at: {captured_at}
-effective_at: {effective_at}
-updated_at: {updated_at}{relations_yaml}
----
+    fm = yaml.safe_dump(
+        frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096
+    )
+    heading = title.replace("\n", " ").strip()
+    content = f"---\n{fm}---\n\n# {heading}\n\n{export_body}\n"
 
-# {title}
-
-{export_body}
-"""
     if relations:
         content += "\n## 关联节点\n"
         for rel in relations:
