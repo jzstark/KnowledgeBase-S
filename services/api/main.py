@@ -1,12 +1,19 @@
 from contextlib import asynccontextmanager
 import os
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import database
-from auth import create_token, require_auth, verify_password
+from auth import (
+    clear_login_attempts,
+    create_token,
+    login_rate_limited,
+    record_failed_login,
+    require_auth,
+    verify_password,
+)
 from settings import settings
 from app import settings as user_settings_module
 from kb import entity as kb_entity
@@ -78,10 +85,28 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _login_ip(request: Request) -> str:
+    """Client IP behind nginx (X-Real-IP / X-Forwarded-For), for rate limiting."""
+    xff = request.headers.get("x-forwarded-for", "")
+    return (
+        request.headers.get("x-real-ip")
+        or (xff.split(",")[0].strip() if xff else "")
+        or (request.client.host if request.client else "unknown")
+    )
+
+
 @app.post("/api/auth/login")
-async def login(body: LoginRequest, response: Response):
+async def login(body: LoginRequest, request: Request, response: Response):
+    ip = _login_ip(request)
+    if login_rate_limited(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="尝试次数过多，请稍后再试",
+        )
     if not verify_password(body.password):
+        record_failed_login(ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="密码错误")
+    clear_login_attempts(ip)
     token = create_token()
     response.set_cookie(
         key="token",

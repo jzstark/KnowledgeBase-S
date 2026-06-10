@@ -56,12 +56,16 @@ These are the endpoints the ingestion worker calls, but they share the public `/
 `main.py:32-38` sets `allow_origins=["*"]` together with `allow_credentials=True`. Starlette resolves this by *reflecting the request's Origin* and returning `Access-Control-Allow-Credentials: true`, i.e. any website may make credentialed cross-origin calls and read the responses. The auth cookie is `samesite=lax` (`main.py:75`), which blocks it from being attached on cross-site `fetch`, so practical exploitability is limited today — but the configuration is wrong and a future change to `samesite=none` would open credential theft/CSRF. Pin `allow_origins` to the known frontend origin(s).
 
 ### A5. nginx exposes an agent UI with no auth
-**Severity: Medium (informational)**
+**Severity: Medium (informational)** — ✅ **Resolved 2026-06-10 (clarified / accepted)**
 
-`nginx/nginx.conf` proxies `/agent/` to `host.docker.internal:18789` with no authentication in front of it. If that backend is a control/agent surface, it is internet-reachable unauthenticated. Confirm intent or put it behind auth.
+> Investigated. The `/agent/` → `host.docker.internal:18789` proxy targets **OpenClaw**, which the owner confirms is **not deployed anywhere** — so there is no live unauthenticated surface (the proxy currently resolves to nothing). It is unrelated to kb-chat: kb-chat is a standalone **LibreChat** stack on its own domain (`chat.laughtale.co.uk` → `librechat:3080`) with its own `JWT_SECRET` auth, reached through kb-chat's own nginx — it does not use the `/agent/` route.
+>
+> **Residual note (not a current risk):** the `/agent/` block is dead config. If OpenClaw (or anything) is ever started on host `:18789`, it would become internet-reachable unauthenticated via `swanny.laughtale.co.uk/agent/`. Recommend deleting the two `/agent` `location` blocks from `nginx/nginx.conf` until/unless OpenClaw is reintroduced behind its own auth. (Left in place per owner; flagged here.)
 
 ### A6. Login has no rate limiting and uses a non-constant-time password compare
-**Severity: Low**
+**Severity: Low** — ✅ **Resolved 2026-06-10**
+
+> Fixed both: `verify_password` now uses `hmac.compare_digest` (UTF-8 bytes, so non-ASCII passwords don't raise), and `POST /api/auth/login` is throttled by a per-client sliding-window limiter (`LOGIN_MAX_ATTEMPTS`/`LOGIN_WINDOW_SECONDS`, default 10 per 300s) keyed on the real client IP (`X-Real-IP`/`X-Forwarded-For` behind nginx). Only failed attempts count; a successful login clears the counter; over-limit returns 429. Tests added (constant-time compare incl. non-ASCII, lockout + reset, per-IP isolation) — 10/10 pass.
 
 `verify_password` (`auth.py:15-16`) compares with `==` (timing-observable) and `POST /api/auth/login` (`main.py:66`) has no throttling, so the single shared password is brute-forceable. Use `hmac.compare_digest` (as `verify_service_token` already does) and add basic rate limiting.
 

@@ -48,5 +48,51 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 401)
 
 
+class PasswordTests(unittest.TestCase):
+    def setUp(self):
+        self.original = auth.AUTH_PASSWORD
+        auth.AUTH_PASSWORD = "s3cr3t"
+
+    def tearDown(self):
+        auth.AUTH_PASSWORD = self.original
+
+    def test_correct_password_strips_whitespace(self):
+        self.assertTrue(auth.verify_password("  s3cr3t  "))
+
+    def test_wrong_password(self):
+        self.assertFalse(auth.verify_password("nope"))
+
+    def test_non_ascii_password_does_not_raise(self):
+        auth.AUTH_PASSWORD = "пароль密码"
+        self.assertTrue(auth.verify_password("пароль密码"))
+        self.assertFalse(auth.verify_password("wrong"))
+
+
+class LoginRateLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.original_max = auth.LOGIN_MAX_ATTEMPTS
+        auth.LOGIN_MAX_ATTEMPTS = 3
+        auth._login_attempts.clear()
+
+    def tearDown(self):
+        auth.LOGIN_MAX_ATTEMPTS = self.original_max
+        auth._login_attempts.clear()
+
+    def test_blocks_after_max_failures_and_clears_on_success(self):
+        ip = "203.0.113.7"
+        for _ in range(3):
+            self.assertFalse(auth.login_rate_limited(ip))
+            auth.record_failed_login(ip)
+        self.assertTrue(auth.login_rate_limited(ip))  # 4th attempt blocked
+        auth.clear_login_attempts(ip)                 # successful login resets
+        self.assertFalse(auth.login_rate_limited(ip))
+
+    def test_other_ips_unaffected(self):
+        for _ in range(3):
+            auth.record_failed_login("203.0.113.7")
+        self.assertTrue(auth.login_rate_limited("203.0.113.7"))
+        self.assertFalse(auth.login_rate_limited("198.51.100.2"))
+
+
 if __name__ == "__main__":
     unittest.main()

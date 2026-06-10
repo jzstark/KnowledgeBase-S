@@ -1,5 +1,7 @@
 import os
 import hmac
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Cookie, Header, HTTPException, status
@@ -11,9 +13,33 @@ KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_DAYS = 7
 
+# Brute-force throttle for the single shared password.
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "10"))
+LOGIN_WINDOW_SECONDS = float(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+
 
 def verify_password(password: str) -> bool:
-    return password.strip() == AUTH_PASSWORD
+    # Constant-time compare so the password can't be recovered by timing.
+    # Encode to bytes so non-ASCII passwords don't raise (compare_digest on str
+    # rejects non-ASCII).
+    return hmac.compare_digest(password.strip().encode("utf-8"), AUTH_PASSWORD.encode("utf-8"))
+
+
+def login_rate_limited(ip: str) -> bool:
+    """True if this client has too many recent failed logins (sliding window)."""
+    cutoff = time.monotonic() - LOGIN_WINDOW_SECONDS
+    attempts = _login_attempts[ip]
+    attempts[:] = [t for t in attempts if t > cutoff]
+    return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def record_failed_login(ip: str) -> None:
+    _login_attempts[ip].append(time.monotonic())
+
+
+def clear_login_attempts(ip: str) -> None:
+    _login_attempts.pop(ip, None)
 
 
 def create_token() -> str:
