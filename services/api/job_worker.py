@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import traceback
 
 import database
@@ -7,6 +8,10 @@ import jobs
 
 
 POLL_INTERVAL_SECONDS = float(os.environ.get("JOB_WORKER_POLL_INTERVAL", "2"))
+# A job stuck in 'running' longer than this is treated as abandoned (crashed
+# worker) and reclaimed. Must exceed the longest expected job duration.
+STUCK_TIMEOUT_SECONDS = float(os.environ.get("JOB_STUCK_TIMEOUT_SECONDS", "900"))
+RECLAIM_INTERVAL_SECONDS = float(os.environ.get("JOB_RECLAIM_INTERVAL", "60"))
 
 
 async def run_job(job: dict) -> dict:
@@ -60,8 +65,16 @@ async def run_job(job: dict) -> dict:
 async def worker_loop() -> None:
     await database.init()
     print("[job-worker] started", flush=True)
+    last_reclaim = 0.0
     try:
         while True:
+            now = time.monotonic()
+            if now - last_reclaim >= RECLAIM_INTERVAL_SECONDS:
+                reclaimed = await jobs.reclaim_stuck_jobs(STUCK_TIMEOUT_SECONDS)
+                if reclaimed:
+                    print(f"[job-worker] reclaimed {reclaimed} stuck job(s)", flush=True)
+                last_reclaim = now
+
             job = await jobs.claim_next_job()
             if not job:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)

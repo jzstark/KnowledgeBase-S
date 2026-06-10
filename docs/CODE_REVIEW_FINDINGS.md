@@ -70,17 +70,23 @@ These are the endpoints the ingestion worker calls, but they share the public `/
 ## B. Correctness bugs
 
 ### B1. Job idempotency is racy — duplicate jobs under concurrency
-**Severity: Medium**
+**Severity: Medium** — ✅ **Resolved 2026-06-10**
+
+> Fixed: Alembic `0002` replaces the non-unique index with a **partial unique** index `uq_jobs_active_idempotency` on `(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND status IN ('pending','running','retrying')` (active states only, so a key is re-usable once its job is terminal — keys like `run_maintenance:default` are reused). `enqueue_job` is now a single atomic `INSERT … ON CONFLICT … DO UPDATE (no-op) RETURNING`, eliminating the read-then-insert race. Verified against Postgres: 12 truly-concurrent same-key enqueues yield exactly one row; unkeyed jobs always insert; re-enqueue after terminal creates a fresh job.
 
 `enqueue_job` (`jobs.py:46-60`) does a read-then-insert: it `SELECT`s for an existing non-terminal job with the same `idempotency_key`, and inserts if none found. There is **no unique constraint** backing this — `database.py:482` drops the old unique index and `database.py:485` recreates it as a plain (non-unique) `CREATE INDEX`. Two concurrent enqueues with the same key both see "none" and both insert. Make `idx_jobs_user_idempotency_key` a `UNIQUE` partial index and handle the conflict, or upsert.
 
 ### B2. No recovery for jobs stuck in `running`
-**Severity: Medium**
+**Severity: Medium** — ✅ **Resolved 2026-06-10**
+
+> Fixed: added `jobs.reclaim_stuck_jobs(timeout)` — `running` jobs whose `started_at` is older than the timeout are requeued as `retrying` (or `failed` if attempts are exhausted). The job-worker loop calls it on a time-gated cadence (`JOB_RECLAIM_INTERVAL`, default 60s; `JOB_STUCK_TIMEOUT_SECONDS`, default 900s — must exceed the longest job). Verified: stuck→retrying, attempts-exhausted→failed, within-timeout→untouched.
 
 `claim_next_job` (`jobs.py:157-177`) only claims `pending`/`retrying`. If a worker crashes (or the process is killed) mid-job, the row stays `status='running'` forever and is never retried — it's invisible to the claimer and to `retry_job` (which only accepts `failed`/`cancelled`). There is no lease/heartbeat/timeout. Add a "reclaim jobs running longer than N minutes" sweep, or a visibility timeout.
 
 ### B3. Worker-triggering is fire-and-forget and silently swallows failures
-**Severity: Medium**
+**Severity: Medium** — ✅ **Resolved 2026-06-10**
+
+> Fixed both ways the finding suggested. (1) The trigger is no longer silent: `_trigger_ingestion()` logs failures and the upload/add-url responses return a `triggered` flag so the caller knows the async kick didn't fire. (2) Resilience: new `GET /api/sources/pending/source-ids` lets the worker's poll loop also process **any** source with pending items (manual uploads included), so a missed trigger is recovered on the next poll instead of leaving items `pending` forever.
 
 After upload/add-url, the API calls `POST {INGESTION_WORKER_URL}/trigger/{id}` inside `try/except Exception: pass` (`sources.py:762-768`, `sources.py:810-816`). If the worker is down or the call fails, the user gets `{"ok": true}` but nothing is ever ingested and no error is surfaced or recorded. The worker's hourly poll only covers `subscription` sources, not `manual` uploads, so a missed trigger means the item sits `pending` indefinitely. At minimum, log the failure; better, rely on the worker polling `pending` items for all source types rather than on a best-effort HTTP ping.
 
@@ -175,5 +181,5 @@ For each article, `pipeline.py` calls the API over HTTP for analysis context, ca
 1. ~~**A1 + A2** (unauthenticated file read/write/delete + traversal)~~ — ✅ done.
 2. ~~**A3** (unauthenticated source mutations) and **A4** (CORS)~~ — ✅ done.
 3. ~~**C1** (replace boot-time migrations with versioned migrations)~~ — ✅ done (Alembic).
-4. **B1/B2** (job-queue idempotency + stuck-job recovery), **B3** (lost ingestion triggers).
+4. ~~**B1/B2** (job-queue idempotency + stuck-job recovery), **B3** (lost ingestion triggers)~~ — ✅ done.
 5. **B4** (wiki frontmatter escaping), then the remaining design-debt items.

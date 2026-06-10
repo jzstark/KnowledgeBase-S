@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import secrets
 from datetime import date, datetime, timezone
@@ -23,6 +24,28 @@ WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "https://rss.laughta
 WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"
+
+logger = logging.getLogger(__name__)
+
+
+async def _trigger_ingestion(source_id: str) -> bool:
+    """Best-effort kick to the ingestion worker. Returns whether it was reached.
+
+    Items are already persisted as 'pending', so a failed trigger is not fatal:
+    the worker's poll loop picks up any source with pending items as a fallback
+    (see GET /pending/source-ids). We log instead of swallowing silently.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "ingestion trigger failed for %s: %s; items remain pending for the worker poll",
+            source_id,
+            exc,
+        )
+        return False
 
 
 class SourceCreate(BaseModel):
@@ -630,6 +653,23 @@ async def update_source_item(item_id: str, body: SourceItemUpdate, _: dict = Dep
     return _serialize_source_item(row)
 
 
+@router.get("/pending/source-ids")
+async def list_pending_source_ids(_: dict = Depends(require_auth_or_service_token)):
+    """Source ids that still have pending items. The ingestion worker polls this
+    so manual uploads whose trigger ping was missed still get processed."""
+    rows = await database.database.fetch_all(
+        """
+        SELECT DISTINCT si.source_id
+        FROM source_items si
+        JOIN sources s ON s.id = si.source_id
+        WHERE si.status = 'pending'
+          AND si.source_id IS NOT NULL
+          AND s.deleted_at IS NULL
+        """
+    )
+    return {"source_ids": [r["source_id"] for r in rows]}
+
+
 @router.get("/{source_id}")
 async def get_source(source_id: str, _: dict = Depends(require_auth_or_service_token)):
     """获取单个 source 详情（含文章数）。"""
@@ -774,16 +814,15 @@ async def upload_to_source(
         )
         source_items.append(item)
 
-    # 触发 ingestion-worker（fire-and-forget）
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
-            )
-    except Exception:
-        pass
+    # 触发 ingestion-worker（best-effort；失败由 worker 轮询兜底）
+    triggered = await _trigger_ingestion(source_id)
 
-    return {"ok": True, "files_saved": len(saved), "source_items": source_items}
+    return {
+        "ok": True,
+        "files_saved": len(saved),
+        "source_items": source_items,
+        "triggered": triggered,
+    }
 
 
 @router.post("/{source_id}/add-url")
@@ -823,15 +862,14 @@ async def add_url_to_source(
         for url in urls
     ]
 
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
-            )
-    except Exception:
-        pass
+    triggered = await _trigger_ingestion(source_id)
 
-    return {"ok": True, "urls_queued": len(urls), "source_items": source_items}
+    return {
+        "ok": True,
+        "urls_queued": len(urls),
+        "source_items": source_items,
+        "triggered": triggered,
+    }
 
 
 @router.post("/{source_id}/fetch")

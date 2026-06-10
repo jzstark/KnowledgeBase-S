@@ -93,6 +93,19 @@ async def fetch_connectors() -> list[dict]:
     return []
 
 
+async def fetch_pending_source_ids() -> list[str]:
+    """Source ids with pending items — fallback so manual uploads whose trigger
+    ping was missed still get processed on the next poll."""
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
+        try:
+            resp = await client.get(f"{API_BASE_URL}/api/sources/pending/source-ids", timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get("source_ids", [])
+        except Exception as exc:
+            logger.warning("拉取 pending source ids 失败: %s", exc)
+    return []
+
+
 def build_source(config: dict):
     """根据 source 配置构造对应的 Source 实例。"""
     t = config["type"]
@@ -172,6 +185,15 @@ async def run_once():
         if matching_source:
             subscription_sources.append(matching_source)
             existing_source_ids.add(con_source_id)
+
+    # 兜底：任何仍有 pending item 的 source（含手动上传，trigger ping 可能丢失）
+    for sid in await fetch_pending_source_ids():
+        if sid in existing_source_ids:
+            continue
+        matching_source = next((s for s in sources if s["id"] == sid), None)
+        if matching_source:
+            subscription_sources.append(matching_source)
+            existing_source_ids.add(sid)
 
     logger.info(f"共 {len(subscription_sources)} 个订阅源待自动抓取")
 

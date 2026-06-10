@@ -43,22 +43,11 @@ async def enqueue_job(
     idempotency_key: str | None = None,
     max_attempts: int = 3,
 ) -> dict[str, Any]:
-    if idempotency_key:
-        existing = await database.database.fetch_one(
-            """
-            SELECT *
-            FROM jobs
-            WHERE user_id = :user_id
-              AND idempotency_key = :idempotency_key
-              AND status NOT IN ('succeeded', 'failed', 'cancelled')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            {"user_id": user_id, "idempotency_key": idempotency_key},
-        )
-        if existing:
-            return _job(existing)
-
+    # Race-safe idempotency: the partial unique index uq_jobs_active_idempotency
+    # covers only active jobs with a non-null key, so a concurrent duplicate
+    # conflicts and the no-op DO UPDATE returns the existing in-flight job.
+    # Rows without a key (or whose prior job is already terminal) are not in the
+    # index, so they just insert.
     job_id = f"job_{secrets.token_hex(8)}"
     row = await database.database.fetch_one(
         """
@@ -68,6 +57,10 @@ async def enqueue_job(
         VALUES
           (:id, :user_id, :job_type, :provider, :model, :payload, :priority,
            :idempotency_key, :max_attempts)
+        ON CONFLICT (user_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL
+            AND status IN ('pending', 'running', 'retrying')
+        DO UPDATE SET idempotency_key = jobs.idempotency_key
         RETURNING *
         """,
         {
@@ -202,3 +195,28 @@ async def fail_job(job_id: str, error: str) -> None:
         """,
         {"id": job_id, "error": error[:4000]},
     )
+
+
+async def reclaim_stuck_jobs(timeout_seconds: float) -> int:
+    """Recover jobs whose worker died mid-run.
+
+    A claimed job sits in 'running' with no further heartbeat; if it has been
+    there longer than timeout_seconds the worker is assumed dead. Re-queue it as
+    'retrying' (or fail it if attempts are exhausted) so it is picked up again.
+    timeout_seconds must exceed the longest expected job duration to avoid
+    reclaiming a job that is still legitimately running.
+    """
+    rows = await database.database.fetch_all(
+        """
+        UPDATE jobs
+        SET status = CASE WHEN attempts < max_attempts THEN 'retrying' ELSE 'failed' END,
+            error = COALESCE(error, 'reclaimed: still running after timeout, worker assumed dead'),
+            finished_at = CASE WHEN attempts < max_attempts THEN NULL ELSE NOW() END
+        WHERE status = 'running'
+          AND started_at IS NOT NULL
+          AND started_at < NOW() - make_interval(secs => :timeout)
+        RETURNING id
+        """,
+        {"timeout": timeout_seconds},
+    )
+    return len(rows)
