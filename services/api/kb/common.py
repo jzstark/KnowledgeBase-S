@@ -14,6 +14,20 @@ def vector_literal(values: list[float]) -> str:
     return "[" + ",".join(repr(x) for x in values) + "]"
 
 
+def message_text(message) -> str:
+    """Concatenate the text of all text blocks in an Anthropic response.
+
+    Returns "" when the response has no content or contains no text block (e.g.
+    a tool-use-only or refusal response, or an empty completion) instead of
+    raising IndexError on ``content[0]`` or silently reading a non-text block.
+    """
+    parts: list[str] = []
+    for block in getattr(message, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", "") or "")
+    return "".join(parts).strip()
+
+
 def split_frontmatter(raw: str) -> tuple[str, str]:
     """Split a wiki markdown file into (frontmatter_text, body_text).
 

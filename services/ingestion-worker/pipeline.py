@@ -28,7 +28,7 @@ from openai import AsyncOpenAI
 from article_ingestion import ArticleIngestionAdapters, ArticleIngestionInput, process_article_like_item
 from settings import settings
 from prompts import prompts
-from sources.base import BaseSource, RawItem
+from sources.base import BaseSource, RawItem, message_text
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def _service_headers() -> dict[str, str]:
 
 
 def _message_text(message: Any) -> str:
-    return getattr(message.content[0], "text", "").strip() if message.content else ""
+    return message_text(message)
 
 
 def _infer_title_from_text(text: str) -> str | None:

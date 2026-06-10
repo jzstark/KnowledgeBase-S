@@ -4,6 +4,20 @@ from datetime import datetime
 from typing import Literal
 
 
+def message_text(message) -> str:
+    """Concatenate the text of all text blocks in an Anthropic response.
+
+    Returns "" when the response has no content or no text block (tool-use /
+    refusal / empty completion) instead of raising IndexError on content[0] or
+    reading a non-text block.
+    """
+    parts: list[str] = []
+    for block in getattr(message, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", "") or "")
+    return "".join(parts).strip()
+
+
 @dataclass
 class RawItem:
     source_id: str

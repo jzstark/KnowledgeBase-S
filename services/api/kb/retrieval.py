@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 
 from settings import settings
 from prompts import prompts
-from kb.common import vector_literal
+from kb.common import message_text, vector_literal
 
 openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 claude_client = anthropic.AsyncAnthropic(api_key=os.environ.get("CLAUDE_API_KEY", ""))
@@ -30,7 +30,7 @@ async def embed_query(text: str) -> list[float]:
             max_tokens=settings.llm_output_tokens.hyde_abstract,
             messages=[{"role": "user", "content": prompts.hyde_abstract(topic=text)}],
         )
-        hypo_text = getattr(hypo.content[0], "text", "").strip()
+        hypo_text = message_text(hypo)
         if hypo_text:
             return await embed_text(hypo_text)
     except Exception:

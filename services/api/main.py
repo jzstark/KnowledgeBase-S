@@ -37,6 +37,7 @@ ALLOWED_ORIGINS = _cors_allow_origins()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await database.init()
+    await database.validate_embedding_dimension(settings.embedding.dimensions)
     yield
     await database.database.disconnect()
 

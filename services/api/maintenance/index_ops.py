@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 import database
 from settings import settings
 from prompts import prompts
+from kb.common import message_text
 from kb.graph import upsert_object_node
 
 
@@ -116,7 +117,7 @@ async def aggregate_index_abstracts(
                 max_tokens=settings.llm_output_tokens.index_summary,
                 messages=[{"role": "user", "content": prompt}],
             )
-            new_abstract = getattr(resp.content[0], "text", "").strip()
+            new_abstract = message_text(resp)
         except Exception as e:
             print(f"[maintenance] index_abstract LLM error for {idx_id}: {e}", flush=True)
             skipped += 1

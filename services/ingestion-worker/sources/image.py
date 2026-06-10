@@ -19,7 +19,7 @@ from pathlib import Path
 import anthropic
 from PIL import Image
 
-from sources.base import RawItem
+from sources.base import RawItem, message_text
 from settings import settings
 from prompts import prompts
 from sources.file_base import FileSourceMixin
@@ -77,7 +77,7 @@ def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
             ],
         }],
     )
-    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
+    return message_text(msg)
 
 
 def _cleanup(raw_text: str) -> str:
@@ -90,7 +90,7 @@ def _cleanup(raw_text: str) -> str:
             "content": f"{prompts.image_cleanup()}\n\n---\n\n{raw_text}",
         }],
     )
-    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
+    return message_text(msg)
 
 
 class ImageSource(FileSourceMixin):

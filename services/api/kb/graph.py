@@ -37,6 +37,7 @@ import math
 from typing import Any
 
 import database
+from kb.common import message_text
 from prompts import prompts
 from settings import settings
 
@@ -721,7 +722,7 @@ async def lm_refresh_entity_abstract(entity_id: str) -> dict[str, Any]:
             new_source_abstracts=source_abstracts,
         )}],
     )
-    new_abstract = getattr(message.content[0], "text", "").strip()
+    new_abstract = message_text(message)
     if not new_abstract:
         return {"entity_id": entity_id, "refreshed": False, "reason": "empty_response"}
 

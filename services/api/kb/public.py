@@ -27,7 +27,7 @@ from kb.graph import fetch_node_with_object_fields
 from settings import settings
 from prompts import prompts
 from auth import require_auth_or_service_token
-from kb.common import USER_ID, _is_visible_edge, _vector_literal
+from kb.common import USER_ID, _is_visible_edge, _vector_literal, message_text
 from kb.retrieval import _embed_query, claude_client
 from kb.wiki import _read_wiki_body
 
@@ -731,7 +731,7 @@ async def compare(
         max_tokens=settings.llm_output_tokens.compare,
         messages=[{"role": "user", "content": prompt}],
     )
-    output = getattr(resp.content[0], "text", "").strip()
+    output = message_text(resp)
 
     # 简单切分表格与分析：找到表格末尾（最后一个 | 开头的行），之后归为 analysis
     lines = output.split("\n")
@@ -860,7 +860,7 @@ async def cite(
         max_tokens=settings.llm_output_tokens.cite,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw_text = getattr(resp.content[0], "text", "")
+    raw_text = message_text(resp)
     candidate_quotes = _extract_json_array(raw_text)
 
     # 服务端验证：quote 必须逐字出现在正文中（防 LLM 幻觉）
@@ -992,7 +992,7 @@ async def summarize_corpus(
         max_tokens=settings.llm_output_tokens.summarize_corpus,
         messages=[{"role": "user", "content": prompt}],
     )
-    summary_text = getattr(resp.content[0], "text", "").strip()
+    summary_text = message_text(resp)
 
     pub_years = [d["published_at"].year for d in docs if isinstance(d.get("published_at"), datetime)]
     if pub_years:

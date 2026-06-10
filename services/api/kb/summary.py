@@ -24,7 +24,7 @@ from kb.graph import upsert_object_node
 from settings import settings
 from prompts import prompts
 from auth import require_auth
-from kb.common import USER_ID, _vector_literal
+from kb.common import USER_ID, _vector_literal, message_text
 from kb.retrieval import _embed_text, claude_client
 from kb.wiki import _wiki_file_path, write_wiki_node
 from kb.ingest import _summary_perspective, build_similar_edges
@@ -85,7 +85,7 @@ async def generate_summary_job(
         max_tokens=settings.llm_output_tokens.summary_gen,
         messages=[{"role": "user", "content": prompt}],
     )
-    summary_content = getattr(message.content[0], "text", "").strip()
+    summary_content = message_text(message)
 
     body_embedding = await _embed_text(summary_content)
     perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
@@ -202,7 +202,7 @@ async def revise_summary_job(
         max_tokens=settings.llm_output_tokens.summary_gen,
         messages=[{"role": "user", "content": prompt}],
     )
-    revised_content = getattr(message.content[0], "text", "").strip()
+    revised_content = message_text(message)
 
     body_embedding = await _embed_text(revised_content)
     body_embedding_literal = _vector_literal(body_embedding)

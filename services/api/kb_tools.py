@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 import database
 from kb.graph import fetch_node_with_object_fields
-from kb.common import split_frontmatter
+from kb.common import message_text, split_frontmatter
 from settings import settings
 from prompts import prompts
 
@@ -111,7 +111,7 @@ async def _embed_query(text: str) -> list[float]:
             max_tokens=settings.llm_output_tokens.hyde_abstract,
             messages=[{"role": "user", "content": prompts.hyde_abstract(topic=text)}],
         )
-        hypo_text = getattr(hypo.content[0], "text", "").strip()
+        hypo_text = message_text(hypo)
         if hypo_text:
             return await _embed_text(hypo_text)
     except Exception:

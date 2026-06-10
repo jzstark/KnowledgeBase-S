@@ -7,6 +7,7 @@ import httpx
 import database
 from settings import settings
 from prompts import prompts
+from kb.common import message_text
 from kb.graph import refresh_entity_profile, upsert_fact_from_mention
 
 
@@ -69,7 +70,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
                 max_tokens=settings.llm_output_tokens.entity_page,
                 messages=[{"role": "user", "content": prompt}],
             )
-            entity_body = getattr(resp.content[0], "text", "").strip()
+            entity_body = message_text(resp)
         except Exception as e:
             print(f"[maintenance] entity page generation failed for {row['canonical_name']}: {e}")
             continue

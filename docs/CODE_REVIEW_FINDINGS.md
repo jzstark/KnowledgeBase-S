@@ -105,17 +105,23 @@ tags: [{", ".join(tags)}]
 `title`, `tags`, and `aliases` come from the LLM and from source content. A title containing `"` or a newline, or a tag containing `,`/`]`, produces invalid YAML and a malformed document. Downstream `read_wiki_body` splits on `---` (`kb/wiki.py:27`), so a stray `---` in the body would also mis-parse. Serialize via a YAML library (or escape) instead of string interpolation.
 
 ### B5. Embedding dimension is hard-coded in DDL but configurable in settings
-**Severity: Low/Medium**
+**Severity: Low/Medium** — ✅ **Resolved 2026-06-10**
+
+> Fixed by making the divergence fail loudly instead of silently. The vector columns are a fixed size (the schema is the storage authority); `database.validate_embedding_dimension()` introspects the actual `knowledge_nodes.embedding` dimension (pgvector `atttypmod`) and the api lifespan checks it against `settings.embedding.dimensions` at startup, raising a clear error if they diverge. So changing the config without a matching column migration stops the app at boot rather than corrupting writes. Verified: introspection returns 1536; matching config passes, mismatched raises.
 
 The schema fixes every vector column at `vector(1536)` (`database.py:23,42,119,…`), while the embedding dimension is a runtime setting (`settings.embedding.dimensions`, used in `pipeline.py:342` and `retrieval.py:18`). If anyone changes the configured dimension, inserts will fail or silently mismatch the column. The DDL and the config must be derived from one source of truth.
 
 ### B6. `_message_text` / `getattr(resp.content[0], "text", "")` assumes a text block exists
-**Severity: Low**
+**Severity: Low** — ✅ **Resolved 2026-06-10**
+
+> Fixed: added a shared `message_text()` helper (`kb/common.py` for the API, `sources/base.py` for the worker) that iterates content blocks, returns the concatenated text of all *text* blocks, and yields `""` for empty content / tool-use / refusal responses — no `content[0]` IndexError and no reading a non-text block. Replaced all 13 call sites (`kb/public`, `kb/summary`, `kb/retrieval`, `kb/graph`, `kb_tools`, `maintenance/{entity,index}_ops`, `pipeline.py`, `sources/{pdf,image}`). Verified against empty/None/non-text/multi-block inputs.
 
 Throughout `kb/public.py` (e.g. `compare` line 734, `cite` line 863) and `pipeline.py:48`, the code reads `resp.content[0]` without checking the block type or that `content` is non-empty. A stop for `max_tokens`, a tool/refusal block, or an empty response yields an `IndexError` or an empty string silently treated as a valid answer. Guard for empty content and non-text blocks.
 
 ### B7. ivfflat indexes are created on empty tables and never retrained
-**Severity: Low (recall quality)**
+**Severity: Low (recall quality)** — ✅ **Resolved 2026-06-10**
+
+> Fixed: Alembic `0003` drops the three ivfflat vector indexes and recreates them as **HNSW** (`USING hnsw (… vector_cosine_ops)`). HNSW needs no centroid training, is built incrementally as rows are inserted, and gives better recall as the corpus grows — no empty-table problem and no periodic REINDEX. Verified: after `upgrade head` all three indexes report `amname = hnsw`.
 
 `idx_knowledge_nodes_embedding` and the summary-vector indexes are created `WITH (lists = 100)` at first boot when the tables are empty (`database.py:448, 469-472`). ivfflat builds its centroids from existing rows, so an index built on an empty/tiny table gives poor recall and is never rebuilt as data grows. Consider building the index after initial load, periodic `REINDEX`, or HNSW.
 

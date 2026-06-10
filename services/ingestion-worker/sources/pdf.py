@@ -7,7 +7,7 @@ import os
 import anthropic
 import fitz  # PyMuPDF
 
-from sources.base import RawItem
+from sources.base import RawItem, message_text
 from settings import settings
 from prompts import prompts
 from sources.file_base import FileSourceMixin
@@ -25,7 +25,7 @@ def _cleanup(raw_text: str) -> str:
             "content": f"{prompts.pdf_cleanup()}\n\n---\n\n{raw_text}",
         }],
     )
-    return getattr(msg.content[0], "text", "").strip() if msg.content else ""
+    return message_text(msg)
 
 
 class PDFSource(FileSourceMixin):
