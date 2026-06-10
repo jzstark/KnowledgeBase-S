@@ -65,7 +65,7 @@ class RSSSource(BaseSource):
             url = entry.get("link", "")
             guid = entry.get("id", url)
             guid_hash = hashlib.md5(guid.encode()).hexdigest()[:8]
-            date_str = (item_time or datetime.utcnow()).strftime("%Y-%m-%d")
+            date_str = (item_time or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
             title = entry.get("title", "")
 
             # 优先用 entry 自带 content，否则用 summary 字段
@@ -82,7 +82,7 @@ class RSSSource(BaseSource):
                     raw_ref={"type": "url", "url": url},
                     content_type="text/html",
                     raw_bytes=content.encode("utf-8") if content else None,
-                    fetched_at=item_time or datetime.utcnow(),
+                    fetched_at=item_time or datetime.now(timezone.utc),
                     source_published_at=published_at,
                     source_updated_at=updated_at,
                     captured_at=datetime.now(timezone.utc),

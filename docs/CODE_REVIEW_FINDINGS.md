@@ -185,14 +185,14 @@ For each article, `pipeline.py` calls the API over HTTP for analysis context, ca
 
 ---
 
-## D. Smaller issues / nits
+## D. Smaller issues / nits — ✅ **All resolved 2026-06-10**
 
-- **`datetime.utcnow()` (deprecated, naïve)** used in `pipeline.py:74,210,515` and `save_raw`, mixing naïve and tz-aware datetimes elsewhere. Use `datetime.now(timezone.utc)`.
-- **Raw-file name collisions:** `save_raw` writes `raw/<type>/<file_name>` and `write_bytes` overwrites; two items deriving the same name clobber each other (`pipeline.py:70-79`).
-- **`list_sources` count query** groups by `source_id` including `NULL` (`sources.py:650-654`); nodes with no source inflate a `count_map[None]` bucket that's silently dropped — fine today, but the COUNT scans all nodes with no user filter beyond `'default'`.
-- **`update_source` PUT** parses `last_fetched_at` with `datetime.fromisoformat` without the `Z`→`+00:00` normalization used elsewhere (`sources.py:864`), so a trailing-`Z` timestamp raises a 500 instead of a 400.
-- **`_extract_json_array` / code-fence stripping** in `pipeline.py:289-293` assumes the first ```` ``` ```` block is the JSON; a model that emits prose with an unrelated fenced block first will mis-parse. The `cite` path (`public.py:768-789`) is more defensive — share that logic.
-- **`fail_job` truncates error to 4000 chars** (`jobs.py:203`) but `update_source_item_status` stores full errors; inconsistent error-size policy across queues.
+- ✅ **`datetime.utcnow()` (deprecated, naïve)** — replaced every occurrence (`pipeline.py`, `sources/rss.py`, `sources/base.py` `RawItem.fetched_at` factory) with `datetime.now(timezone.utc)`. None remain in `services/`.
+- ✅ **Raw-file name collisions** — `save_raw`'s fallback name is now content-addressed (`{date}-{sha256(raw_bytes)[:12]}.html`), so distinct items can't clobber each other and identical content re-saves to the same path (idempotent). The named-file/URL paths were already unique.
+- ✅ **`list_sources` count query** — added `AND source_id IS NOT NULL`, dropping the unused `NULL` bucket and skipping source-less nodes (entities/summaries/indices) in the scan.
+- ✅ **`update_source` PUT** — `last_fetched_at` is now normalized (`Z`→`+00:00`) and a bad value returns **400** (was a 500); the parsed value is reused for the connectors update.
+- ✅ **Code-fence / JSON parsing** in `analyze_article` — replaced the "take the first ``` block" heuristic with a defensive `_extract_json_object()` (mirrors the cite-path parser): strips fences, then falls back to first-`{`…last-`}`. Verified it now recovers JSON even when the model emits an unrelated fenced block first.
+- ✅ **Error-size policy** — `update_source_item_status` now caps the stored error at 4000 chars, matching `fail_job`.
 
 ---
 

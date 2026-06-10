@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 
@@ -25,7 +25,7 @@ class RawItem:
     raw_ref: dict                    # {'type': 'file', 'path': '...'} | {'type': 'url', 'url': '...'}
     content_type: str                # 'text/html' | 'text/plain' | ...
     raw_bytes: bytes | None
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None

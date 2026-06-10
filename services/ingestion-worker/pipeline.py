@@ -55,6 +55,30 @@ def _message_text(message: Any) -> str:
     return message_text(message)
 
 
+def _extract_json_object(text: str) -> dict | None:
+    """Parse the first JSON object from an LLM reply, tolerating prose and code
+    fences (mirrors the defensive cite-path parser). Returns None if none found."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        if "```" in text:
+            text = text.rsplit("```", 1)[0]
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(text[start:end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def _infer_title_from_text(text: str) -> str | None:
     first_nonempty: str | None = None
     for line in text.splitlines():
@@ -78,7 +102,15 @@ def save_raw(item: RawItem, source_type: str) -> str:
     raw_dir = USER_DATA_DIR / USER_ID / "raw" / source_type
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    file_name = getattr(item, "_file_name", None) or f"{datetime.utcnow().strftime('%Y-%m-%d')}-unknown.html"
+    file_name = getattr(item, "_file_name", None)
+    if not file_name:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Content-address the fallback name so two items captured the same day
+        # don't clobber each other; identical content re-saves to the same path.
+        if item.raw_bytes:
+            file_name = f"{date_str}-{hashlib.sha256(item.raw_bytes).hexdigest()[:12]}.html"
+        else:
+            file_name = f"{date_str}-unknown.html"
     file_path = raw_dir / file_name
 
     if item.raw_bytes:
@@ -214,7 +246,7 @@ def _raw_item_from_source_item(row: dict, source_type: str) -> RawItem:
             raise RuntimeError(f"failed to fetch URL: {origin_ref}")
         raw_bytes = downloaded.encode("utf-8")
         raw_ref = {"type": "url", "url": origin_ref}
-        file_name = f"{datetime.utcnow().strftime('%Y-%m-%d')}-{hashlib.md5(origin_ref.encode()).hexdigest()[:8]}.html"
+        file_name = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{hashlib.md5(origin_ref.encode()).hexdigest()[:8]}.html"
     else:
         raise RuntimeError("source item has no usable raw snapshot")
 
@@ -292,16 +324,8 @@ def analyze_article(
     )
     raw = _message_text(message)
 
-    # Strip markdown code fences if present
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = _extract_json_object(raw)
+    if data is None:
         # Fallback: extract abstract and tags via regex
         abstract = ""
         tags: list[str] = []
@@ -514,7 +538,7 @@ def write_wiki_entity(entity_id: str, canonical_name: str, aliases: list[str],
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "entities"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
-    created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     frontmatter = {
         "id": entity_id,
         "type": "entity",

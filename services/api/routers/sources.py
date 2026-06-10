@@ -558,7 +558,7 @@ async def update_source_item_status(
         updates.append("error = NULL")
     elif body.status == "failed":
         updates.append("error = :error")
-        params["error"] = body.error
+        params["error"] = body.error[:4000] if body.error else None
     elif body.status == "succeeded":
         updates.append("error = NULL")
     if body.raw_snapshot_ref is not None:
@@ -705,7 +705,7 @@ async def list_sources(
     )
     counts = await database.database.fetch_all(
         "SELECT source_id, COUNT(*) AS cnt FROM knowledge_nodes"
-        " WHERE user_id = 'default' GROUP BY source_id"
+        " WHERE user_id = 'default' AND source_id IS NOT NULL GROUP BY source_id"
     )
     count_map = {r["source_id"]: int(r["cnt"]) for r in counts}
     result = []
@@ -917,19 +917,23 @@ async def update_source(
     if body.default_doc_kind is not None:
         updates.append("default_doc_kind = :default_doc_kind")
         params["default_doc_kind"] = _validate_doc_kind(body.default_doc_kind) or ""
+    last_fetched_dt: datetime | None = None
     if body.last_fetched_at is not None:
+        try:
+            last_fetched_dt = datetime.fromisoformat(body.last_fetched_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(400, "last_fetched_at 必须是 ISO8601 时间")
         updates.append("last_fetched_at = :last_fetched_at")
-        params["last_fetched_at"] = datetime.fromisoformat(body.last_fetched_at)
+        params["last_fetched_at"] = last_fetched_dt
 
     if updates:
         await database.database.execute(
             f"UPDATE sources SET {', '.join(updates)} WHERE id = :id", params
         )
-        if body.last_fetched_at is not None:
+        if last_fetched_dt is not None:
             await database.database.execute(
                 "UPDATE connectors SET last_fetched_at = :ts, updated_at = NOW() WHERE id = :con_id",
-                {"ts": datetime.fromisoformat(body.last_fetched_at),
-                 "con_id": "con_" + source_id[4:]},
+                {"ts": last_fetched_dt, "con_id": "con_" + source_id[4:]},
             )
 
     row = await database.database.fetch_one(
