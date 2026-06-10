@@ -32,6 +32,7 @@ from sources.base import BaseSource, RawItem
 logger = logging.getLogger(__name__)
 
 API_BASE_URL = os.environ["API_BASE_URL"]
+KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
 CLAUDE_API_KEY = os.environ["CLAUDE_API_KEY"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
@@ -42,6 +43,11 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TEXT_CHARS = settings.ingestion.max_text_chars
 MAX_ENTITY_PAGE_SOURCES = settings.ingestion.max_entity_page_sources
+
+
+def _service_headers() -> dict[str, str]:
+    """Auth header for internal API calls gated by require_auth_or_service_token."""
+    return {"X-KB-Service-Token": KB_SERVICE_TOKEN} if KB_SERVICE_TOKEN else {}
 
 
 def _message_text(message: Any) -> str:
@@ -101,7 +107,7 @@ def _parse_item_time(value: str | None) -> datetime | None:
 
 
 async def fetch_pending_source_items(source_id: str, limit: int = 100) -> list[dict]:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.get(
             f"{API_BASE_URL}/api/sources/{source_id}/source-items",
             params={"status": "pending", "limit": limit},
@@ -114,7 +120,7 @@ async def fetch_pending_source_items(source_id: str, limit: int = 100) -> list[d
 async def create_source_items(source_id: str, items: list[dict]) -> list[dict]:
     if not items:
         return []
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(
             f"{API_BASE_URL}/api/sources/{source_id}/source-items",
             json={"items": items},
@@ -140,7 +146,7 @@ async def update_source_item_status(
         "error": error,
         "title": title,
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(
             f"{API_BASE_URL}/api/sources/source-items/{item_id}/status",
             json=payload,
@@ -427,7 +433,7 @@ async def backfill_wikilinks(entity_id: str) -> None:
 
 async def update_last_fetched(source_id: str):
     now = datetime.now(timezone.utc).isoformat()
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         await client.put(
             f"{API_BASE_URL}/api/sources/{source_id}",
             json={"last_fetched_at": now},

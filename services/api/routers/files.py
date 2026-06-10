@@ -11,13 +11,15 @@ import os
 import pathlib
 
 import database
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+
+from auth import require_auth
 
 USER_DATA_DIR = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"
 
-router = APIRouter(prefix="/api/files", tags=["files"])
+router = APIRouter(prefix="/api/files", tags=["files"], dependencies=[Depends(require_auth)])
 
 RAW_TYPES = ["pdf", "image", "wechat", "plaintext", "word"]
 READABLE_PREFIXES = ("wiki/", "config/")
@@ -32,14 +34,19 @@ def _safe_path(rel_path: str, allowed_prefixes: tuple[str, ...], deny_detail: st
     """
     Resolve rel_path within the user directory and verify it stays inside
     an allowed area. Raises 403 otherwise.
+
+    The allowed-area check runs against the *normalized* path (after resolving
+    any `..`), so a value like `config/../wiki/x` cannot slip past the writable
+    prefix and land outside the intended area.
     """
-    if not any(rel_path.startswith(p) for p in allowed_prefixes):
-        raise HTTPException(status_code=403, detail=deny_detail)
-    base = _user_dir()
+    base = _user_dir().resolve()
     resolved = (base / rel_path).resolve()
-    # Guard against path traversal
-    if not str(resolved).startswith(str(base.resolve())):
+    # Guard against path traversal escaping the user directory
+    if not resolved.is_relative_to(base):
         raise HTTPException(status_code=403, detail="路径不合法")
+    rel = resolved.relative_to(base).as_posix()
+    if not any(rel == p.rstrip("/") or rel.startswith(p) for p in allowed_prefixes):
+        raise HTTPException(status_code=403, detail=deny_detail)
     return resolved
 
 

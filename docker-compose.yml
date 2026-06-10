@@ -64,6 +64,7 @@ services:
       CLAUDE_API_KEY: ${CLAUDE_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       API_BASE_URL: http://api:8000
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       WECHAT2RSS_BASE_URL: ${WECHAT2RSS_BASE_URL:-https://rss.laughtale.co.uk/wechat-api}
       WECHAT2RSS_FEED_BASE_URL: ${WECHAT2RSS_FEED_BASE_URL:-https://rss.laughtale.co.uk/wechat}
       WECHAT2RSS_TOKEN: ${WECHAT2RSS_TOKEN}

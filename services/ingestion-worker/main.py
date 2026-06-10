@@ -33,7 +33,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 API_BASE_URL = os.environ["API_BASE_URL"]
+KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", 3600))
+
+
+def _service_headers() -> dict[str, str]:
+    """Auth header for internal API calls gated by require_auth_or_service_token."""
+    return {"X-KB-Service-Token": KB_SERVICE_TOKEN} if KB_SERVICE_TOKEN else {}
 WECHAT2RSS_BASE_URL = os.environ.get("WECHAT2RSS_BASE_URL", "https://rss.laughtale.co.uk/wechat-api")
 WECHAT2RSS_FEED_BASE_URL = os.environ.get("WECHAT2RSS_FEED_BASE_URL", "https://rss.laughtale.co.uk/wechat")
 
@@ -69,7 +75,7 @@ async def trigger_all():
 # ── Core Logic ────────────────────────────────────────────────────────────────
 
 async def fetch_sources() -> list[dict]:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.get(f"{API_BASE_URL}/api/sources", timeout=10)
         resp.raise_for_status()
         return resp.json()

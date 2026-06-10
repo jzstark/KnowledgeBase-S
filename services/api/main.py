@@ -20,6 +20,20 @@ from routers import files, folders as folders_module, sources
 AUTH_COOKIE_DOMAIN = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 
 
+def _cors_allow_origins() -> list[str]:
+    """Explicit CORS allowlist. The browser reaches the API same-origin via the
+    Next.js rewrite, so this is normally empty; set CORS_ALLOW_ORIGINS (comma-
+    separated) only for genuine cross-origin callers."""
+    raw = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    nextauth_url = os.environ.get("NEXTAUTH_URL", "").strip()
+    return [nextauth_url] if nextauth_url else []
+
+
+ALLOWED_ORIGINS = _cors_allow_origins()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await database.init()
@@ -31,7 +45,7 @@ app = FastAPI(title="KnowledgeBase API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 import database
 from settings import settings
-from auth import require_auth
+from auth import require_auth, require_auth_or_service_token
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -464,7 +464,12 @@ async def create_wechat2rss_source(body: Wechat2RSSSourceCreate, _: dict = Depen
 
 
 @router.get("/{source_id}/source-items")
-async def list_source_items(source_id: str, status: str | None = None, limit: int = 100):
+async def list_source_items(
+    source_id: str,
+    status: str | None = None,
+    limit: int = 100,
+    _: dict = Depends(require_auth_or_service_token),
+):
     row = await database.database.fetch_one(
         "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL",
         {"id": source_id},
@@ -490,7 +495,11 @@ async def list_source_items(source_id: str, status: str | None = None, limit: in
 
 
 @router.post("/{source_id}/source-items", status_code=status.HTTP_201_CREATED)
-async def create_source_items(source_id: str, body: SourceItemsCreate):
+async def create_source_items(
+    source_id: str,
+    body: SourceItemsCreate,
+    _: dict = Depends(require_auth_or_service_token),
+):
     row = await database.database.fetch_one(
         """
         SELECT id, user_id, type, fetch_mode, default_doc_kind
@@ -508,7 +517,11 @@ async def create_source_items(source_id: str, body: SourceItemsCreate):
 
 
 @router.post("/source-items/{item_id}/status")
-async def update_source_item_status(item_id: str, body: SourceItemStatusUpdate):
+async def update_source_item_status(
+    item_id: str,
+    body: SourceItemStatusUpdate,
+    _: dict = Depends(require_auth_or_service_token),
+):
     if body.status not in {"pending", "processing", "succeeded", "failed", "ignored"}:
         raise HTTPException(400, "不支持的 source item 状态")
 
@@ -618,7 +631,7 @@ async def update_source_item(item_id: str, body: SourceItemUpdate, _: dict = Dep
 
 
 @router.get("/{source_id}")
-async def get_source(source_id: str):
+async def get_source(source_id: str, _: dict = Depends(require_auth_or_service_token)):
     """获取单个 source 详情（含文章数）。"""
     row = await database.database.fetch_one(
         "SELECT * FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
@@ -641,7 +654,10 @@ async def get_source(source_id: str):
 
 
 @router.get("")
-async def list_sources(include_deleted: bool = False):
+async def list_sources(
+    include_deleted: bool = False,
+    _: dict = Depends(require_auth_or_service_token),
+):
     """列出所有 sources（附带每个 source 的文章数）。"""
     deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
     rows = await database.database.fetch_all(
@@ -837,7 +853,11 @@ async def trigger_fetch(source_id: str, _: dict = Depends(require_auth)):
 
 
 @router.put("/{source_id}")
-async def update_source(source_id: str, body: SourceUpdate):
+async def update_source(
+    source_id: str,
+    body: SourceUpdate,
+    _: dict = Depends(require_auth_or_service_token),
+):
     row = await database.database.fetch_one(
         "SELECT id FROM sources WHERE id = :id AND deleted_at IS NULL", {"id": source_id}
     )
