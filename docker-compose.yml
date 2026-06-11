@@ -62,6 +62,27 @@ services:
     depends_on:
       - api
 
+  kb-mcp:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:latest
+    build:
+      context: ./services/kb-mcp
+    restart: unless-stopped
+    environment:
+      # Outbound: kb-mcp reaches the KB public API over the internal network and
+      # authenticates with the shared service token.
+      KB_API_BASE: http://api:8000
+      KB_PUBLIC_PREFIX: ${KB_PUBLIC_PREFIX:-/api/kb/v1}
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
+      # Inbound: callers (LibreChat, Claude Desktop, scripts) must present this
+      # token via X-MCP-Token or Bearer. Blank => the endpoint rejects everything.
+      MCP_STATIC_TOKEN: ${MCP_STATIC_TOKEN:-}
+      PORT: 7878
+    expose:
+      - "7878"
+    depends_on:
+      api:
+        condition: service_healthy
+
   ingestion-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/ingestion-worker:latest
     restart: unless-stopped
@@ -144,3 +165,4 @@ services:
     depends_on:
       - web
       - api
+      - kb-mcp

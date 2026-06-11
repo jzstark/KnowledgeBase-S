@@ -6,7 +6,7 @@
 
 KB 核心只负责节点/关系/来源/搜索/MCP 工具。应用层（briefing、drafts）已完全移除。
 
-MCP adapter 实现位于外部仓库 `~/Code/kb-chat/`，封装 `/api/kb/v1/` 稳定接口。KB-S 本身不内置 MCP server。
+MCP server（`services/kb-mcp/`）已进驻本仓库：FastMCP 薄壳把 `/api/kb/v1/` 只读接口包成 MCP 工具，以 **streamable-http** 暴露在 `/mcp`，供 LibreChat / Claude Desktop / 云端客户端共用（单一来源，不再在 kb-chat 各搭一份）。鉴权两层：**出站** kb-mcp→API 用 `KB_SERVICE_TOKEN`；**入站** 客户端→kb-mcp 用 `MCP_STATIC_TOKEN`（`X-MCP-Token` 或 `Bearer`，空值 fail-closed 拒绝一切）。Phase 2（OAuth + 外部 IdP，给 Claude.ai/ChatGPT 云端）尚未实现。
 
 ---
 
