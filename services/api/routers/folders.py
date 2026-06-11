@@ -30,6 +30,8 @@ from pydantic import BaseModel
 import database
 from auth import require_auth
 from settings import settings
+from kb.internal import do_delete_node
+from kb.summary import do_delete_summary
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
 di_router = APIRouter(prefix="/api/document-instances", tags=["document-instances"])
@@ -276,6 +278,8 @@ async def get_folder_contents(
     if status:
         q += " AND di.status = :status"
         params["status"] = status
+    else:
+        q += " AND di.status <> 'deleted'"
     q += " ORDER BY di.created_at DESC"
     di_rows = await database.database.fetch_all(q, params)
     items = [_serialize_timestamps(dict(r), "created_at", "updated_at") for r in di_rows]
@@ -602,18 +606,92 @@ async def copy_document_instance(
     return await get_document_instance(new_di_id, _)
 
 
+async def _delete_di_files(di_id: str) -> None:
+    """Unlink the raw-snapshot / extracted-text files for a document instance.
+    Only removes files that resolve inside USER_DATA_DIR; URLs and missing refs
+    are skipped."""
+    rows = await database.database.fetch_all(
+        """
+        SELECT ra.storage_key, si.raw_snapshot_ref, si.extracted_text_ref
+        FROM document_instances di
+        LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
+        LEFT JOIN source_items si ON si.document_instance_id = di.id
+        WHERE di.id = :id
+        """,
+        {"id": di_id},
+    )
+    base = USER_DATA_DIR.resolve()
+    for r in rows:
+        for ref in (r["storage_key"], r["raw_snapshot_ref"], r["extracted_text_ref"]):
+            if not ref:
+                continue
+            try:
+                p = Path(ref).resolve()
+            except (OSError, ValueError):
+                continue
+            if p.is_file() and p.is_relative_to(base):
+                p.unlink(missing_ok=True)
+
+
+async def _hard_delete_article(node_id: str) -> None:
+    """Delete an article node and everything hanging off it: all its summaries
+    (their own knowledge_nodes + wiki files — the DB only cascades the
+    summary_nodes row, not the summary node), then the article node, then prune
+    the article id from the non-FK array columns."""
+    summary_rows = await database.database.fetch_all(
+        "SELECT node_id FROM summary_nodes WHERE summary_of = :id", {"id": node_id},
+    )
+    for s in summary_rows:
+        try:
+            await do_delete_summary(s["node_id"])
+        except ValueError:
+            pass  # already gone
+    await do_delete_node(node_id)
+    for table in ("entity_candidates", "entity_pair_signals"):
+        await database.database.execute(
+            f"UPDATE {table} SET source_article_ids = array_remove(source_article_ids, :id), "
+            "updated_at = NOW() WHERE :id = ANY(source_article_ids)",
+            {"id": node_id},
+        )
+
+
+async def _hard_delete_document_instance(di_id: str) -> None:
+    """Permanently delete the article(s) behind a document instance plus their
+    summaries and raw files, and tombstone the source item / document instance as
+    'deleted' so a subscription feed re-listing the item won't resurrect it."""
+    article_rows = await database.database.fetch_all(
+        "SELECT node_id FROM article_nodes WHERE document_instance_id = :id", {"id": di_id},
+    )
+    for a in article_rows:
+        await _hard_delete_article(a["node_id"])
+
+    await _delete_di_files(di_id)
+
+    await database.database.execute(
+        "UPDATE source_items SET status = 'deleted', updated_at = NOW() WHERE document_instance_id = :id",
+        {"id": di_id},
+    )
+    await database.database.execute(
+        "UPDATE document_instances SET status = 'deleted', updated_at = NOW() WHERE id = :id",
+        {"id": di_id},
+    )
+
+
 @di_router.delete("/{di_id}", status_code=204)
-async def delete_document_instance(di_id: str, _: dict = Depends(require_auth)):
+async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Depends(require_auth)):
     row = await database.database.fetch_one(
         "SELECT id FROM document_instances WHERE id = :id AND user_id = :uid",
         {"id": di_id, "uid": USER_ID},
     )
     if not row:
         raise HTTPException(404, "文档实例不存在")
-    await database.database.execute(
-        "UPDATE document_instances SET status = 'ignored', updated_at = NOW() WHERE id = :id",
-        {"id": di_id},
-    )
+    if hard:
+        await _hard_delete_document_instance(di_id)
+    else:
+        await database.database.execute(
+            "UPDATE document_instances SET status = 'ignored', updated_at = NOW() WHERE id = :id",
+            {"id": di_id},
+        )
 
 
 @di_router.post("/{di_id}/reprocess")

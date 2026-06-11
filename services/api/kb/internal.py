@@ -237,14 +237,20 @@ async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token
     }
 
 
-@router.delete("/nodes/{node_id}")
-async def delete_node(node_id: str, _: dict = Depends(require_auth)):
-    """Delete a node: wiki file, edges, DB record."""
+async def do_delete_node(node_id: str) -> bool:
+    """Delete a node (wiki file, edges, DB row). Returns False if it didn't exist.
+
+    CASCADE on knowledge_nodes(id) cleans the object sub-tables (article_nodes,
+    summary_nodes, entity_facts, index_children, …). NOTE: deleting an *article*
+    only cascades the summary_nodes row via summary_of — the summary's own
+    knowledge_node is a separate row and must be deleted explicitly (see the
+    hard-delete path in routers/folders.py).
+    """
     row = await database.database.fetch_one(
         "SELECT user_id, object_type FROM knowledge_nodes WHERE id = :id", {"id": node_id},
     )
     if not row:
-        raise HTTPException(404, "节点不存在")
+        return False
 
     wiki_file = _wiki_file_path(row["user_id"] or USER_ID, node_id, row["object_type"] or "article")
     if wiki_file.exists():
@@ -256,6 +262,14 @@ async def delete_node(node_id: str, _: dict = Depends(require_auth)):
     await database.database.execute(
         "DELETE FROM knowledge_nodes WHERE id = :id", {"id": node_id},
     )
+    return True
+
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(node_id: str, _: dict = Depends(require_auth)):
+    """Delete a node: wiki file, edges, DB record."""
+    if not await do_delete_node(node_id):
+        raise HTTPException(404, "节点不存在")
     return {"ok": True}
 
 

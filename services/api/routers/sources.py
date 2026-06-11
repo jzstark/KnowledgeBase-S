@@ -293,7 +293,7 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
           doc_kind = COALESCE(EXCLUDED.doc_kind, source_items.doc_kind),
           raw_retention_policy = COALESCE(EXCLUDED.raw_retention_policy, source_items.raw_retention_policy),
           status = CASE
-            WHEN source_items.status = 'succeeded' THEN source_items.status
+            WHEN source_items.status IN ('succeeded', 'deleted') THEN source_items.status
             ELSE EXCLUDED.status
           END,
           error = NULL,
@@ -545,7 +545,7 @@ async def update_source_item_status(
     body: SourceItemStatusUpdate,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    if body.status not in {"pending", "processing", "succeeded", "failed", "ignored"}:
+    if body.status not in {"pending", "processing", "succeeded", "failed", "ignored", "deleted"}:
         raise HTTPException(400, "不支持的 source item 状态")
 
     updates = ["status = :status", "updated_at = NOW()"]

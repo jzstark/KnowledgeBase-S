@@ -221,6 +221,17 @@ export default function FoldersPage() {
     }
   }
 
+  async function handleHardDeleteItem(di: DocumentInstance) {
+    if (!confirm(`彻底删除「${di.display_name || di.origin_ref}」及其所有摘要？此操作不可恢复。`)) return;
+    const r = await fetch(`/api/document-instances/${di.id}?hard=true`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (r.ok || r.status === 204) {
+      if (activeFolderId) loadContents(activeFolderId);
+      if (selectedItem?.id === di.id) setSelectedItem(null);
+    }
+  }
+
   async function handleReprocess(di: DocumentInstance) {
     await fetch(`/api/document-instances/${di.id}/reprocess`, {
       method: "POST", credentials: "include",
@@ -296,6 +307,7 @@ export default function FoldersPage() {
               onAddUrl={() => setAddUrlTarget(activeFolderId)}
               onSync={handleSync}
               onDelete={handleDeleteItem}
+              onHardDelete={handleHardDeleteItem}
               onReprocess={handleReprocess}
               onRefresh={() => activeFolderId && loadContents(activeFolderId)}
             />
@@ -308,6 +320,7 @@ export default function FoldersPage() {
             item={selectedItem}
             onClose={() => setSelectedItem(null)}
             onDelete={() => handleDeleteItem(selectedItem)}
+            onHardDelete={() => handleHardDeleteItem(selectedItem)}
             onReprocess={() => handleReprocess(selectedItem)}
           />
         )}
@@ -409,7 +422,7 @@ function FolderTreeItem({
 
 function FolderContentsPanel({
   contents, selectedItem, onSelectItem,
-  onUpload, onAddUrl, onSync, onDelete, onReprocess, onRefresh,
+  onUpload, onAddUrl, onSync, onDelete, onHardDelete, onReprocess, onRefresh,
 }: {
   contents: FolderContents;
   selectedItem: DocumentInstance | null;
@@ -418,6 +431,7 @@ function FolderContentsPanel({
   onAddUrl: () => void;
   onSync: (folderId: string, connectorId: string) => void;
   onDelete: (item: DocumentInstance) => void;
+  onHardDelete: (item: DocumentInstance) => void;
   onReprocess: (item: DocumentInstance) => void;
   onRefresh: () => void;
 }) {
@@ -489,6 +503,7 @@ function FolderContentsPanel({
                   selected={selectedItem?.id === item.id}
                   onClick={() => onSelectItem(selectedItem?.id === item.id ? null : item)}
                   onDelete={() => onDelete(item)}
+                  onHardDelete={() => onHardDelete(item)}
                   onReprocess={() => onReprocess(item)}
                 />
               ))}
@@ -503,12 +518,13 @@ function FolderContentsPanel({
 // ── Document Row ──────────────────────────────────────────────────────────────
 
 function DocumentRow({
-  item, selected, onClick, onDelete, onReprocess,
+  item, selected, onClick, onDelete, onHardDelete, onReprocess,
 }: {
   item: DocumentInstance;
   selected: boolean;
   onClick: () => void;
   onDelete: () => void;
+  onHardDelete: () => void;
   onReprocess: () => void;
 }) {
   const name = item.display_name || item.origin_ref || item.id;
@@ -556,9 +572,13 @@ function DocumentRow({
             >重试</button>
           )}
           <button
-            className="text-xs text-destructive hover:underline"
+            className="text-xs text-muted-foreground hover:underline"
             onClick={onDelete}
           >归档</button>
+          <button
+            className="text-xs text-destructive hover:underline"
+            onClick={onHardDelete}
+          >删除</button>
         </div>
       </td>
     </tr>
@@ -578,11 +598,12 @@ function fileIcon(mime: string | null, refType: string | null): string {
 // ── Detail Drawer ─────────────────────────────────────────────────────────────
 
 function DetailDrawer({
-  item, onClose, onDelete, onReprocess,
+  item, onClose, onDelete, onHardDelete, onReprocess,
 }: {
   item: DocumentInstance;
   onClose: () => void;
   onDelete: () => void;
+  onHardDelete: () => void;
   onReprocess: () => void;
 }) {
   return (
@@ -661,10 +682,18 @@ function DetailDrawer({
           <Button
             size="sm"
             variant="outline"
-            className="w-full text-destructive border-destructive/30 hover:bg-destructive/10"
+            className="w-full"
             onClick={onDelete}
           >
             归档
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full text-destructive border-destructive/30 hover:bg-destructive/10"
+            onClick={onHardDelete}
+          >
+            删除（含摘要，不可恢复）
           </Button>
         </div>
       </div>

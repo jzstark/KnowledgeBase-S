@@ -17,15 +17,21 @@ nginx
   ↓
 api (FastAPI, :8000)         ← 主服务，含 job_worker 逻辑
   ↓
-postgres (pgvector:pg16)     ← 数据库 + 向量索引（1536 维）
+postgres (pgvector:pg16)     ← 数据库 + HNSW 向量索引（1536 维）
 
-ingestion-worker             ← 内容抓取 + 入库 pipeline（只通过 HTTP 调用 api）
+ingestion-worker             ← 内容抓取 + 入库 pipeline（HTTP 调用 api，带 KB_SERVICE_TOKEN）
 job-worker                   ← 后台 job 队列消费者（运行在 api 镜像内）
 maintenance-worker           ← --profile maintenance，手动触发维护任务
 web (Next.js)                ← 前端
 ```
 
-**技术栈**：Python 3.12 + FastAPI + asyncpg / PostgreSQL 16 + pgvector / Anthropic Claude（Haiku 4.5 做分析/摘要/实体，Sonnet 4.6 做对比/引证/综述）/ OpenAI text-embedding-3-small（1536 维）
+> workers（ingestion-worker / job-worker）受 `profiles: ["workers"]` 限制，必须 `docker compose --profile workers up`（`deploy.sh` / Makefile 已带），否则静默不启动。
+
+**Schema 与迁移（Alembic）**：schema 由 Alembic 拥有（`services/api/alembic/`），不再在启动时跑 `SCHEMA_SQL`。api 容器 entrypoint 跑 `alembic upgrade head`（仅 api 设 `RUN_MIGRATIONS=1`，是唯一 migrator；workers 只连库不建表）。`database.init()` 现在只 `connect()`。迁移链：`0001_baseline`（采纳原 SCHEMA_SQL 最终态，幂等可自适应现网库）→ `0002` jobs 幂等唯一索引 → `0003` 向量索引 ivfflat→HNSW。新增 schema 改动 = 新建一个 `alembic revision`。
+
+**认证模型**：用户走 cookie JWT（`require_auth`）；ingestion-worker 与 kb-chat MCP 走共享 service token `KB_SERVICE_TOKEN`（`X-KB-Service-Token` / `Bearer`，`require_auth_or_service_token`）。信任边界由"端点挂哪个依赖"决定：删除/合并/设置等破坏性端点只认 cookie。登录有每 IP 限流 + 常量时间比对；CORS 为显式 allowlist（`CORS_ALLOW_ORIGINS`，默认 `NEXTAUTH_URL`）。
+
+**技术栈**：Python 3.12 + FastAPI + asyncpg / PostgreSQL 16 + pgvector(HNSW) / Alembic 迁移 / Anthropic Claude（Haiku 4.5 做分析/摘要/实体，Sonnet 4.6 做对比/引证/综述）/ OpenAI text-embedding-3-small（1536 维；启动时校验配置维度与列维度一致）
 
 ---
 
@@ -46,7 +52,7 @@ object_type VARCHAR(16)  -- article|entity|summary|index
 ingested_at, published_at, created_at, updated_at
 ```
 
-`published_at` 是通用知识时间索引，从 `effective_at ?? source_published_at ?? captured_at` 计算。
+`published_at` 是通用知识时间索引：入库时由 `effective_at ?? source_published_at ?? captured_at` 写入；读取/排序统一用 `COALESCE(published_at, ingested_at, created_at)`（`KNOWLEDGE_TIME_SQL`，单一来源——SQL 排序与 Python `_published_at` 取值一致）。
 
 **object 子表**（均以 `node_id FK → knowledge_nodes` 为 PK）
 
@@ -74,7 +80,9 @@ UNIQUE(from_node_id, to_node_id, relation_type)
 
 **sources**：id, name, type, config JSONB, is_primary, default_doc_kind, deleted_at（软删除）
 
-**source_items**：每条待处理/已处理内容项，含原始时间四列、doc_kind、**document_instance_id FK**、status(pending|processing|succeeded|failed)、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
+**source_items**：每条待处理/已处理内容项，含原始时间四列、doc_kind、**document_instance_id FK**、status(pending|processing|succeeded|failed|ignored|**deleted**)、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
+
+> `deleted` 是硬删除墓碑：materialize 的 `ON CONFLICT` 把 `succeeded`/`deleted` 视为终态保留，订阅源再次列出该条目也不会重新入库（防"复活"）。
 
 source type：rss | url | wechat | pdf | image | plaintext | word | epub
 
@@ -86,7 +94,7 @@ source type：rss | url | wechat | pdf | image | plaintext | word | epub
 
 **raw_assets**：id(`ra_`), user_id, storage_key（物理路径/URL，不随 UI 移动变化）, original_filename, mime_type, size, sha256
 
-**document_instances**：id(`di_`), folder_id FK, raw_asset_id FK, connector_id FK(nullable), display_name, origin_ref, origin_ref_type, doc_kind, status — 资料夹条目，与 source_items 一一对应（`di_XXXX` ↔ `si_XXXX`）
+**document_instances**：id(`di_`), folder_id FK, raw_asset_id FK, connector_id FK(nullable), display_name, origin_ref, origin_ref_type, doc_kind, status(pending|processing|succeeded|failed|ignored|**deleted**) — 资料夹条目，与 source_items 一一对应（`di_XXXX` ↔ `si_XXXX`）；`deleted` 墓碑被 `get_folder_contents` 默认隐藏
 
 查询链路：资料夹 → document_instances → raw_assets → article_nodes → wiki md
 
@@ -104,7 +112,7 @@ ID 映射约定（同 hex 后缀，不同前缀）：
 
 **entity_pair_signals**：co_occurrence + embedding_similarity + graph_proximity + temporal → relatedness_score
 
-**jobs**：job_type + status + payload JSONB + idempotency_key，供 job_worker 消费
+**jobs**：job_type + status + payload JSONB + idempotency_key，供 job_worker 消费。幂等由部分唯一索引 `uq_jobs_active_idempotency`（仅活跃态 pending/running/retrying）保证，`enqueue_job` 用 `INSERT … ON CONFLICT DO UPDATE`（无读后写竞态；终态后同 key 可再入队）。job_worker 定期 `reclaim_stuck_jobs`：`running` 超 `JOB_STUCK_TIMEOUT_SECONDS`（默认 900s）→ retrying，attempts 耗尽 → failed。
 
 ---
 
@@ -140,7 +148,7 @@ ID 映射约定（同 hex 后缀，不同前缀）：
 
 ### KB Internal（`/api/kb/`）
 
-**入库 pipeline**（ingestion-worker 调用，无 cookie 认证，用 INTERNAL_API_KEY）：
+**入库 pipeline**（ingestion-worker 调用，需 service token `KB_SERVICE_TOKEN`，端点用 `require_auth_or_service_token` 守护，非公开）：
 - `POST /kb/ingest` — 核心入库，doc_kind 级联在此处理
 - `POST /kb/entity_candidates/analyze_context` — 返回 nearby_entities + top_candidates + popular_tags
 - `POST /kb/entity_candidates/process` — upsert 候选，返回晋升列表
@@ -156,13 +164,14 @@ ID 映射约定（同 hex 后缀，不同前缀）：
 
 ### Sources（`/api/sources/`，legacy）
 
-CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`PATCH /source-items/{id}`）
+CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`PATCH /source-items/{id}`）。worker 调用的读写端点（list/get、source-items 增改、`PUT /{id}`）走 `require_auth_or_service_token`。`GET /api/sources/pending/source-ids`：worker 轮询兜底——返回仍有 pending item 的 source，确保上传触发丢失时仍会被处理。
 
 ### Folders（`/api/folders/`，`/api/document-instances/`，`/api/connectors/`，Phase B 新增）
 
 **Folders**：`GET /api/folders`（树形列表）、`POST /api/folders`（创建，同时生成 legacy source）、`PATCH/DELETE /api/folders/{id}`、`GET /api/folders/{id}/contents`（子资料夹 + document_instances）、`POST /api/folders/{id}/upload`（文件上传→raw_asset+document_instance+source_item）、`POST /api/folders/{id}/add-url`
 
 **Document Instances**：`GET/PATCH/DELETE /api/document-instances/{id}`、`POST .../copy`、`POST .../reprocess`
+- `DELETE /{id}`：默认软删（归档，status='ignored'）；`?hard=true` 硬删除——删该 di 的 article 节点 + **其所有 summary**（节点 + wiki 文件，DB 只级联 summary_nodes 行，故须显式删 summary 节点）+ raw/extracted 文件，并把 source_item / document_instance 置 `deleted` 墓碑，同时从 `entity_candidates`/`entity_pair_signals` 的 `source_article_ids` 数组剔除该 id。实现见 `folders.py:_hard_delete_document_instance`。
 
 **Connectors**：`GET/POST /api/connectors`、`PATCH/DELETE /api/connectors/{id}`、`POST /api/connectors/{id}/sync`（触发 ingestion-worker）
 
@@ -262,7 +271,7 @@ Phase 5: 兜底（分数 × 0.5 折扣）
 
 ## Ingestion Worker Pipeline
 
-独立服务，不直连 DB，全部 HTTP 调用 API。
+独立服务，不直连 DB，全部 HTTP 调用 API（所有调用带 `X-KB-Service-Token`）。
 
 ```
 main.py: 轮询 GET /api/sources + GET /api/connectors（Phase B）
@@ -290,7 +299,7 @@ run_book_pipeline（EPUB/MOBI）：
   → refresh_stale_entities()
 ```
 
-`write_wiki_article` 写 frontmatter（含 doc_kind），`restore_from_wiki` 读取重建 DB。
+`write_wiki_article` 写 frontmatter（含 doc_kind），`restore_from_wiki` 读取重建 DB。frontmatter 一律用 `yaml.safe_dump` 序列化（标题/标签/别名含引号、冒号、换行、`---` 也不会损坏）；所有读取方走 `kb/common.split_frontmatter`（按整行 `---` 切分，值里含 `---` 不会误判）。LLM 响应文本统一用 `message_text()` 提取（容空内容/非文本块）。
 
 **article ID 生成优先级**（`_make_node_id`）：document_instance_id（Phase B 稳定键）> raw_ref.path > raw_ref.url > random
 
@@ -329,7 +338,8 @@ API 和 ingestion-worker 各有独立 `settings.py`（frozen dataclass），用 
 | 项 | 状态 |
 |---|---|
 | `POST /api/kb/nodes/{id}/summaries`（§7 规范路径） | 实际为 `/create_summary`，功能可用 |
-| Source 删除 cascade 选项（同时删 N 篇文章） | 未实现 |
+| 文档级硬删除（article + 其所有 summary） | ✓ 已实现：`DELETE /api/document-instances/{id}?hard=true`（详见 API 章节） |
+| Source 级删除 cascade（一次删整个 source 的 N 篇文章） | 未实现（仅文档级硬删除 / source 软删除 deleted_at） |
 | Source 管理页显示已停用 source | 后端支持 `?include_deleted=true`，前端未接（旧 /sources 页已重建为文件管理器） |
 | Phase B: raw_ref 降级（Phase 5） | ✓ 完全完成：孤立文章回填 raw_assets+document_instances，files.py 改纯 INNER JOIN，restore.py 只读 storage_key，wiki.py 写 storage_key。raw_ref 列仍存在但不再作为任何读路径的依赖 |
 | Phase B: 旧 /sources 页 wechat 配置子页 | `/sources/[id]/page.tsx` 仍存在但入口已从新 UI 移除，微信 connector 暂通过旧页面管理 |
