@@ -196,6 +196,8 @@ OAuth 文件存储必须：
 - [x] 获取 `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`，只写入 VPS `.env`。
 - [x] 只请求 `openid` 和 Google userinfo email scope；当前白名单不需要 Gmail 邮件权限。
 
+当前请求仅包含 Google 的基础身份 scopes。按 Google 的 Testing 例外规则，此类授权不要求用户进入 test-user 列表，也不会按普通 Testing 授权在 7 天后失效，因此当前两账号私用不需要为了连接稳定性切换到 In production；真正的准入仍由 `MCP_ALLOWED_EMAILS` 控制。扩大用途或增加其他 scopes 时重新评估发布与验证状态。参考：[Manage App Audience](https://support.google.com/cloud/answer/15549945)。
+
 ### 6.5 Docker Compose
 
 保留现有 `kb-mcp` service 名和镜像仓库名，只新增 `kb-mcp-oauth`。两个 service 复用同一个构建产物及 image/build context，不复制工具代码。
@@ -234,16 +236,19 @@ Compose 配套要求：
 - [x] `nginx.depends_on` 保留原有 `kb-mcp`，不添加对可选 `kb-mcp-oauth` 的强制启动依赖。OAuth 未启用时 nginx 仍可启动。
 - [x] OAuth 环境变量用空默认值传入，必填检查在 OAuth 应用启动时进行；避免 Compose 的 `${VAR:?}` 在未启用 profile 时也阻止整份配置解析。
 - [x] `.env.example` 补齐模式、凭证和密钥的占位说明；默认配置及 `workers + oauth` profile 组合均通过 `docker compose config --quiet`。
-- [x] `deploy.sh` 默认部署 core + `workers`；OAuth 启用后使用 `./deploy.sh --oauth`，等价启用 `workers + oauth`。脚本不使用 `--remove-orphans`，避免默认部署误删可选 OAuth 实例。
+- [x] 迁移完成后，`deploy.sh` 默认部署 core + `workers` + `oauth`；原有 `./deploy.sh --oauth` 写法继续兼容。脚本不使用 `--remove-orphans`，避免误删可选实例。
 
 ### 6.5.1 镜像发布与 Watchtower
 
-迁移期间使用不可变 commit SHA 固定镜像，避免 Watchtower 在 Compose 环境变量尚未应用时提前升级。核心验收完成后，`main` 分支构建同时发布不可变 SHA tag 和 `stable` tag；Compose 日常使用 `stable`，需要回滚时把 `KB_MCP_IMAGE_TAG` 改为已知 SHA。两个 MCP service 始终排除在 Watchtower 之外，因此 `stable` 只有在显式 pull/up 后才会生效。
+迁移期间使用不可变 commit SHA 固定镜像，避免 Watchtower 在 Compose 环境变量尚未应用时提前升级。核心验收完成后，`main` 分支构建同时发布不可变 SHA tag 和 `stable` tag；Compose 日常使用 `stable`，两个 MCP service 重新交由 Watchtower 每小时检查并自动更新。需要固定版本或回滚时，把 `KB_MCP_IMAGE_TAG` 改为已知 SHA 后显式部署。
 
 - [x] 迁移期间使用 commit SHA 固定并验收静态与 OAuth 实例。
-- [x] 两个 MCP service 均已应用 Watchtower 排除标签；恢复其他服务的自动更新不会更新 MCP。
 - [x] `main` 分支构建同时发布不可变 SHA tag 和 `stable`；Compose 默认使用 `stable`。
 - [x] `MCP_MODE=static|oauth` 与对应 Compose 配置已在 VPS 应用并完成客户端回归。
+- [x] 仓库配置已恢复两个 MCP service 的 Watchtower 自动更新。
+- [ ] VPS 将 `KB_MCP_IMAGE_TAG` 改为 `stable` 并重建两个 MCP 容器，使新 tag 和 Watchtower 标签实际生效。
+
+Watchtower 只替换镜像，不会同步 Git 仓库中的 Compose、环境变量、volume 或 nginx。纯 MCP 代码/依赖更新可由 `stable` 自动发布；涉及这些运行配置的改动仍需先在 VPS `git pull`，再运行 `./deploy.sh`。
 
 ### 6.6 nginx
 
@@ -331,9 +336,9 @@ Cloudflare 操作清单（当前账户配置需由部署者核对）：
 5. **最后**在 Cloudflare 添加上述 DNS 橙云记录，确认边缘 HTTPS 证书和相关规则。
 6. 验证公网 discovery、Google callback 和完整授权流程，再依次接入 Claude.ai / ChatGPT；完成刷新、重建和故障隔离验收。
 
-OAuth 已启用后的常规 VPS 发布统一使用 `./deploy.sh --oauth`；省略参数只用于尚未
-启用 OAuth 的阶段。部署脚本不再自动执行 `docker image prune`，旧镜像确认不再
-需要后再人工清理，避免破坏回滚点。
+OAuth 已启用后的常规 VPS 发布直接使用 `./deploy.sh`；原有 `./deploy.sh --oauth`
+写法继续兼容且效果相同。部署脚本不自动执行 `docker image prune`，旧镜像确认
+不再需要后再人工清理，避免破坏回滚点。
 
 这样可以避免 DNS 提前生效时，新 hostname 落入当前 nginx `default_server`，意外进入现有静态 `/mcp` 路由。
 
@@ -359,7 +364,7 @@ OAuth 已启用后的常规 VPS 发布统一使用 `./deploy.sh --oauth`；省�
 
 - OAuth 上线失败：停止 OAuth 服务，保留 volume 和密钥；新子域可暂时返回不可用。静态 `kb-mcp` 和 `swanny` 配置继续运行。
 - 静态迁移失败：用已记录的旧 digest 重建同名 `kb-mcp`，恢复与旧镜像匹配的 Compose/环境配置；必要时恢复 nginx 配置并校验后 reload，回归 LibreChat。
-- MCP 保持排除在 Watchtower 之外；回滚时将 `KB_MCP_IMAGE_TAG` 设为已验收 SHA 后显式 pull/up。不要使用 `docker compose down -v` 或删除 OAuth volume；无需停掉整个知识库栈。
+- 回滚时将 `KB_MCP_IMAGE_TAG` 设为已验收 SHA 后显式 pull/up；不可变 SHA 不会被 Watchtower 推进到其他版本。不要使用 `docker compose down -v` 或删除 OAuth volume；无需停掉整个知识库栈。
 
 ## 7. 暂缓项（不阻塞本阶段）
 

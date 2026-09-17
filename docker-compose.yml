@@ -68,7 +68,7 @@ services:
       context: ./services/kb-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.enable: "true"
     environment:
       # Outbound: kb-mcp reaches the KB public API over the internal network and
       # authenticates with the shared service token.
@@ -92,7 +92,7 @@ services:
       context: ./services/kb-mcp
     restart: unless-stopped
     labels:
-      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.enable: "true"
     environment:
       KB_API_BASE: http://api:8000
       KB_PUBLIC_PREFIX: ${KB_PUBLIC_PREFIX:-/api/kb/v1}

@@ -3,14 +3,13 @@ set -euo pipefail
 
 usage() {
     echo "Usage: $0 [--oauth]"
-    echo "  default: deploy core services and workers"
-    echo "  --oauth: also deploy the kb-mcp-oauth profile"
+    echo "  default: deploy core services, workers, and OAuth MCP"
+    echo "  --oauth: accepted for compatibility; same as default"
 }
 
-profiles=(--profile workers)
+profiles=(--profile workers --profile oauth)
 case "${1:-}" in
-    "") ;;
-    --oauth) profiles+=(--profile oauth) ;;
+    ""|--oauth) ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
 esac

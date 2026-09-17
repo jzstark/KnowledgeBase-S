@@ -130,8 +130,8 @@ jobs:
         with:
           context: services/kb-mcp
           push: true
-          # Keep an immutable rollback tag and publish stable from main only.
-          # Both MCP services are excluded from Watchtower, so updates are explicit.
+          # Keep an immutable rollback tag and publish the Watchtower-managed
+          # stable tag from main only.
           tags: |
             ghcr.io/jzstark/kb-mcp:${{ github.sha }}
             ${{ github.ref == 'refs/heads/main' && 'ghcr.io/jzstark/kb-mcp:stable' || '' }}

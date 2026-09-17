@@ -42,11 +42,11 @@
 
 | 路径 | 说明 |
 |---|---|
-| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / 可选 kb-mcp-oauth / workers / postgres / nginx / watchtower。workers 用 `workers` profile，OAuth MCP 用 `oauth` profile；两个 MCP 默认使用 `stable` 镜像 tag、排除 Watchtower，并保留 SHA 回滚能力 |
+| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / 可选 kb-mcp-oauth / workers / postgres / nginx / watchtower。workers 用 `workers` profile，OAuth MCP 用 `oauth` profile；两个 MCP 默认使用 `stable`、由 Watchtower 自动更新，并保留 SHA 回滚能力 |
 | `docker-compose.dev.yml` | 开发覆盖：本地挂载、热重载、workers profile |
 | `nginx/nginx.conf` | 反向代理配置：`swanny` 的 `/mcp` → 静态 kb-mcp；`mcp.laughtale.co.uk` 全路径 → OAuth 实例。MCP upstream 用 Docker DNS 动态解析；`X-Forwarded-Proto https` 写死以适配 Cloudflare Flexible |
 | `Makefile` | 常用开发命令（`make dev`、`make logs` 等） |
-| `deploy.sh` | VPS 部署脚本：默认 core + workers；`./deploy.sh --oauth` 同时维护 OAuth MCP；不自动删除可选 profile 或回滚镜像 |
+| `deploy.sh` | VPS 部署脚本：默认维护 core + workers + OAuth MCP；兼容原有 `./deploy.sh --oauth` 写法；不自动删除可选 profile 或回滚镜像 |
 | `pyrightconfig.json` | Pyright 静态类型检查配置 |
 
 ## 运维脚本
