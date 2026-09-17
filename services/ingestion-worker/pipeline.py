@@ -29,6 +29,7 @@ from article_ingestion import ArticleIngestionAdapters, ArticleIngestionInput, p
 from settings import settings
 from prompts import prompts
 from sources.base import BaseSource, RawItem, message_text
+from sources.dispatch import is_book_source_item, source_for_item
 
 logger = logging.getLogger(__name__)
 
@@ -576,7 +577,6 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
 
 async def run_pipeline(source: BaseSource, source_config: dict):
     source_id = source_config["id"]
-    source_type = source_config["type"]
 
     last_fetched_at = source_config.get("last_fetched_at")
     if last_fetched_at:
@@ -591,13 +591,27 @@ async def run_pipeline(source: BaseSource, source_config: dict):
     logger.info(f"[{source_id}] 待处理 source item: {len(pending_items)}")
 
     for source_item in pending_items:
+        if is_book_source_item(source_config, source_item):
+            from sources.book import BookSource
+
+            book_config = {**source_config, "type": "epub"}
+            book_source = BookSource(source_id=source_id, uploads=[])
+            await run_book_pipeline(
+                book_source,
+                book_config,
+                pending_items=[source_item],
+                finalize=False,
+            )
+            continue
+
         item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
             await update_source_item_status(source_item["id"], "processing")
-            item = _raw_item_from_source_item(source_item, source_type)
+            item_source, item_source_type = source_for_item(source, source_config, source_item)
+            item = _raw_item_from_source_item(source_item, item_source_type)
 
             # 1. Extract text
-            text = source.extract_text(item)
+            text = item_source.extract_text(item)
             if not text or len(text) < 50:
                 logger.warning(f"[{source_id}] 跳过，正文过短: {item.title}")
                 await update_source_item_status(
@@ -607,7 +621,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     title=item.title,
                 )
                 continue
-            extracted_text_ref = save_extracted_text(source_type, source_item["id"], text)
+            extracted_text_ref = save_extracted_text(item_source_type, source_item["id"], text)
 
             if item.raw_ref.get("type") == "file":
                 stem = Path(item.raw_ref["path"]).stem
@@ -617,7 +631,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                         item.title = inferred
 
             # 2. Save raw file
-            file_path = save_raw(item, source_type)
+            file_path = save_raw(item, item_source_type)
             if item.raw_ref.get("type") == "url":
                 raw_ref = {"type": "url", "url": item.raw_ref["url"], "cached": file_path}
             else:
@@ -632,7 +646,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                 ArticleIngestionInput(
                     user_id=USER_ID,
                     source_id=source_id,
-                    source_type=source_type,
+                    source_type=item_source_type,
                     source_item_id=source_item["id"],
                     document_instance_id=source_item.get("document_instance_id"),
                     item=item,
@@ -669,7 +683,13 @@ async def run_pipeline(source: BaseSource, source_config: dict):
     await refresh_stale_entities()
 
 
-async def run_book_pipeline(source, source_config: dict):
+async def run_book_pipeline(
+    source,
+    source_config: dict,
+    *,
+    pending_items: list[dict] | None = None,
+    finalize: bool = True,
+):
     """
     Book ingestion pipeline: parse EPUB/MOBI → create index node + article/summary per chapter.
 
@@ -677,8 +697,6 @@ async def run_book_pipeline(source, source_config: dict):
     Chapter article nodes use a virtual raw_ref path for deterministic ID + dedup.
     After ingestion, run_maintenance()'s aggregate_index_abstracts fills the index abstract.
     """
-    from sources.book import BookSource  # local to avoid circular at module level
-
     source_id = source_config["id"]
     source_type = source_config["type"]
 
@@ -686,17 +704,19 @@ async def run_book_pipeline(source, source_config: dict):
     if last_fetched_at and isinstance(last_fetched_at, str):
         last_fetched_at = datetime.fromisoformat(last_fetched_at.replace("Z", "+00:00"))
 
-    pending_items = await fetch_pending_source_items(source_id)
-    if not pending_items:
-        await materialize_fetched_source_items(source, source_config, last_fetched_at)
+    if pending_items is None:
         pending_items = await fetch_pending_source_items(source_id)
+        if not pending_items:
+            await materialize_fetched_source_items(source, source_config, last_fetched_at)
+            pending_items = await fetch_pending_source_items(source_id)
     logger.info(f"[{source_id}] book pipeline source items: {len(pending_items)}")
 
     for source_item in pending_items:
         item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
             await update_source_item_status(source_item["id"], "processing")
-            item = _raw_item_from_source_item(source_item, source_type)
+            item_source_type = source_item.get("source_type") or source_type
+            item = _raw_item_from_source_item(source_item, item_source_type)
 
             # 1. Parse chapters
             chapters = source.extract_chapters(item)
@@ -711,7 +731,7 @@ async def run_book_pipeline(source, source_config: dict):
                 )
                 continue
             extracted_text_ref = save_extracted_text(
-                source_type,
+                item_source_type,
                 source_item["id"],
                 "\n\n".join(ch.text for ch in valid_chapters),
             )
@@ -719,7 +739,7 @@ async def run_book_pipeline(source, source_config: dict):
             logger.info(f"[{source_id}] {item.title}: {len(valid_chapters)} chapters")
 
             # 2. Save raw file
-            file_path = save_raw(item, source_type)
+            file_path = save_raw(item, item_source_type)
             raw_ref = {"type": "file", "path": file_path}
 
             # 3. Create index node for the book (abstract empty; maintenance will fill it)
@@ -730,7 +750,7 @@ async def run_book_pipeline(source, source_config: dict):
                 "title": book_title,
                 "abstract": "",
                 "embedding": index_embedding,
-                "source_type": source_type,
+                "source_type": item_source_type,
                 "source_id": source_id,
                 "raw_ref": raw_ref,
                 "tags": [],
@@ -771,7 +791,7 @@ async def run_book_pipeline(source, source_config: dict):
                         ArticleIngestionInput(
                             user_id=USER_ID,
                             source_id=source_id,
-                            source_type=source_type,
+                            source_type=item_source_type,
                             source_item_id=source_item["id"],
                             item=item,
                             title=ch.title,
@@ -807,6 +827,7 @@ async def run_book_pipeline(source, source_config: dict):
             except Exception:
                 logger.warning(f"[{source_id}] source item 状态更新失败: {source_item['id']}")
 
-    await update_last_fetched(source_id)
-    logger.info(f"[{source_id}] book pipeline done")
-    await refresh_stale_entities()
+    if finalize:
+        await update_last_fetched(source_id)
+        logger.info(f"[{source_id}] book pipeline done")
+        await refresh_stale_entities()

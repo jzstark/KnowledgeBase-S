@@ -25,6 +25,9 @@
 
 | 路径 | 说明 |
 |---|---|
+| `docs/roadmap.md` | 后续发展路线图：定位（headless 知识核心）+ 四层优先级 + 执行顺序 |
+| `docs/phase-c-convergence-plan.md` | Phase C 架构收敛实施计划：双轨退役 / wiki 降级为派生物 / 数据三层分类，含逐步验证标准 |
+| `docs/search-review-and-plan.md` | 搜索子系统现状分析（三套并行实现等 10 项问题）与 S0–S4 改造计划 |
 | `docs/revision-progress.md` | 重构设计决议 + 各阶段实施进度（事实依据文档） |
 | `docs/revision-source-folders.md` | Source/文件夹重构设计文档（三层架构：Pool / 资料夹 / Wiki） |
 | `docs/agents/` | Agent skill 配置：issue tracker、triage labels、domain docs |

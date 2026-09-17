@@ -2,7 +2,7 @@
 set -e
 
 echo "==> Pulling latest images..."
-docker compose pull
+docker compose --profile workers pull
 
 echo "==> Starting services..."
 docker compose --profile workers up -d --remove-orphans
