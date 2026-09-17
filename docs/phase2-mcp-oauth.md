@@ -234,7 +234,7 @@ Compose 配套要求：
 - [x] `nginx.depends_on` 保留原有 `kb-mcp`，不添加对可选 `kb-mcp-oauth` 的强制启动依赖。OAuth 未启用时 nginx 仍可启动。
 - [x] OAuth 环境变量用空默认值传入，必填检查在 OAuth 应用启动时进行；避免 Compose 的 `${VAR:?}` 在未启用 profile 时也阻止整份配置解析。
 - [x] `.env.example` 补齐模式、凭证和密钥的占位说明；默认配置及 `workers + oauth` profile 组合均通过 `docker compose config --quiet`。
-- [x] 保留现有 `workers` profile 的启动方式；启用完整服务时使用 `docker compose --profile workers --profile oauth up -d`，不因新增 OAuth 漏启现有 worker。
+- [x] `deploy.sh` 默认部署 core + `workers`；OAuth 启用后使用 `./deploy.sh --oauth`，等价启用 `workers + oauth`。脚本不使用 `--remove-orphans`，避免默认部署误删可选 OAuth 实例。
 
 ### 6.5.1 镜像发布与 Watchtower
 
@@ -330,6 +330,10 @@ Cloudflare 操作清单（当前账户配置需由部署者核对）：
 4. Google 凭证和密钥就绪后启用 `oauth` profile；从 Docker/宿主网络带正确 Host 验证 OAuth 路由和 discovery，再确认静态入口正常。
 5. **最后**在 Cloudflare 添加上述 DNS 橙云记录，确认边缘 HTTPS 证书和相关规则。
 6. 验证公网 discovery、Google callback 和完整授权流程，再依次接入 Claude.ai / ChatGPT；完成刷新、重建和故障隔离验收。
+
+OAuth 已启用后的常规 VPS 发布统一使用 `./deploy.sh --oauth`；省略参数只用于尚未
+启用 OAuth 的阶段。部署脚本不再自动执行 `docker image prune`，旧镜像确认不再
+需要后再人工清理，避免破坏回滚点。
 
 这样可以避免 DNS 提前生效时，新 hostname 落入当前 nginx `default_server`，意外进入现有静态 `/mcp` 路由。
 

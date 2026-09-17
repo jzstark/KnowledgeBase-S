@@ -194,8 +194,9 @@ folder 内容出现新 document_instance）在 dev compose 跑通；契约测试
 4. grep 验收：`grep -rn raw_ref services/ --include='*.py'` 仅剩 alembic 历史
    迁移文件。
 
-**验证**：MCP `fetch`/`get_sources` 返回的 reference URL 与迁移前一致
-（抽样对比脚本）；全部测试绿。
+**验证**：legacy `kb_tools.get_sources` 返回的 reference URL 与迁移前一致
+（抽样对比脚本）；当前 MCP 的 9 个工具名称和 input schema contract test 通过；
+全部测试绿。
 **工作量**：1–2 天。
 
 ---

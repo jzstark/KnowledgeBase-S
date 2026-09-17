@@ -18,12 +18,8 @@ from fastapi import FastAPI
 
 from pipeline import run_book_pipeline, run_pipeline
 from sources.book import BookSource
-from sources.image import ImageSource
-from sources.pdf import PDFSource
-from sources.plaintext import PlaintextSource
+from sources.dispatch import source_for_type
 from sources.rss import RSSSource
-from sources.url import URLSource
-from sources.word import WordSource
 
 logging.basicConfig(
     level=logging.INFO,
@@ -118,9 +114,6 @@ def build_source(config: dict):
         url = raw_config.get("url", "")
         logger.info("构造 RSS source: %s -> %s", config["id"], url)
         return RSSSource(source_id=config["id"], feed_url=url)
-    elif t == "url":
-        url = raw_config.get("url", "")
-        return URLSource(source_id=config["id"], url=url)
     elif t == "wechat":
         if raw_config.get("provider") != "wechat2rss":
             logger.warning("跳过无效微信 source 配置: %s", config["id"])
@@ -132,15 +125,10 @@ def build_source(config: dict):
         feed_url = f"{WECHAT2RSS_FEED_BASE_URL.rstrip('/')}/feed/{quote(feed_id)}.xml"
         logger.info("构造 Wechat2RSS source: %s feed_id=%s -> %s", config["id"], feed_id, feed_url)
         return RSSSource(source_id=config["id"], feed_url=feed_url)
-    elif t in ("pdf", "image", "plaintext", "word"):
-        uploads = raw_config.get("uploads", [])
-        cls = {"pdf": PDFSource, "image": ImageSource,
-               "plaintext": PlaintextSource, "word": WordSource}[t]
-        return cls(source_id=config["id"], uploads=uploads)
-    elif t in ("epub", "book"):
-        uploads = raw_config.get("uploads", [])
-        return BookSource(source_id=config["id"], uploads=uploads)
-    return None
+    try:
+        return source_for_type(t, config["id"], raw_config)
+    except ValueError:
+        return None
 
 
 async def _dispatch_pipeline(source, config: dict):

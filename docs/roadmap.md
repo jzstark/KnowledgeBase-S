@@ -4,6 +4,11 @@
 > `docs/CODE_REVIEW_FINDINGS_2026-07-06.md` 中的 bug 视为独立修复轨道，本文不重复）。
 > 配套详细计划：`docs/phase-c-convergence-plan.md`（第一优先级实施计划）、
 > `docs/search-review-and-plan.md`(搜索子系统分析与改造计划)。
+>
+> **2026-09-17 更新**：云端客户端的 Google OAuth Phase 2 已完成本地实现，
+> 正待 VPS / Google / Cloudflare 联调上线，详见 `docs/phase2-mcp-oauth.md`。
+> 下文的 per-client token 与审计仍是未来开放写入型 MCP 工具的前置工作，
+> 但不再是只读 OAuth 接入的前置条件。
 
 ---
 
@@ -14,7 +19,7 @@
 
 - 它的用户界面不再是网页，而是 **`/api/kb/v1` 契约 + MCP 工具集**。
 - Next.js 前端退化为管理后台（入库、整理资料夹、看图谱）。
-- 真正的"消费端"是 AI Agent（LibreChat、Claude Desktop、未来的云端客户端）。
+- 真正的"消费端"是 AI Agent（LibreChat、Claude Desktop、通过 OAuth 接入的云端客户端）。
 
 **后续所有设计决策都应围绕这个事实展开**：契约稳定性、检索质量、写入能力、
 鉴权演进，都是围绕"Agent 是一等公民"来做的。
@@ -111,10 +116,11 @@ graph augment 都是盲调。
    "compiled truth（abstract 可重写）+ timeline（entity_facts 只追加）"模式，
    写入面天然安全：Agent 往 timeline 追加，abstract 由 refresh_stale 机制消化。
 
-配套的**鉴权 Phase 2**：单一 `MCP_STATIC_TOKEN` 在只读时代够用，一旦有写入
-就需要 per-client token（LibreChat / Claude Desktop / 云端各一个，可单独吊销）
-+ 调用审计日志；要接 Claude.ai 云端 connector 则需要 OAuth。建议顺序：先做
-per-client token + 审计（约一天工作量），OAuth 等真有云端接入需求再做。
+鉴权演进分成两条独立轨道：面向 Claude.ai / ChatGPT 云端 connector 的
+**Google OAuth Phase 2 已完成本地实现**，当前仍保持 9 个工具全部只读；未来一旦
+开放写入工具，则必须先增加 per-client static token（LibreChat / Claude Desktop
+可独立吊销）与调用审计日志。Google OAuth 解决用户身份和邮箱准入，不替代
+静态客户端的独立吊销、细粒度权限或审计。
 
 ---
 
@@ -153,6 +159,9 @@ per-client token + 审计（约一天工作量），OAuth 等真有云端接入�
 ## 6. 执行顺序总览
 
 ```
+已提前实施、待上线：
+0. Google OAuth 云端接入                    → 验证：双入口、白名单、刷新与重建回归通过
+
 近期（先做）：
 1. Phase C 双轨退役 + wiki 降级为派生物   → 验证：rebuild_derived 演练通过；legacy 端点删除后全部测试绿
 2. 事实/派生分层 ADR + 备份对齐            → 验证：仅备份事实层可完整恢复
@@ -165,7 +174,7 @@ per-client token + 审计（约一天工作量），OAuth 等真有云端接入�
 
 远期：
 7. 法规时间有效性 + cites 引证边
-8. graph-augmented search、OAuth（按需）
+8. graph-augmented search
 ```
 
 **核心逻辑一句话**：先把双轨系统合拢、让派生层可重建（地基），再用评测体系把

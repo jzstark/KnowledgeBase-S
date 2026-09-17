@@ -1,14 +1,27 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "==> Pulling latest images..."
-docker compose --profile workers pull
+usage() {
+    echo "Usage: $0 [--oauth]"
+    echo "  default: deploy core services and workers"
+    echo "  --oauth: also deploy the kb-mcp-oauth profile"
+}
+
+profiles=(--profile workers)
+case "${1:-}" in
+    "") ;;
+    --oauth) profiles+=(--profile oauth) ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+echo "==> Pulling configured images..."
+docker compose "${profiles[@]}" pull
 
 echo "==> Starting services..."
-docker compose --profile workers up -d --remove-orphans
-
-echo "==> Cleaning up old images..."
-docker image prune -f
+# Do not use --remove-orphans here: services behind an inactive optional
+# profile (notably kb-mcp-oauth) must survive a default deployment.
+docker compose "${profiles[@]}" up -d
 
 echo "==> Done. Services running:"
 docker compose ps

@@ -9,10 +9,20 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sources.base import RawItem  # noqa: E402
-from sources.dispatch import is_book_source_item, source_for_item  # noqa: E402
+from sources.dispatch import is_book_source_item, source_for_item, source_for_type  # noqa: E402
 
 
 class SourceDispatchTest(unittest.TestCase):
+    def test_shared_factory_preserves_url_configuration(self):
+        source = source_for_type(
+            "url",
+            "src_url",
+            {"url": "https://example.com/article"},
+        )
+
+        self.assertEqual(source.source_id, "src_url")
+        self.assertEqual(source.url, "https://example.com/article")
+
     def test_uploaded_file_uses_item_parser_in_mixed_folder(self):
         default_source = object()
         source_config = {"id": "src_folder", "type": "url"}

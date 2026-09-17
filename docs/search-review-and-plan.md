@@ -20,7 +20,7 @@
 
 | 实现 | 位置 | 特性 | 消费方 |
 |---|---|---|---|
-| `/api/kb/v1/search` | `kb/public.py:159` | 向量 + ILIKE 关键词加成(+0.15)；doc_kind/tags/source_ids/date 过滤；**无**时间基准选择 | kb-mcp → LibreChat / Claude Desktop |
+| `/api/kb/v1/search` | `kb/public.py:159` | 向量 + ILIKE 关键词加成(+0.15)；doc_kind/tags/source_ids/date 过滤；**无**时间基准选择 | kb-mcp → LibreChat / Claude Desktop / OAuth 云端客户端 |
 | `kb_search` 工具 | `kb_tools.py:223` | 纯向量（无关键词加成）；time_basis/lookback_hours/sort；**整段 try/except 静默降级为 ILIKE** | READ_ONLY_TOOLS 消费方 |
 | `layered_retrieval` | `kb/public_service.py:111` | 五阶段图增强检索 | compare / cite / summarize_corpus 内部 RAG |
 
@@ -72,7 +72,9 @@
 **S0.1 检索日志**
 
 - 在三个入口各加结构化日志（JSON 行，落 stdout 由 docker 收集）：
-  `{ts, entry, query, filters, hyde_used, degraded, top_ids, top_scores, latency_ms}`。
+  `{ts, request_id, entry, auth_mode, principal_hash, query, filters, hyde_used, degraded, top_ids, top_scores, latency_ms}`。
+  `auth_mode` 区分 static/OAuth；`principal_hash` 只记录不可逆标识，不记录 token、
+  Google claims 或其他认证凭证。可能含敏感内容的参数必须先做长度限制或脱敏。
 - HyDE 与 kb_tools 降级路径的 `except` 里必须打 `logger.warning`（保留降级
   行为，消灭静默）。
 - kb-mcp 侧记录工具调用：工具名、入参、返回节点 id 列表（为挖掘"search 返回
