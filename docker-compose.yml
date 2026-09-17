@@ -63,10 +63,12 @@ services:
       - api
 
   kb-mcp:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:latest
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-latest}
     build:
       context: ./services/kb-mcp
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     environment:
       # Outbound: kb-mcp reaches the KB public API over the internal network and
       # authenticates with the shared service token.
@@ -75,6 +77,7 @@ services:
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
       # Inbound: callers (LibreChat, Claude Desktop, scripts) must present this
       # token via X-MCP-Token or Bearer. Blank => the endpoint rejects everything.
+      MCP_MODE: static
       MCP_STATIC_TOKEN: ${MCP_STATIC_TOKEN:-}
       PORT: 7878
     expose:
@@ -82,6 +85,34 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  kb-mcp-oauth:
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-latest}
+    build:
+      context: ./services/kb-mcp
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    environment:
+      KB_API_BASE: http://api:8000
+      KB_PUBLIC_PREFIX: ${KB_PUBLIC_PREFIX:-/api/kb/v1}
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-}
+      MCP_MODE: oauth
+      MCP_OAUTH_BASE_URL: ${MCP_OAUTH_BASE_URL:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MCP_ALLOWED_EMAILS: ${MCP_ALLOWED_EMAILS:-}
+      MCP_OAUTH_JWT_SIGNING_KEY: ${MCP_OAUTH_JWT_SIGNING_KEY:-}
+      MCP_OAUTH_STORAGE_ENCRYPTION_KEY: ${MCP_OAUTH_STORAGE_ENCRYPTION_KEY:-}
+      PORT: 7878
+    volumes:
+      - kb_mcp_oauth_data:/data/oauth
+    expose:
+      - "7878"
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["oauth"]
 
   ingestion-worker:
     image: ghcr.io/${GITHUB_OWNER:-owner}/ingestion-worker:latest
@@ -166,3 +197,6 @@ services:
       - web
       - api
       - kb-mcp
+
+volumes:
+  kb_mcp_oauth_data:

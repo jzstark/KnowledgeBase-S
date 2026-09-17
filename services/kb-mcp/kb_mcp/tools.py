@@ -3,20 +3,12 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
-try:
-    from mcp.server.transport_security import TransportSecuritySettings
-
-    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-except ImportError:
-    _security = None
 
 KB_API_BASE = os.environ.get("KB_API_BASE", "https://swanny.laughtale.co.uk").rstrip("/")
 KB_PUBLIC_PREFIX = os.environ.get("KB_PUBLIC_PREFIX", "/api/kb/v1").rstrip("/")
 KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
-
-mcp = FastMCP("knowledgebase", transport_security=_security) if _security else FastMCP("knowledgebase")
 
 NodeType = Literal["article", "entity", "summary", "index"]
 Relation = Literal["mentions", "mentioned_by", "summarizes", "summarized_by", "contains", "part_of"]
@@ -53,7 +45,6 @@ def _path(path: str) -> str:
 _client = httpx.AsyncClient(base_url=KB_API_BASE, headers=_headers(), timeout=60.0)
 
 
-@mcp.tool()
 async def kb_search(
     query: str,
     limit: int = 10,
@@ -88,7 +79,6 @@ async def kb_search(
     return r.json()
 
 
-@mcp.tool()
 async def kb_get_node(
     node_id: str,
     include_body: bool = True,
@@ -103,7 +93,6 @@ async def kb_get_node(
     return r.json()
 
 
-@mcp.tool()
 async def kb_get_nodes_batch(
     ids: list[str],
     include_body: bool = True,
@@ -118,7 +107,6 @@ async def kb_get_nodes_batch(
     return r.json()
 
 
-@mcp.tool()
 async def kb_get_related(
     node_id: str,
     relation: Relation,
@@ -133,7 +121,6 @@ async def kb_get_related(
     return r.json()
 
 
-@mcp.tool()
 async def kb_timeline(
     entity_id: str | None = None,
     topic_query: str | None = None,
@@ -158,7 +145,6 @@ async def kb_timeline(
     return r.json()
 
 
-@mcp.tool()
 async def kb_compare(
     node_ids: list[str],
     dimensions: list[str] | None = None,
@@ -173,7 +159,6 @@ async def kb_compare(
     return r.json()
 
 
-@mcp.tool()
 async def kb_cite(
     claim: str,
     context: str | None = None,
@@ -199,7 +184,6 @@ async def kb_cite(
     return r.json()
 
 
-@mcp.tool()
 async def kb_summarize_corpus(
     node_ids: list[str] | None = None,
     query: str | None = None,
@@ -224,7 +208,6 @@ async def kb_summarize_corpus(
     return r.json()
 
 
-@mcp.tool()
 async def get_current_time() -> dict[str, str]:
     """Return the current date and time in UTC."""
     now = datetime.now(timezone.utc)
@@ -234,3 +217,21 @@ async def get_current_time() -> dict[str, str]:
         "time_utc": now.strftime("%H:%M:%S UTC"),
         "weekday": now.strftime("%A"),
     }
+
+
+TOOLS = (
+    kb_search,
+    kb_get_node,
+    kb_get_nodes_batch,
+    kb_get_related,
+    kb_timeline,
+    kb_compare,
+    kb_cite,
+    kb_summarize_corpus,
+    get_current_time,
+)
+
+
+def register_tools(mcp: FastMCP) -> None:
+    for tool in TOOLS:
+        mcp.tool(tool)

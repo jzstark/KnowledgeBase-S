@@ -129,4 +129,6 @@ jobs:
         with:
           context: services/kb-mcp
           push: true
-          tags: ghcr.io/jzstark/kb-mcp:latest
+          # MCP upgrades are deployed explicitly after static/OAuth checks. Do
+          # not move :latest underneath the existing Watchtower-managed VPS.
+          tags: ghcr.io/jzstark/kb-mcp:${{ github.sha }}

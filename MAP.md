@@ -11,7 +11,7 @@
 | `services/web/` | Next.js 前端：知识图谱可视化、资料夹文件管理器 |
 | `services/web/app/sources/page.tsx` | **Phase B 新建**：三栏文件管理器 UI（资料夹树 + 内容列表 + 详情抽屉）；文档项含「归档」(软删) 与「删除」(硬删，含摘要) |
 | `services/ingestion-worker/` | 内容抓取与入库 pipeline：RSS/URL/WeChat/PDF/图片/Word/EPUB；传递 document_instance_id；API 调用带 `X-KB-Service-Token` |
-| `services/kb-mcp/` | **MCP server**（streamable-http，端口 7878，公网 `/mcp`）：把 `/api/kb/v1` 只读接口包成 MCP 工具，供 LibreChat/Claude Desktop/云端共用。出站 `KB_SERVICE_TOKEN`，入站 `MCP_STATIC_TOKEN`（`__main__.py` 中间件，fail-closed）。由 kb-chat 迁入 |
+| `services/kb-mcp/` | **FastMCP 4 server**（同一镜像、双实例）：共享 9 个只读工具；`kb-mcp` 保留静态 token 入口，`kb-mcp-oauth` 通过 Google OAuth + 邮箱白名单服务云端客户端。出站统一使用 `KB_SERVICE_TOKEN` |
 
 ## 配置
 
@@ -31,6 +31,7 @@
 | `docs/adr/` | 架构决策记录（ADR）：`0001-single-tenant.md`（单租户为有意决定，`user_id` 是前向兼容脚手架而非隔离边界） |
 | `docs/baseline/` | 重构前基线快照 |
 | `docs/CODE_REVIEW_FINDINGS.md` | 安全/设计审查清单 A–D 及各项修复状态 |
+| `docs/phase2-mcp-oauth.md` | **Phase 2 实施与上线清单**：MCP OAuth 云端接入（同镜像双容器、Google IdP、子域 `mcp.laughtale.co.uk`、邮箱白名单）|
 | `MEMORY.md` | 系统架构总览：数据模型、API、算法、MCP 工具 |
 | `README.md` | 项目简介与快速启动 |
 
@@ -38,9 +39,9 @@
 
 | 路径 | 说明 |
 |---|---|
-| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / ingestion-worker / job-worker / postgres / nginx / watchtower。workers 在 `--profile workers` 下启动；kb-mcp 无 profile（随默认栈启动） |
+| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / 可选 kb-mcp-oauth / workers / postgres / nginx / watchtower。workers 用 `workers` profile，OAuth MCP 用 `oauth` profile；静态 kb-mcp 随默认栈启动 |
 | `docker-compose.dev.yml` | 开发覆盖：本地挂载、热重载、workers profile |
-| `nginx/nginx.conf` | 反向代理配置：`/` 前端、`/api` 后端、`/mcp` → kb-mcp（`X-Forwarded-Proto https` 写死，应对 Cloudflare Flexible） |
+| `nginx/nginx.conf` | 反向代理配置：`swanny` 的 `/mcp` → 静态 kb-mcp；`mcp.laughtale.co.uk` 全路径 → OAuth 实例。MCP upstream 用 Docker DNS 动态解析；`X-Forwarded-Proto https` 写死以适配 Cloudflare Flexible |
 | `Makefile` | 常用开发命令（`make dev`、`make logs` 等） |
 | `deploy.sh` | VPS 部署脚本 |
 | `pyrightconfig.json` | Pyright 静态类型检查配置 |

@@ -6,7 +6,7 @@
 
 KB 核心只负责节点/关系/来源/搜索/MCP 工具。应用层（briefing、drafts）已完全移除。
 
-MCP server（`services/kb-mcp/`）已进驻本仓库：FastMCP 薄壳把 `/api/kb/v1/` 只读接口包成 MCP 工具，以 **streamable-http** 暴露在 `/mcp`，供 LibreChat / Claude Desktop / 云端客户端共用（单一来源，不再在 kb-chat 各搭一份）。鉴权两层：**出站** kb-mcp→API 用 `KB_SERVICE_TOKEN`；**入站** 客户端→kb-mcp 用 `MCP_STATIC_TOKEN`（`X-MCP-Token` 或 `Bearer`，空值 fail-closed 拒绝一切）。Phase 2（OAuth + 外部 IdP，给 Claude.ai/ChatGPT 云端）尚未实现。
+MCP server（`services/kb-mcp/`）已升级到 FastMCP 4.0.4：同一镜像和 `register_tools()` 提供 9 个只读工具，以 **streamable-http** 暴露在 `/mcp`。默认 `kb-mcp` 继续服务 LibreChat / Claude Desktop，入站使用 `MCP_STATIC_TOKEN`（`X-MCP-Token` 或 `Bearer`，空值 fail-closed）；可选 `kb-mcp-oauth` 使用 Google OAuth、已验证邮箱白名单和加密文件存储，面向 Claude.ai / ChatGPT 云端。两者出站到 `/api/kb/v1/` 均使用 `KB_SERVICE_TOKEN`。Phase 2 代码与本地验证已完成，VPS、Google Console 和 Cloudflare 联调尚未执行，详见 `docs/phase2-mcp-oauth.md`。
 
 ---
 
@@ -177,7 +177,7 @@ CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`
 
 ---
 
-## 7 个 MCP 工具详解
+## MCP 工具详解
 
 ### search
 `GET /api/kb/v1/search` — Hybrid 向量+关键词
