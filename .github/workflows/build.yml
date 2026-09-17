@@ -30,6 +30,7 @@ jobs:
               - 'services/summarizer-worker/**'
             kb_mcp:
               - 'services/kb-mcp/**'
+              - '.github/workflows/build.yml'
 
   build-web:
     needs: changes
@@ -129,6 +130,8 @@ jobs:
         with:
           context: services/kb-mcp
           push: true
-          # MCP upgrades are deployed explicitly after static/OAuth checks. Do
-          # not move :latest underneath the existing Watchtower-managed VPS.
-          tags: ghcr.io/jzstark/kb-mcp:${{ github.sha }}
+          # Keep an immutable rollback tag and publish stable from main only.
+          # Both MCP services are excluded from Watchtower, so updates are explicit.
+          tags: |
+            ghcr.io/jzstark/kb-mcp:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && 'ghcr.io/jzstark/kb-mcp:stable' || '' }}

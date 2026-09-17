@@ -6,7 +6,7 @@
 
 KB 核心只负责节点/关系/来源/搜索/MCP 工具。应用层（briefing、drafts）已完全移除。
 
-MCP server（`services/kb-mcp/`）已升级到 FastMCP 4.0.4：同一镜像和 `register_tools()` 提供 9 个只读工具，以 **streamable-http** 暴露在 `/mcp`。默认 `kb-mcp` 继续服务 LibreChat / Claude Desktop，入站使用 `MCP_STATIC_TOKEN`（`X-MCP-Token` 或 `Bearer`，空值 fail-closed）；可选 `kb-mcp-oauth` 使用 Google OAuth、已验证邮箱白名单和加密文件存储，面向 Claude.ai / ChatGPT 云端。两者出站到 `/api/kb/v1/` 均使用 `KB_SERVICE_TOKEN`。Phase 2 代码与本地验证已完成，VPS、Google Console 和 Cloudflare 联调尚未执行，详见 `docs/phase2-mcp-oauth.md`。
+MCP server（`services/kb-mcp/`）已升级到 FastMCP 4.0.4：同一镜像和 `register_tools()` 提供 9 个只读工具，以 **streamable-http** 暴露在 `/mcp`。默认 `kb-mcp` 继续服务 LibreChat / Claude Desktop，入站使用 `MCP_STATIC_TOKEN`（`X-MCP-Token` 或 `Bearer`，空值 fail-closed）；可选 `kb-mcp-oauth` 使用 Google OAuth、已验证邮箱白名单和加密文件存储，面向 Claude.ai / ChatGPT 云端。两者出站到 `/api/kb/v1/` 均使用 `KB_SERVICE_TOKEN`。Phase 2 已于 2026-09-17 上线：LibreChat 静态调用、Claude.ai / ChatGPT OAuth 调用及 OAuth 容器重建均通过；剩余负向验收见 `docs/phase2-mcp-oauth.md`。
 
 ---
 

@@ -5,8 +5,8 @@
 > 配套详细计划：`docs/phase-c-convergence-plan.md`（第一优先级实施计划）、
 > `docs/search-review-and-plan.md`(搜索子系统分析与改造计划)。
 >
-> **2026-09-17 更新**：云端客户端的 Google OAuth Phase 2 已完成本地实现，
-> 正待 VPS / Google / Cloudflare 联调上线，详见 `docs/phase2-mcp-oauth.md`。
+> **2026-09-17 更新**：云端客户端的 Google OAuth Phase 2 已上线；LibreChat
+> 静态入口及 Claude.ai / ChatGPT OAuth 入口均通过实际调用，详见 `docs/phase2-mcp-oauth.md`。
 > 下文的 per-client token 与审计仍是未来开放写入型 MCP 工具的前置工作，
 > 但不再是只读 OAuth 接入的前置条件。
 
@@ -117,7 +117,7 @@ graph augment 都是盲调。
    写入面天然安全：Agent 往 timeline 追加，abstract 由 refresh_stale 机制消化。
 
 鉴权演进分成两条独立轨道：面向 Claude.ai / ChatGPT 云端 connector 的
-**Google OAuth Phase 2 已完成本地实现**，当前仍保持 9 个工具全部只读；未来一旦
+**Google OAuth Phase 2 已上线**，当前仍保持 9 个工具全部只读；未来一旦
 开放写入工具，则必须先增加 per-client static token（LibreChat / Claude Desktop
 可独立吊销）与调用审计日志。Google OAuth 解决用户身份和邮箱准入，不替代
 静态客户端的独立吊销、细粒度权限或审计。
@@ -159,8 +159,8 @@ graph augment 都是盲调。
 ## 6. 执行顺序总览
 
 ```
-已提前实施、待上线：
-0. Google OAuth 云端接入                    → 验证：双入口、白名单、刷新与重建回归通过
+已完成：
+0. Google OAuth 云端接入                    → 双入口、LibreChat/Claude.ai/ChatGPT 调用及 OAuth 容器重建通过
 
 近期（先做）：
 1. Phase C 双轨退役 + wiki 降级为派生物   → 验证：rebuild_derived 演练通过；legacy 端点删除后全部测试绿

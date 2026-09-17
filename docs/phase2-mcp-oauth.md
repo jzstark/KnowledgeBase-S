@@ -1,6 +1,6 @@
 # Phase 2：MCP OAuth（云端客户端接入）实施计划
 
-> 状态：**本地实现与验证已完成，待 VPS / Google / Cloudflare 联调上线**。本文档是 Phase 2 的事实依据和执行清单。
+> 状态：**核心上线与客户端验证已完成（2026-09-17）**。LibreChat 静态入口、Claude.ai / ChatGPT OAuth 入口及 OAuth 容器重建均已通过实际调用；未完成的负向和资源验收继续保留在清单中。
 > 前置：Phase 1（静态 token MCP）已完成并上线，见 `MAP.md` / `MEMORY.md`。
 
 ## 1. 目标与边界
@@ -8,7 +8,7 @@
 为托管云客户端（Claude.ai web、ChatGPT web）增加受 OAuth 保护的 MCP 接入，准入仅限 **2 个可信 Google 账号**（本人 + 1 位朋友）。
 
 - **Phase 1 对外入口不变**：`https://swanny.laughtale.co.uk/mcp` 继续使用静态 token，服务 LibreChat / Claude Desktop / 脚本，现有客户端配置不改。
-- **新增 OAuth 入口**：`https://mcp.laughtale.co.uk/mcp`，供需要 OAuth discovery + DCR 的云端客户端使用。
+- **新增 OAuth 入口**：`https://mcp.laughtale.co.uk/mcp`，供需要 OAuth discovery + CIMD/DCR 的云端客户端使用。
 - **LibreChat 暂不切 OAuth**：继续使用现有静态 token；以后如需每个 LibreChat 用户独立授权，可再指向 OAuth 入口。
 - **工具只读**：沿用现有 9 个工具（8 个 `/api/kb/v1` 知识库工具 + `get_current_time`），不增加写操作。
 - **准入方式**：用户点击连接器登录 Google；服务端验证 `email_verified` 并检查邮箱白名单，不接受用户自行填写一个邮箱字符串作为身份凭证。
@@ -16,7 +16,7 @@
 
 ### 为什么云端客户端需要 OAuth
 
-Claude.ai / ChatGPT 的 custom connector 网页 UI 主要以 URL 接入，通过 OAuth discovery 和 DCR 完成授权，没有与现有 LibreChat 配置等价的自定义静态 header 入口。因此保留静态入口的同时，新增独立 OAuth 入口。
+Claude.ai / ChatGPT 的 custom connector 网页 UI 主要以 URL 接入，通过 OAuth discovery 和 CIMD/DCR 完成授权，没有与现有 LibreChat 配置等价的自定义静态 header 入口。因此保留静态入口的同时，新增独立 OAuth 入口。
 
 ## 2. 已锁定的决策
 
@@ -30,7 +30,7 @@ Claude.ai / ChatGPT 的 custom connector 网页 UI 主要以 URL 接入，通过
 | 静态入口 | `https://swanny.laughtale.co.uk/mcp` | 保持 Phase 1 对外契约不变 |
 | OAuth 入口 | **`https://mcp.laughtale.co.uk/mcp`** | 使用 FastMCP 默认、常见的 HTTP 路径；与现有路径一致但由 hostname 隔离 |
 | OAuth base URL | `https://mcp.laughtale.co.uk` | OAuth operational/discovery 路由位于子域根；最终 MCP URL = base URL + `/mcp` |
-| IdP | Google `GoogleProvider` / OAuth Proxy | Google 不支持 DCR；FastMCP 对 MCP 客户端提供 DCR 并代理到预注册的 Google client |
+| IdP | Google `GoogleProvider` / OAuth Proxy | Google 不支持 DCR；FastMCP 对 MCP 客户端提供 CIMD/DCR 并代理到预注册的 Google client |
 | LibreChat | 暂时继续静态 token | 当前最简单，不强迫现有用户再次 Google 登录 |
 | OAuth 存储 | 单机加密文件存储 + Docker volume | 符合当前单 EC2 和预算；不为两个用户引入 Redis |
 | Cloudflare | **维持 Flexible + 橙云** | 使用 Cloudflare 边缘 HTTPS，源站仍走 HTTP；本阶段不配置源站证书 |
@@ -114,7 +114,7 @@ Google callback = https://mcp.laughtale.co.uk/auth/callback
 
 - FastMCP 4.0.4 是实施时的当前稳定版；本项目从 `mcp.server.fastmcp.FastMCP` 直接迁到 standalone `fastmcp`，不是从 standalone FastMCP 3.4.7 升级。
 - FastMCP v4 HTTP transport 默认使用 `/mcp`；`http_app(path="/mcp")` 明确固定该路径。
-- `GoogleProvider` 使用 OAuth Proxy：对 Claude.ai / ChatGPT 提供 DCR，对 Google 使用预先创建的 Web OAuth client。
+- `GoogleProvider` 使用 OAuth Proxy：对 Claude.ai / ChatGPT 提供 CIMD/DCR，对 Google 使用预先创建的 Web OAuth client。
 - Google 默认回调路径是 `/auth/callback`，Google Console 中必须精确登记 `https://mcp.laughtale.co.uk/auth/callback`。
 - FastMCP 的全局 `AuthMiddleware` 可以对工具列表和调用统一应用自定义 `AuthContext` 检查。
 - 当前是单机单实例部署，OAuth client/token storage 使用加密 `FileTreeStore` 并挂持久化 volume；若以后水平扩容，再迁 Redis 等共享存储。
@@ -189,12 +189,12 @@ OAuth 文件存储必须：
 
 ### 6.4 Google Cloud Console
 
-- [ ] 配置 OAuth consent screen。
-- [ ] 创建 OAuth **Web application** client。
-- [ ] Authorized JavaScript origin：`https://mcp.laughtale.co.uk`。
-- [ ] Authorized redirect URI：`https://mcp.laughtale.co.uk/auth/callback`。
-- [ ] 获取 `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`，只写入 VPS `.env`。
-- [ ] 只请求 `openid` 和 Google userinfo email scope；当前白名单不需要 Gmail 邮件权限。
+- [x] 配置 OAuth consent screen；当前两账号私用阶段保持 External + Testing，扩大用户范围前再评估发布状态。
+- [x] 创建 OAuth **Web application** client。
+- [x] Authorized JavaScript origin：`https://mcp.laughtale.co.uk`。
+- [x] Authorized redirect URI：`https://mcp.laughtale.co.uk/auth/callback`。
+- [x] 获取 `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`，只写入 VPS `.env`。
+- [x] 只请求 `openid` 和 Google userinfo email scope；当前白名单不需要 Gmail 邮件权限。
 
 ### 6.5 Docker Compose
 
@@ -238,12 +238,12 @@ Compose 配套要求：
 
 ### 6.5.1 镜像发布与 Watchtower
 
-历史构建流程发布 `kb-mcp:latest`，Watchtower 每小时自动更新运行中的容器。实现已将 MCP 改为只发布不可变 commit SHA tag，并在两个 MCP service 上设置 Watchtower 排除标签；但旧 VPS 容器在应用新版 Compose 前还没有该标签。
+迁移期间使用不可变 commit SHA 固定镜像，避免 Watchtower 在 Compose 环境变量尚未应用时提前升级。核心验收完成后，`main` 分支构建同时发布不可变 SHA tag 和 `stable` tag；Compose 日常使用 `stable`，需要回滚时把 `KB_MCP_IMAGE_TAG` 改为已知 SHA。两个 MCP service 始终排除在 Watchtower 之外，因此 `stable` 只有在显式 pull/up 后才会生效。
 
-- [ ] **首次发布新版镜像之前**暂停 MCP 的自动更新，并验证现有运行容器已被排除；只在尚未部署的 Compose 文件里加标签不算生效。迁移窗口内可短暂停止 Watchtower，配置应用完成后再恢复。
-- [x] 构建流程只发布不可变的 commit SHA tag；Compose 通过 `KB_MCP_IMAGE_TAG` 让两个 MCP 实例使用同一已验收版本。
-- [ ] 将 `MCP_MODE=static` 和镜像版本配套应用到 `kb-mcp` 后再重建；Watchtower 不会替你应用 Compose 中新增的环境变量或服务。
-- [ ] 完整验收前保持 MCP 自动更新关闭。恢复 Watchtower 前，确认 MCP 的版本策略和排除配置已生效；恢复其他服务的自动更新不代表 MCP 必须继续跟随 `latest`。
+- [x] 迁移期间使用 commit SHA 固定并验收静态与 OAuth 实例。
+- [x] 两个 MCP service 均已应用 Watchtower 排除标签；恢复其他服务的自动更新不会更新 MCP。
+- [x] `main` 分支构建同时发布不可变 SHA tag 和 `stable`；Compose 默认使用 `stable`。
+- [x] `MCP_MODE=static|oauth` 与对应 Compose 配置已在 VPS 应用并完成客户端回归。
 
 ### 6.6 nginx
 
@@ -339,25 +339,27 @@ OAuth 已启用后的常规 VPS 发布统一使用 `./deploy.sh --oauth`；省�
 
 ### 6.8 验收
 
-- [ ] `https://swanny.laughtale.co.uk/mcp` + 原静态 token 的完整工具回归通过。
-- [ ] LibreChat 无需修改配置，仍可使用全部 9 个工具。
-- [ ] OAuth discovery 返回的 issuer、authorization、token 和 resource URL 全部为 HTTPS 且 hostname/path 正确。
-- [ ] `https://mcp.laughtale.co.uk/mcp` 无 token 时返回 OAuth challenge，而不是静态 token 错误。
-- [ ] 本人 Google 登录后工具可见且可调用。
+- [x] `https://swanny.laughtale.co.uk/mcp` + 原静态 token 的工具回归通过。
+- [x] LibreChat 无需修改配置，仍可正常调用 MCP 工具。
+- [x] OAuth discovery 返回的 issuer、authorization、token 和 resource URL 全部为 HTTPS 且 hostname/path 正确。
+- [x] `https://mcp.laughtale.co.uk/mcp` 无 token 时返回 OAuth challenge，而不是静态 token 错误。
+- [x] 本人 Google 登录后工具可见且可调用。
 - [ ] 朋友的白名单 Google 账号可用。
 - [ ] 白名单外账号即使完成 Google 身份认证，也看不到工具且无法直接调用；不要求它在 Google 登录页面就被拒绝。
 - [ ] `MCP_ALLOWED_EMAILS` 为空时 fail closed。
-- [ ] OAuth 容器重建后，原客户端凭证可继续实际调用和刷新；移除白名单用户并重建后，其已有 token 的工具访问被拒绝。
+- [x] OAuth 容器重建并保留 volume/密钥后，Claude.ai / ChatGPT 原连接可继续实际调用。
+- [ ] access token 到期后客户端可刷新并继续调用。
+- [ ] 移除白名单用户并重建后，其已有 token 的工具访问被拒绝。
 - [ ] OAuth profile 未启用、容器停止或移除时，nginx 启动/reload 均成功，web/API/静态入口仍可用；OAuth 请求只影响该子域，不误入静态入口。
-- [ ] 任一 MCP 容器重建后，如 IP 变化，经过 DNS 缓存有效期后入口恢复，不要求手动重启 nginx；另一个 MCP 实例仍可服务。
+- [x] OAuth MCP 容器重建后入口自动恢复，不要求手动重启 nginx；静态 MCP 实例仍可服务。
 - [ ] 记录双实例内存和 CPU 使用，确认当前 EC2 能承载。
-- [ ] Claude.ai 和 ChatGPT 各完成一次 initialize、list tools 和真实只读工具调用。
+- [x] Claude.ai 和 ChatGPT 均已连接并完成真实只读工具调用。
 
 ### 6.9 回滚
 
 - OAuth 上线失败：停止 OAuth 服务，保留 volume 和密钥；新子域可暂时返回不可用。静态 `kb-mcp` 和 `swanny` 配置继续运行。
 - 静态迁移失败：用已记录的旧 digest 重建同名 `kb-mcp`，恢复与旧镜像匹配的 Compose/环境配置；必要时恢复 nginx 配置并校验后 reload，回归 LibreChat。
-- 回滚期间保持 MCP 自动更新关闭，避免 Watchtower 再次拉入失败版本。不要使用 `docker compose down -v` 或删除 OAuth volume；无需停掉整个知识库栈。
+- MCP 保持排除在 Watchtower 之外；回滚时将 `KB_MCP_IMAGE_TAG` 设为已验收 SHA 后显式 pull/up。不要使用 `docker compose down -v` 或删除 OAuth volume；无需停掉整个知识库栈。
 
 ## 7. 暂缓项（不阻塞本阶段）
 
@@ -396,15 +398,15 @@ OAuth 已启用后的常规 VPS 发布统一使用 `./deploy.sh --oauth`；省�
 - [x] AWS：不新增基础设施。
 - [x] LibreChat：继续使用静态 token。
 - [x] 静态服务名保留 `kb-mcp`，只新增 `kb-mcp-oauth`。
-- [ ] Google `client_id` / `client_secret`。
-- [ ] 本人和朋友的准确 Gmail 地址。
-- [ ] 生成 JWT signing key 与 Fernet storage encryption key。
+- [x] Google `client_id` / `client_secret` 已配置在 VPS `.env`（值不入库）。
+- [x] 准入邮箱已配置在 VPS `.env`（值不入库）。
+- [x] JWT signing key 与 Fernet storage encryption key 已生成并持久化在 VPS `.env`。
 
 ## 10. 推荐实施切口
 
 1. **静态迁移切口**：先迁 FastMCP 4、抽取 `register_tools()`、建立 `MCP_MODE`，只启动现有名称的 `kb-mcp`；无 Google 配置时也可测试。部署前执行 Watchtower 发布保护，以 LibreChat 和 contract tests 证明 Phase 1 契约保持。
 2. **OAuth 本地切口**：实现 GoogleProvider、白名单和加密文件存储；使用测试/本地 URL 验证路由、discovery 和授权规则。
 3. **双实例切口**：通过 profile 新增 `kb-mcp-oauth`，更新 nginx 动态解析，但先不创建公网 DNS；验证 OAuth 缺席、重建和 nginx 重启场景。
-4. **公网切口**：配置 Google production callback，最后创建 Cloudflare DNS，依次验收 Claude.ai 和 ChatGPT。
+4. **公网切口**：配置 Google Web OAuth callback，最后创建 Cloudflare DNS，依次验收 Claude.ai 和 ChatGPT。
 
 任何切口失败时，都应能按 §6.9 恢复可用的 `kb-mcp`；不得用 OAuth 上线结果作为 Phase 1 静态入口继续可用的前提。

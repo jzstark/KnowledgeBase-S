@@ -63,7 +63,7 @@ services:
       - api
 
   kb-mcp:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-stable}
     build:
       context: ./services/kb-mcp
     restart: unless-stopped
@@ -87,7 +87,7 @@ services:
         condition: service_healthy
 
   kb-mcp-oauth:
-    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_OWNER:-owner}/kb-mcp:${KB_MCP_IMAGE_TAG:-stable}
     build:
       context: ./services/kb-mcp
     restart: unless-stopped
