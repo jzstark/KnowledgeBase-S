@@ -116,7 +116,7 @@ Alternatively, put Cloudflare in front (proxy mode, orange cloud) — the existi
 | Stop everything | `docker compose down` |
 | Backup user data + DB | `./scripts/backup.sh` |
 
-**Watchtower** runs inside the stack and polls `ghcr.io` every hour. Once a new image is pushed by GitHub Actions, it is pulled and the service restarted automatically — no manual redeploy needed. Both MCP instances follow `kb-mcp:stable`; immutable SHA tags remain available for pinning and rollback. Changes to Compose, environment variables, volumes, or nginx still require `git pull` followed by `./deploy.sh`.
+**Watchtower** runs inside the stack and polls `ghcr.io` every hour. Once a new image is pushed by GitHub Actions, it is pulled and the service restarted automatically — no manual redeploy needed. After a successful update, `--cleanup` removes the superseded local image but does not remove named volumes. Both MCP instances follow `kb-mcp:stable`; immutable SHA tags remain available in GHCR for pinning and rollback. Changes to Compose, environment variables, volumes, or nginx still require `git pull` followed by `./deploy.sh`.
 
 ---
 

@@ -42,7 +42,7 @@
 
 | 路径 | 说明 |
 |---|---|
-| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / 可选 kb-mcp-oauth / workers / postgres / nginx / watchtower。workers 用 `workers` profile，OAuth MCP 用 `oauth` profile；两个 MCP 默认使用 `stable`、由 Watchtower 自动更新，并保留 SHA 回滚能力 |
+| `docker-compose.yml` | 生产部署：api（`RUN_MIGRATIONS=1`，唯一 migrator）/ web / kb-mcp / 可选 kb-mcp-oauth / workers / postgres / nginx / watchtower。workers 用 `workers` profile，OAuth MCP 用 `oauth` profile；两个 MCP 默认使用 `stable`、由 Watchtower 自动更新，旧本地镜像自动清理并保留 GHCR SHA 回滚能力 |
 | `docker-compose.dev.yml` | 开发覆盖：本地挂载、热重载、workers profile |
 | `nginx/nginx.conf` | 反向代理配置：`swanny` 的 `/mcp` → 静态 kb-mcp；`mcp.laughtale.co.uk` 全路径 → OAuth 实例。MCP upstream 用 Docker DNS 动态解析；`X-Forwarded-Proto https` 写死以适配 Cloudflare Flexible |
 | `Makefile` | 常用开发命令（`make dev`、`make logs` 等） |

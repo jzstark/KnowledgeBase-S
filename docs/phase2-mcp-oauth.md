@@ -250,6 +250,8 @@ Compose 配套要求：
 
 Watchtower 只替换镜像，不会同步 Git 仓库中的 Compose、环境变量、volume 或 nginx。纯 MCP 代码/依赖更新可由 `stable` 自动发布；涉及这些运行配置的改动仍需先在 VPS `git pull`，再运行 `./deploy.sh`。
 
+Watchtower 使用 `--cleanup`：容器成功更新后删除被替换的本地旧镜像，避免 VPS 长期积累 dangling images；该选项不删除 named volumes。不可变 SHA tag 仍保留在 GHCR，需要回滚时重新 pull。
+
 ### 6.6 nginx
 
 保留现有 `swanny` server、`kb-mcp` upstream 名和公网 URL。两个 MCP 入口使用 Docker DNS 的请求时解析，容器重建后地址可重新解析，OAuth 服务缺席也不会导致 nginx 加载配置失败。以下示例的 `127.0.0.11` 适用于当前 Compose 自定义网络，实施时在 nginx 容器内确认 resolver：
