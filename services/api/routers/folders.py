@@ -106,6 +106,17 @@ def _serialize_timestamps(d: dict, *keys: str) -> dict:
     return d
 
 
+async def _current_document_count(folder_id: str) -> int:
+    count = await database.database.fetch_val(
+        """
+        SELECT COUNT(*) FROM document_instances
+        WHERE folder_id = :fid AND status NOT IN ('ignored', 'deleted')
+        """,
+        {"fid": folder_id},
+    )
+    return int(count or 0)
+
+
 # ── Folder CRUD ───────────────────────────────────────────────────────────────
 
 class FolderCreate(BaseModel):
@@ -131,14 +142,7 @@ async def list_folders(_: dict = Depends(require_auth)) -> list[dict]:
     for row in rows:
         d = _serialize_timestamps(dict(row), "created_at", "updated_at")
         # 附加 document_instance 计数
-        cnt = await database.database.fetch_val(
-            """
-            SELECT COUNT(*) FROM document_instances
-            WHERE folder_id = :fid AND status NOT IN ('ignored', 'deleted')
-            """,
-            {"fid": row["id"]},
-        )
-        d["item_count"] = int(cnt or 0)
+        d["item_count"] = await _current_document_count(row["id"])
         result.append(d)
     return result
 
@@ -198,10 +202,7 @@ async def get_folder(folder_id: str, _: dict = Depends(require_auth)) -> dict:
     if not row:
         raise HTTPException(404, "资料夹不存在")
     d = _serialize_timestamps(dict(row), "created_at", "updated_at")
-    cnt = await database.database.fetch_val(
-        "SELECT COUNT(*) FROM document_instances WHERE folder_id = :fid", {"fid": folder_id}
-    )
-    d["item_count"] = int(cnt or 0)
+    d["item_count"] = await _current_document_count(folder_id)
     return d
 
 
@@ -246,10 +247,8 @@ async def delete_folder(folder_id: str, _: dict = Depends(require_auth)):
     )
     if not row:
         raise HTTPException(404, "资料夹不存在")
-    cnt = await database.database.fetch_val(
-        "SELECT COUNT(*) FROM document_instances WHERE folder_id = :fid", {"fid": folder_id}
-    )
-    if int(cnt or 0) > 0:
+    cnt = await _current_document_count(folder_id)
+    if cnt > 0:
         raise HTTPException(400, f"资料夹非空（{cnt} 条文档），请先移除内容再删除")
     await database.database.execute(
         "UPDATE folders SET status = 'archived', updated_at = NOW() WHERE id = :id",

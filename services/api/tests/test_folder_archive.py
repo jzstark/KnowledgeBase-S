@@ -81,6 +81,54 @@ class ArchiveDocumentInstanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status, detail), ("skipped", "文档已经归档"))
 
 
+class _FolderCountDatabase:
+    def __init__(self, *, current_count: int, total_count: int):
+        self.current_count = current_count
+        self.total_count = total_count
+        self.executed: list[tuple[str, dict]] = []
+
+    async def fetch_one(self, query, values):
+        return {
+            "id": values["id"],
+            "user_id": "default",
+            "name": "Test folder",
+            "kind": "normal",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    async def fetch_val(self, query, values):
+        return (
+            self.current_count
+            if "status NOT IN ('ignored', 'deleted')" in query
+            else self.total_count
+        )
+
+    async def execute(self, query, values):
+        self.executed.append((query, values))
+
+
+class FolderCountTests(unittest.IsolatedAsyncioTestCase):
+    async def test_folder_detail_counts_only_current_documents(self):
+        fake = _FolderCountDatabase(current_count=2, total_count=4)
+
+        with patch.object(folders.database, "database", fake):
+            result = await folders.get_folder("fld_test", _={})
+
+        self.assertEqual(result["item_count"], 2)
+
+    async def test_folder_with_only_archived_or_deleted_documents_can_be_removed(self):
+        fake = _FolderCountDatabase(current_count=0, total_count=2)
+
+        with patch.object(folders.database, "database", fake):
+            await folders.delete_folder("fld_test", _={})
+
+        self.assertEqual(len(fake.executed), 2)
+        self.assertIn("UPDATE folders", fake.executed[0][0])
+        self.assertIn("UPDATE sources", fake.executed[1][0])
+
+
 class _TerminalStatusDatabase:
     def __init__(self):
         self.update_query = ""
