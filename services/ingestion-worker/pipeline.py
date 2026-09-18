@@ -515,7 +515,7 @@ def write_wiki_article(node_id: str, item: RawItem, text: str, tags: list[str], 
 
 
 def write_wiki_summary(summary_id: str, article_id: str, article_title: str,
-                        abstract: str, tags: list[str], created: str):
+                        abstract: str, tags: list[str], created: str, doc_kind: str):
     """Write wiki/summaries/{summary_id}.md."""
     wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "summaries"
     wiki_dir.mkdir(parents=True, exist_ok=True)
@@ -526,6 +526,7 @@ def write_wiki_summary(summary_id: str, article_id: str, article_title: str,
         "type": "summary",
         "title": summary_title,
         "tags": list(tags),
+        "doc_kind": doc_kind,
         "wikilinks": [],
         "summary_of": article_id,
         "sources": [article_id],

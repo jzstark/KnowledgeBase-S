@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from pydantic import BaseModel
 
 import database
+from document_types import DocumentTypeError, set_source_item_doc_kind
 from settings import settings
 from auth import require_auth, require_auth_or_service_token
 
@@ -642,37 +643,18 @@ async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
 @router.patch("/source-items/{item_id}")
 async def update_source_item(item_id: str, body: SourceItemUpdate, _: dict = Depends(require_auth)):
     doc_kind = _validate_doc_kind(body.doc_kind)
+    try:
+        result = await set_source_item_doc_kind(item_id, doc_kind, user_id=USER_ID)
+    except DocumentTypeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     row = await database.database.fetch_one(
-        """
-        UPDATE source_items
-        SET doc_kind = :doc_kind,
-            updated_at = NOW()
-        WHERE id = :id
-        RETURNING *
-        """,
-        {"id": item_id, "doc_kind": doc_kind},
+        "SELECT * FROM source_items WHERE id = :id AND user_id = :uid",
+        {"id": item_id, "uid": USER_ID},
     )
-    if not row:
-        raise HTTPException(404, "source item 不存在")
-    if row["document_instance_id"]:
-        await database.database.execute(
-            "UPDATE document_instances SET doc_kind = :doc_kind, updated_at = NOW() WHERE id = :id",
-            {"id": row["document_instance_id"], "doc_kind": doc_kind},
-        )
-
-    # 如果该 source item 已经入库为 article node，同步 node.doc_kind，避免 item/node 显示不一致。
-    await database.database.execute(
-        """
-        UPDATE knowledge_nodes n
-        SET doc_kind = :doc_kind,
-            updated_at = NOW()
-        FROM article_nodes an
-        WHERE an.node_id = n.id
-          AND an.source_item_id = :id
-        """,
-        {"id": item_id, "doc_kind": doc_kind},
-    )
-    return _serialize_source_item(row)
+    assert row is not None
+    response = _serialize_source_item(row)
+    response["wiki_warnings"] = result.wiki_warnings
+    return response
 
 
 @router.get("/pending/source-ids")

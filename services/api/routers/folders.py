@@ -16,6 +16,7 @@ ID 映射约定：
 """
 
 import hashlib
+import logging
 import os
 import secrets
 from datetime import datetime, timezone
@@ -29,6 +30,11 @@ from pydantic import BaseModel
 
 import database
 from auth import require_auth
+from document_types import (
+    DocumentTypeError,
+    set_document_instance_doc_kind,
+    validate_explicit_doc_kind,
+)
 from settings import settings
 from kb.internal import do_delete_node
 from kb.summary import do_delete_summary
@@ -43,6 +49,7 @@ WECHAT2RSS_FEED_BASE_URL = os.environ.get("WECHAT2RSS_FEED_BASE_URL", "https://r
 WECHAT2RSS_TOKEN = os.environ.get("WECHAT2RSS_TOKEN", "")
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"
+logger = logging.getLogger(__name__)
 
 FILE_MIME: dict[str, str] = {
     ".pdf": "application/pdf",
@@ -283,7 +290,8 @@ async def get_folder_contents(
                ra.size,
                articles.article_id,
                articles.article_title,
-               articles.article_titles
+               articles.article_titles,
+               articles.article_doc_kind
         FROM document_instances di
         LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
         LEFT JOIN LATERAL (
@@ -292,6 +300,8 @@ async def get_folder_contents(
                     AS article_id,
                 (array_agg(kn.title ORDER BY kn.created_at DESC NULLS LAST, an.node_id))[1]
                     AS article_title,
+                (array_agg(kn.doc_kind ORDER BY kn.created_at DESC NULLS LAST, an.node_id))[1]
+                    AS article_doc_kind,
                 COALESCE(
                     array_agg(kn.title ORDER BY kn.created_at DESC NULLS LAST, an.node_id)
                         FILTER (WHERE kn.title IS NOT NULL),
@@ -541,6 +551,10 @@ class DocumentInstanceBatchRequest(BaseModel):
     ids: list[str]
 
 
+class DocumentInstanceDocKindBatchRequest(DocumentInstanceBatchRequest):
+    doc_kind: str
+
+
 async def _archive_document_instance(
     di_id: str,
     *,
@@ -634,6 +648,71 @@ async def archive_document_instances(
     }
 
 
+@di_router.patch("/batch/doc-kind")
+async def update_document_instances_doc_kind(
+    body: DocumentInstanceDocKindBatchRequest,
+    _: dict = Depends(require_auth),
+) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        raise HTTPException(400, "至少选择一篇文档")
+    if len(ids) > 1000:
+        raise HTTPException(400, "单次最多修改 1000 篇文档")
+    try:
+        validate_explicit_doc_kind(body.doc_kind)
+    except DocumentTypeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": body.folder_id, "uid": USER_ID},
+    )
+    if not folder:
+        raise HTTPException(404, "资料夹不存在")
+
+    results = []
+    for di_id in ids:
+        try:
+            result = await set_document_instance_doc_kind(
+                di_id, body.doc_kind, user_id=USER_ID, folder_id=body.folder_id
+            )
+            results.append(
+                {
+                    "id": di_id,
+                    "status": "updated",
+                    "detail": "内容类型已更新",
+                    "wiki_warnings": result.wiki_warnings,
+                }
+            )
+        except DocumentTypeError as exc:
+            results.append(
+                {"id": di_id, "status": "failed", "detail": exc.detail, "wiki_warnings": []}
+            )
+        except Exception:
+            logger.exception("failed to update doc_kind for document instance %s", di_id)
+            results.append(
+                {
+                    "id": di_id,
+                    "status": "failed",
+                    "detail": "内容类型更新失败，请重试",
+                    "wiki_warnings": [],
+                }
+            )
+
+    warnings = [
+        warning
+        for item in results
+        for warning in item["wiki_warnings"]
+    ]
+    return {
+        "ok": all(item["status"] != "failed" for item in results),
+        "updated": sum(item["status"] == "updated" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "wiki_warnings": warnings,
+        "results": results,
+    }
+
+
 @di_router.get("/{di_id}")
 async def get_document_instance(di_id: str, _: dict = Depends(require_auth)) -> dict:
     row = await database.database.fetch_one(
@@ -641,7 +720,8 @@ async def get_document_instance(di_id: str, _: dict = Depends(require_auth)) -> 
         SELECT di.*,
                ra.storage_key, ra.original_filename, ra.mime_type, ra.size, ra.sha256,
                an.node_id as article_id,
-               kn.title as article_title
+               kn.title as article_title,
+               kn.doc_kind as article_doc_kind
         FROM document_instances di
         LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
         LEFT JOIN article_nodes an ON an.document_instance_id = di.id
@@ -668,7 +748,15 @@ async def update_document_instance(
     if not row:
         raise HTTPException(404, "文档实例不存在")
 
-    updates = ["updated_at = NOW()"]
+    if body.doc_kind is not None:
+        try:
+            await set_document_instance_doc_kind(
+                di_id, body.doc_kind, user_id=USER_ID
+            )
+        except DocumentTypeError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from exc
+
+    updates = []
     params: dict[str, Any] = {"id": di_id}
 
     if body.display_name is not None:
@@ -683,13 +771,11 @@ async def update_document_instance(
             raise HTTPException(400, "目标资料夹不存在")
         updates.append("folder_id = :folder_id")
         params["folder_id"] = body.folder_id
-    if body.doc_kind is not None:
-        updates.append("doc_kind = :doc_kind")
-        params["doc_kind"] = _validate_doc_kind(body.doc_kind)
-
-    await database.database.execute(
-        f"UPDATE document_instances SET {', '.join(updates)} WHERE id = :id", params
-    )
+    if updates:
+        updates.append("updated_at = NOW()")
+        await database.database.execute(
+            f"UPDATE document_instances SET {', '.join(updates)} WHERE id = :id", params
+        )
     return await get_document_instance(di_id, _)
 
 

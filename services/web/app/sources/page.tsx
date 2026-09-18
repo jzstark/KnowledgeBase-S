@@ -36,6 +36,7 @@ interface DocumentInstance {
   origin_ref: string | null;
   origin_ref_type: string | null;
   doc_kind: string | null;
+  article_doc_kind: string | null;
   status: string;
   mime_type: string | null;
   size: number | null;
@@ -79,6 +80,20 @@ interface BatchArchiveResponse {
   skipped: number;
   failed: number;
   results: BatchArchiveResult[];
+}
+
+interface BatchDocKindResult {
+  id: string;
+  status: "updated" | "failed";
+  detail: string;
+  wiki_warnings: string[];
+}
+
+interface BatchDocKindResponse {
+  updated: number;
+  failed: number;
+  wiki_warnings: string[];
+  results: BatchDocKindResult[];
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -156,6 +171,87 @@ function DocKindSelect({
         <option key={v} value={v}>{DOC_KIND_LABELS[v] ?? v}</option>
       ))}
     </select>
+  );
+}
+
+function DocKindChangeDialog({
+  open, folderId, ids, initialValue, onClose, onDone,
+}: {
+  open: boolean;
+  folderId: string;
+  ids: string[];
+  initialValue?: string | null;
+  onClose: () => void;
+  onDone: (result: BatchDocKindResponse, docKind: string) => void | Promise<void>;
+}) {
+  const cfg = useDocKindConfig();
+  const [docKind, setDocKind] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open || !cfg) return;
+    setDocKind(
+      initialValue && cfg.values.includes(initialValue)
+        ? initialValue
+        : cfg.default || cfg.values[0] || "",
+    );
+    setError("");
+  }, [open, cfg, initialValue]);
+
+  async function submit() {
+    if (!docKind || ids.length === 0) return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/document-instances/batch/doc-kind", {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_id: folderId, ids, doc_kind: docKind }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "修改内容类型失败");
+      await onDone(body as BatchDocKindResponse, docKind);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "修改内容类型失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && !saving && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>修改内容类型</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            将选中的 {ids.length} 篇文档设为指定类型。此操作不会重新生成文章，也不会调用模型。
+          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor="change-doc-kind">目标类型</Label>
+            <select
+              id="change-doc-kind"
+              value={docKind}
+              onChange={(event) => setDocKind(event.target.value)}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {(cfg?.values ?? []).map((value) => (
+                <option key={value} value={value}>{DOC_KIND_LABELS[value] ?? value}</option>
+              ))}
+            </select>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose} disabled={saving}>取消</Button>
+            <Button onClick={submit} disabled={saving || !docKind}>
+              {saving ? "保存中…" : `确认修改 ${ids.length} 篇`}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -293,6 +389,17 @@ export default function FoldersPage() {
     if (activeFolderId) setTimeout(() => loadContents(activeFolderId), 1000);
   }
 
+  async function handleSingleDocKindChanged(docKind: string) {
+    if (!selectedItem) return;
+    const updatedItem = {
+      ...selectedItem,
+      doc_kind: docKind,
+      article_doc_kind: docKind,
+    };
+    await refreshCurrentFolder();
+    setSelectedItem(updatedItem);
+  }
+
   // Build folder tree (top-level only for simplicity)
   const rootFolders = folders.filter((f) => !f.parent_id && f.status === "active");
 
@@ -387,6 +494,7 @@ export default function FoldersPage() {
             onDelete={() => handleDeleteItem(selectedItem)}
             onHardDelete={() => handleHardDeleteItem(selectedItem)}
             onReprocess={() => handleReprocess(selectedItem)}
+            onDocKindChanged={handleSingleDocKindChanged}
           />
         )}
       </div>
@@ -508,12 +616,14 @@ function FolderContentsPanel({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batching, setBatching] = useState(false);
   const [batchNotice, setBatchNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [showDocKindDialog, setShowDocKindDialog] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setQuery("");
     setSelectedIds(new Set());
     setBatchNotice(null);
+    setShowDocKindDialog(false);
   }, [folder.id]);
 
   const searchTerms = useMemo(
@@ -622,6 +732,30 @@ function FolderContentsPanel({
     }
   }
 
+  async function handleDocKindChanged(result: BatchDocKindResponse) {
+    const completed = new Set(
+      result.results
+        .filter((item) => item.status === "updated")
+        .map((item) => item.id),
+    );
+    setSelectedIds((previous) => new Set([...previous].filter((id) => !completed.has(id))));
+    const summary = [`已修改 ${result.updated} 篇`];
+    if (result.failed) summary.push(`失败 ${result.failed} 篇`);
+    if (result.wiki_warnings.length > 0) {
+      summary.push(`Wiki 元数据警告 ${result.wiki_warnings.length} 项（写入失败可重试；文件缺失需先恢复）`);
+    }
+    const failedDetails = result.results
+      .filter((item) => item.status === "failed")
+      .map((item) => item.detail);
+    setBatchNotice({
+      text: failedDetails.length > 0
+        ? `${summary.join("，")}：${[...new Set(failedDetails)].join("；")}`
+        : summary.join("，"),
+      error: result.failed > 0 || result.wiki_warnings.length > 0,
+    });
+    await onRefresh();
+  }
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {/* Toolbar */}
@@ -705,6 +839,15 @@ function FolderContentsPanel({
               <Button size="sm" variant="outline" className="h-7 text-xs" disabled={batching} onClick={archiveSelected}>
                 {batching ? "归档中…" : "归档"}
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                disabled={batching}
+                onClick={() => setShowDocKindDialog(true)}
+              >
+                修改内容类型
+              </Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={batching} onClick={() => setSelectedIds(new Set())}>
                 取消选择
               </Button>
@@ -769,6 +912,13 @@ function FolderContentsPanel({
           </table>
         )}
       </div>
+      <DocKindChangeDialog
+        open={showDocKindDialog}
+        folderId={folder.id}
+        ids={[...selectedIds]}
+        onClose={() => setShowDocKindDialog(false)}
+        onDone={handleDocKindChanged}
+      />
     </div>
   );
 }
@@ -790,6 +940,7 @@ function DocumentRow({
   onReprocess: () => void;
 }) {
   const name = item.display_name || item.origin_ref || item.id;
+  const effectiveDocKind = item.doc_kind || item.article_doc_kind;
   return (
     <tr
       className={cn(
@@ -820,8 +971,10 @@ function DocumentRow({
         </div>
       </td>
       <td className="whitespace-nowrap px-4 py-2">
-        {item.doc_kind && (
-          <span className="text-xs text-muted-foreground">{DOC_KIND_LABELS[item.doc_kind] ?? item.doc_kind}</span>
+        {effectiveDocKind && (
+          <span className="text-xs text-muted-foreground">
+            {DOC_KIND_LABELS[effectiveDocKind] ?? effectiveDocKind}
+          </span>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-2">
@@ -873,15 +1026,33 @@ function fileIcon(mime: string | null, refType: string | null): string {
 // ── Detail Drawer ─────────────────────────────────────────────────────────────
 
 function DetailDrawer({
-  item, onClose, onDelete, onHardDelete, onReprocess,
+  item, onClose, onDelete, onHardDelete, onReprocess, onDocKindChanged,
 }: {
   item: DocumentInstance;
   onClose: () => void;
   onDelete: () => void;
   onHardDelete: () => void;
   onReprocess: () => void;
+  onDocKindChanged: (docKind: string) => void | Promise<void>;
 }) {
+  const [showDocKindDialog, setShowDocKindDialog] = useState(false);
+  const [typeNotice, setTypeNotice] = useState("");
+  const effectiveDocKind = item.doc_kind || item.article_doc_kind;
+
+  async function handleChanged(result: BatchDocKindResponse, docKind: string) {
+    if (result.updated === 0) {
+      throw new Error(result.results[0]?.detail || "修改内容类型失败");
+    }
+    setTypeNotice(
+      result.wiki_warnings.length > 0
+        ? `数据库已更新，但有 ${result.wiki_warnings.length} 项 Wiki 元数据未同步；写入失败可重试，文件缺失需先恢复。`
+        : "内容类型已更新。",
+    );
+    await onDocKindChanged(docKind);
+  }
+
   return (
+    <>
     <aside className="flex min-h-0 w-72 shrink-0 flex-col overflow-hidden border-l bg-background">
       <div className="flex shrink-0 items-center justify-between border-b p-3">
         <span className="text-sm font-medium truncate">{item.display_name || "详情"}</span>
@@ -904,12 +1075,17 @@ function DetailDrawer({
             {STATUS_LABELS[item.status] ?? item.status}
           </span>
         </div>
-        {item.doc_kind && (
-          <div>
-            <p className="text-xs text-muted-foreground mb-0.5">内容类型</p>
-            <p>{DOC_KIND_LABELS[item.doc_kind] ?? item.doc_kind}</p>
-          </div>
-        )}
+        <div>
+          <p className="text-xs text-muted-foreground mb-0.5">内容类型</p>
+          <p>{effectiveDocKind ? (DOC_KIND_LABELS[effectiveDocKind] ?? effectiveDocKind) : "尚未确定"}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {item.doc_kind
+              ? "已显式设置；后续重新处理将沿用此类型"
+              : effectiveDocKind
+                ? "当前文章类型来自入库规则，尚未设置覆盖"
+                : "尚未设置覆盖；入库时将继承来源默认类型"}
+          </p>
+        </div>
         {item.mime_type && (
           <div>
             <p className="text-xs text-muted-foreground mb-0.5">文件类型</p>
@@ -944,6 +1120,18 @@ function DetailDrawer({
 
         <Separator />
         <div className="flex flex-col gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            disabled={item.status === "processing"}
+            onClick={() => setShowDocKindDialog(true)}
+          >
+            修改内容类型
+          </Button>
+          {typeNotice && (
+            <p className="text-xs text-muted-foreground">{typeNotice}</p>
+          )}
           {item.status === "failed" && (
             <Button size="sm" variant="outline" className="w-full" onClick={onReprocess}>
               重新处理
@@ -976,6 +1164,15 @@ function DetailDrawer({
         </div>
       </div>
     </aside>
+    <DocKindChangeDialog
+      open={showDocKindDialog}
+      folderId={item.folder_id}
+      ids={[item.id]}
+      initialValue={effectiveDocKind}
+      onClose={() => setShowDocKindDialog(false)}
+      onDone={handleChanged}
+    />
+    </>
   );
 }
 

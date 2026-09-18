@@ -85,10 +85,13 @@ class FakeIngestion:
         text: str,
         tags: list[str],
         raw_ref: dict,
+        doc_kind: str,
         title_override: str | None,
         source_type_override: str | None,
     ) -> None:
-        self.wiki_articles.append((node_id, text, tags, raw_ref, title_override, source_type_override))
+        self.wiki_articles.append(
+            (node_id, text, tags, raw_ref, doc_kind, title_override, source_type_override)
+        )
 
     def write_wiki_summary(
         self,
@@ -98,8 +101,11 @@ class FakeIngestion:
         abstract: str,
         tags: list[str],
         created: str,
+        doc_kind: str,
     ) -> None:
-        self.wiki_summaries.append((summary_id, article_id, article_title, abstract, tags, created))
+        self.wiki_summaries.append(
+            (summary_id, article_id, article_title, abstract, tags, created, doc_kind)
+        )
 
     def write_wiki_entity(
         self,
@@ -158,6 +164,7 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
                 raw_ref={"type": "url", "url": "https://example.com", "cached": "/tmp/raw.html"},
                 time_payload={"captured_at": "2026-05-15T10:00:00+00:00"},
                 use_entity_context=True,
+                doc_kind="news",
             ),
             fake.adapters(),
         )
@@ -170,9 +177,11 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.posted[0]["object_type"], "article")
         self.assertEqual(fake.posted[0]["captured_at"], "2026-05-15T10:00:00+00:00")
         self.assertEqual(fake.posted[1]["summary_of"], "art_1")
+        self.assertEqual(fake.posted[1]["doc_kind"], "news")
         self.assertEqual(fake.posted[2]["object_type"], "entity")
         self.assertEqual(fake.wiki_articles[0][0], "art_1")
         self.assertEqual(fake.wiki_summaries[0][2], "Title")
+        self.assertEqual(fake.wiki_summaries[0][-1], "news")
         self.assertEqual(fake.marked, [(7, "ent_1")])
         self.assertEqual(fake.backfilled, ["ent_1"])
 
@@ -204,7 +213,7 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.analyze_calls[0][1], [])
         self.assertEqual(fake.posted[0]["parent_index_id"], "idx_1")
         self.assertEqual(fake.posted[0]["raw_ref"]["type"], "book_chapter")
-        self.assertEqual(fake.wiki_articles[0][5], "book_chapter")
+        self.assertEqual(fake.wiki_articles[0][6], "book_chapter")
         self.assertEqual(fake.wiki_summaries, [])
 
 

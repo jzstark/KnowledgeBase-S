@@ -49,7 +49,7 @@ class ArticleIngestionAdapters:
     mark_candidate_promoted: Callable[[int, str], Awaitable[None]]
     backfill_wikilinks: Callable[[str], Awaitable[None]]
     write_wiki_article: Callable[[str, RawItem, str, list[str], dict, str, str | None, str | None], None]
-    write_wiki_summary: Callable[[str, str, str, str, list[str], str], None]
+    write_wiki_summary: Callable[[str, str, str, str, list[str], str, str], None]
     write_wiki_entity: Callable[[str, str, list[str], list[str], str, list[str]], None]
     max_entity_page_sources: int
     embedding_model: str   # 当前使用的 embedding model 名（用于写入 nodes.embedding_model）
@@ -120,6 +120,7 @@ async def process_article_like_item(
         "object_type": "summary",
         "summary_of": article_id,
         "source_node_ids": [article_id],
+        "doc_kind": data.doc_kind,
     })
 
     created = data.item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -134,7 +135,9 @@ async def process_article_like_item(
         data.wiki_source_type,
     )
     if data.write_summary_wiki:
-        adapters.write_wiki_summary(summary_id, article_id, display_title, abstract, tags, created)
+        adapters.write_wiki_summary(
+            summary_id, article_id, display_title, abstract, tags, created, data.doc_kind or ""
+        )
 
     promoted_entity_ids = await _promote_entities(data, adapters, article_id, entities)
     for entity_id in promoted_entity_ids:
