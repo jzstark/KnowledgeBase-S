@@ -5,12 +5,12 @@
 | 路径 | 说明 |
 |---|---|
 | `services/api/` | FastAPI 主服务：入库、知识图谱、搜索、MCP 接口、job worker |
-| `services/api/alembic/` | **Schema 单一来源**（Alembic 迁移）：`versions/0001_baseline`（采纳原 SCHEMA_SQL 最终态，幂等）→ `0002` jobs 幂等唯一索引 → `0003` 向量索引 HNSW。`database.init()` 只连库，不再建表 |
+| `services/api/alembic/` | **Schema 单一来源**（Alembic 迁移）：`versions/0001_baseline`（采纳原 SCHEMA_SQL 最终态，幂等）→ `0002` jobs 幂等唯一索引 → `0003` 向量索引 HNSW → `0004` source item 重新生成意图。`database.init()` 只连库，不再建表 |
 | `services/api/docker-entrypoint.sh` | 容器入口：`RUN_MIGRATIONS=1` 时先跑 `alembic upgrade head` 再启动；仅 api 设此变量（唯一 migrator） |
-| `services/api/routers/folders.py` | **Phase B 新增**：文件夹 / 文档实例 / Connector API（三个 sub-router）；含文档级硬删除 `_hard_delete_document_instance` |
+| `services/api/routers/folders.py` | **Phase B 新增**：文件夹 / 文档实例 / Connector API（三个 sub-router）；含文档级硬删除 `_hard_delete_document_instance` 与持久化单篇重新生成入口 |
 | `services/web/` | Next.js 前端：知识图谱可视化、资料夹文件管理器 |
 | `services/web/app/sources/page.tsx` | **Phase B 新建**：三栏文件管理器 UI（资料夹树 + 内容列表 + 详情抽屉）；文档项含「归档」(软删) 与「删除」(硬删，含摘要) |
-| `services/ingestion-worker/` | 内容抓取与入库 pipeline：RSS/URL/WeChat/PDF/图片/Word/EPUB；传递 document_instance_id；API 调用带 `X-KB-Service-Token` |
+| `services/ingestion-worker/` | 内容抓取与入库 pipeline：RSS/URL/WeChat/PDF/图片/Word/EPUB；传递 document_instance_id；消费持久化重新生成意图并事务替换既有 article/默认摘要；API 调用带 `X-KB-Service-Token` |
 | `services/kb-mcp/` | **FastMCP 4 server**（同一镜像、双实例）：共享 9 个只读工具；`kb-mcp` 保留静态 token 入口，`kb-mcp-oauth` 通过 Google OAuth + 邮箱白名单服务云端客户端。出站统一使用 `KB_SERVICE_TOKEN` |
 
 ## 配置

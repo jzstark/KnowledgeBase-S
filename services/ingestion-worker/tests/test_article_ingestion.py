@@ -21,6 +21,7 @@ class FakeIngestion:
         self.context_calls: list[list[float]] = []
         self.analyze_calls: list[tuple[str, list[dict], list[dict]]] = []
         self.posted: list[dict] = []
+        self.replaced: list[tuple[dict, dict, list[dict]]] = []
         self.wiki_articles: list[tuple] = []
         self.wiki_summaries: list[tuple] = []
         self.wiki_entities: list[tuple] = []
@@ -53,6 +54,16 @@ class FakeIngestion:
         self.posted.append(payload)
         object_type = payload["object_type"]
         return {"article": "art_1", "summary": "sum_1", "entity": "ent_1"}[object_type]
+
+    async def replace_article_and_summary(
+        self, article_payload: dict, summary_payload: dict, entities: list[dict]
+    ) -> dict:
+        self.replaced.append((article_payload, summary_payload, entities))
+        return {
+            "article_id": "art_existing",
+            "summary_id": "sum_existing",
+            "entity_candidates": {"promoted": []},
+        }
 
     async def process_entity_candidates(self, article_id: str, entities: list[dict]) -> dict:
         return {
@@ -123,6 +134,7 @@ class FakeIngestion:
             analyze_article=self.analyze_article,
             embed=self.embed,
             post_ingest=self.post_ingest,
+            replace_article_and_summary=self.replace_article_and_summary,
             get_analysis_context=self.get_analysis_context,
             process_entity_candidates=self.process_entity_candidates,
             fetch_node=self.fetch_node,
@@ -215,6 +227,37 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.posted[0]["raw_ref"]["type"], "book_chapter")
         self.assertEqual(fake.wiki_articles[0][6], "book_chapter")
         self.assertEqual(fake.wiki_summaries, [])
+
+    async def test_reprocess_replaces_article_and_default_summary_together(self):
+        fake = FakeIngestion(abstract="new abstract", entities=[])
+
+        result = await process_article_like_item(
+            ArticleIngestionInput(
+                user_id="default",
+                source_id="src_1",
+                source_type="rss",
+                source_item_id="si_1",
+                document_instance_id="di_1",
+                item=raw_item(),
+                title="Updated title",
+                text="Updated article text",
+                raw_ref={"type": "url", "url": "https://example.com"},
+                time_payload={},
+                doc_kind="analysis",
+                replace_existing=True,
+            ),
+            fake.adapters(),
+        )
+
+        self.assertEqual(result.article_id, "art_existing")
+        self.assertEqual(result.summary_id, "sum_existing")
+        self.assertEqual(fake.posted, [])
+        self.assertEqual(len(fake.replaced), 1)
+        article_payload, summary_payload, entities = fake.replaced[0]
+        self.assertEqual(article_payload["document_instance_id"], "di_1")
+        self.assertEqual(summary_payload["abstract"], "new abstract")
+        self.assertEqual(summary_payload["perspective_embedding"], [12.0])
+        self.assertEqual(entities, [])
 
 
 if __name__ == "__main__":

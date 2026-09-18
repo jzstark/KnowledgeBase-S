@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -199,6 +200,78 @@ class PipelineDispatchTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ingestion_input.source_type, "plaintext")
             self.assertEqual(ingestion_input.raw_ref, {"type": "file", "path": str(path)})
             self.assertEqual(update_status.await_args_list[-1].args, ("si_document", "succeeded"))
+
+    async def test_pipeline_passes_persisted_reprocess_intent_to_ingestion(self):
+        pipeline = self._load_pipeline()
+
+        class ItemSource:
+            def extract_text(self, _):
+                return "Updated article text. " * 10
+
+        source_item = {
+            "id": "si_existing",
+            "source_id": "src_actual",
+            "source_type": "url",
+            "origin_ref": "https://example.com/article",
+            "origin_ref_type": "url",
+            "title": "Existing article",
+            "document_instance_id": "di_existing",
+        }
+        claimed_item = {
+            **source_item,
+            "status": "processing",
+            "reprocess_requested_at": "2026-09-18T12:00:00+00:00",
+        }
+        result = types.SimpleNamespace(
+            entities=[], article_id="art_existing", summary_id="sum_existing"
+        )
+
+        with (
+            patch.object(
+                pipeline,
+                "fetch_pending_source_items",
+                AsyncMock(return_value=[source_item]),
+            ),
+            patch.object(
+                pipeline,
+                "update_source_item_status",
+                AsyncMock(side_effect=[claimed_item, claimed_item]),
+            ),
+            patch.object(
+                pipeline,
+                "source_for_item",
+                return_value=(ItemSource(), "url"),
+            ),
+            patch.object(
+                pipeline,
+                "_raw_item_from_source_item",
+                return_value=types.SimpleNamespace(
+                    raw_ref={"type": "url", "url": source_item["origin_ref"]},
+                    title=source_item["title"],
+                    fetched_at=datetime.now(timezone.utc),
+                    source_published_at=None,
+                    source_updated_at=None,
+                    captured_at=None,
+                    effective_at=None,
+                ),
+            ),
+            patch.object(pipeline, "save_extracted_text", return_value="/tmp/extracted.txt"),
+            patch.object(pipeline, "save_raw", return_value="/tmp/raw.html"),
+            patch.object(
+                pipeline,
+                "process_article_like_item",
+                AsyncMock(return_value=result),
+            ) as process_item,
+            patch.object(pipeline, "update_last_fetched", AsyncMock()),
+            patch.object(pipeline, "refresh_stale_entities", AsyncMock()),
+        ):
+            await pipeline.run_pipeline(
+                ItemSource(),
+                {"id": "src_actual", "type": "url"},
+            )
+
+        ingestion_input = process_item.await_args.args[0]
+        self.assertTrue(ingestion_input.replace_existing)
 
 
 if __name__ == "__main__":

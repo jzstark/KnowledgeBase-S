@@ -101,6 +101,7 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
         "type": object_type,
         "title": title,
         "tags": tags,
+        "doc_kind": node.get("doc_kind") or "",
         "wikilinks": wikilinks,
     }
     if object_type == "entity":

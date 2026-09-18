@@ -108,6 +108,19 @@ class ArchivedWorkerCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertIn("status NOT IN ('ignored', 'deleted')", fake.update_query)
 
+    async def test_older_worker_cannot_claim_regeneration_request(self):
+        fake = _TerminalStatusDatabase()
+
+        with patch.object(sources.database, "database", fake):
+            with self.assertRaises(HTTPException):
+                await sources.update_source_item_status(
+                    "si_reprocess",
+                    sources.SourceItemStatusUpdate(status="processing"),
+                    _={"sub": "service"},
+                )
+
+        self.assertIn("reprocess_requested_at IS NULL", fake.update_query)
+
 
 if __name__ == "__main__":
     unittest.main()

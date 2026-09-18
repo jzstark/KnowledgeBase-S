@@ -172,13 +172,14 @@ async def update_source_item_status(
     extracted_text_ref: str | None = None,
     error: str | None = None,
     title: str | None = None,
-) -> bool:
+) -> dict | None:
     payload = {
         "status": status,
         "raw_snapshot_ref": raw_snapshot_ref,
         "extracted_text_ref": extracted_text_ref,
         "error": error,
         "title": title,
+        "reprocess_capable": status == "processing",
     }
     async with httpx.AsyncClient(headers=_service_headers()) as client:
         resp = await client.post(
@@ -187,9 +188,9 @@ async def update_source_item_status(
             timeout=10,
         )
         if status == "processing" and resp.status_code == 409:
-            return False
+            return None
         resp.raise_for_status()
-        return True
+        return resp.json()
 
 
 def save_extracted_text(source_type: str, source_item_id: str, text: str) -> str:
@@ -238,11 +239,18 @@ def _raw_item_from_source_item(row: dict, source_type: str) -> RawItem:
     if raw_snapshot_ref:
         p = Path(raw_snapshot_ref)
         if origin_ref_type == "upload" or source_type in ("pdf", "image", "plaintext", "word", "epub", "book"):
+            if not p.is_file():
+                raise RuntimeError(f"raw snapshot does not exist: {raw_snapshot_ref}")
             raw_ref = {"type": "file", "path": raw_snapshot_ref}
         else:
             raw_ref = {"type": "url", "url": origin_ref}
             if p.exists():
                 raw_bytes = p.read_bytes()
+            else:
+                downloaded = trafilatura.fetch_url(origin_ref)
+                if not downloaded:
+                    raise RuntimeError(f"failed to fetch URL: {origin_ref}")
+                raw_bytes = downloaded.encode("utf-8")
         file_name = p.name
     elif origin_ref_type in ("url", "feed_entry") or source_type in ("url", "rss"):
         downloaded = trafilatura.fetch_url(origin_ref)
@@ -383,6 +391,25 @@ async def post_ingest(payload: dict) -> str:
         resp = await client.post(f"{API_BASE_URL}/api/kb/ingest", json=payload, timeout=30)
         resp.raise_for_status()
         return resp.json()["id"]
+
+
+async def replace_article_and_summary(
+    article_payload: dict,
+    summary_payload: dict,
+    entities: list[dict],
+) -> dict:
+    async with httpx.AsyncClient(headers=_service_headers()) as client:
+        resp = await client.post(
+            f"{API_BASE_URL}/api/kb/reingest",
+            json={
+                "article": article_payload,
+                "summary": summary_payload,
+                "entities": entities,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def refresh_stale_entities() -> None:
@@ -565,6 +592,7 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
         analyze_article=analyze_article,
         embed=embed,
         post_ingest=post_ingest,
+        replace_article_and_summary=replace_article_and_summary,
         get_analysis_context=get_analysis_context,
         process_entity_candidates=process_entity_candidates,
         fetch_node=get_node,
@@ -610,10 +638,12 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
         item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
-            claimed = await update_source_item_status(source_item["id"], "processing")
-            if not claimed:
+            claimed_item = await update_source_item_status(source_item["id"], "processing")
+            if not claimed_item:
                 logger.info("[%s] 跳过状态已变化的条目: %s", source_id, source_item["id"])
                 continue
+            if isinstance(claimed_item, dict):
+                source_item = {**source_item, **claimed_item}
             item_source, item_source_type = source_for_item(source, source_config, source_item)
             item = _raw_item_from_source_item(source_item, item_source_type)
 
@@ -663,6 +693,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     time_payload=_time_payload(item),
                     use_entity_context=True,
                     doc_kind=doc_kind,
+                    replace_existing=bool(source_item.get("reprocess_requested_at")),
                 ),
                 _article_ingestion_adapters(),
             )

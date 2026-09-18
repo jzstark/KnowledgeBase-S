@@ -121,6 +121,7 @@ class SourceItemStatusUpdate(BaseModel):
     extracted_text_ref: str | None = None
     error: str | None = None
     title: str | None = None
+    reprocess_capable: bool = False
 
 
 class SourceItemUpdate(BaseModel):
@@ -150,6 +151,7 @@ def _serialize_source_item(row) -> dict[str, Any]:
         "source_updated_at",
         "captured_at",
         "effective_at",
+        "reprocess_requested_at",
         "created_at",
         "updated_at",
     ):
@@ -566,6 +568,7 @@ async def update_source_item_status(
         params["error"] = body.error[:4000] if body.error else None
     elif body.status == "succeeded":
         updates.append("error = NULL")
+        updates.append("reprocess_requested_at = NULL")
     if body.raw_snapshot_ref is not None:
         updates.append("raw_snapshot_ref = :raw_snapshot_ref")
         params["raw_snapshot_ref"] = body.raw_snapshot_ref
@@ -586,6 +589,10 @@ async def update_source_item_status(
         # Claim pending work atomically. An item archived after the worker listed
         # it must not be moved back to processing.
         where += " AND status = 'pending'"
+        if not body.reprocess_capable:
+            # During a staggered deployment, an older worker must not consume an
+            # explicit regeneration request and turn it into a normal dedup skip.
+            where += " AND reprocess_requested_at IS NULL"
 
     row = await database.database.fetch_one(
         f"""

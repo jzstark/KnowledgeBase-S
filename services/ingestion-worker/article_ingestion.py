@@ -25,6 +25,7 @@ class ArticleIngestionInput:
     write_summary_wiki: bool = True
     doc_kind: str | None = None
     document_instance_id: str | None = None   # Phase B: 稳定身份键
+    replace_existing: bool = False
 
 
 @dataclass
@@ -42,6 +43,7 @@ class ArticleIngestionAdapters:
     analyze_article: Callable[[str, list[dict], list[dict], list[dict]], dict]
     embed: Callable[[str], Awaitable[list[float]]]
     post_ingest: Callable[[dict], Awaitable[str]]
+    replace_article_and_summary: Callable[[dict, dict, list[dict]], Awaitable[dict]]
     get_analysis_context: Callable[[list[float]], Awaitable[dict]]
     process_entity_candidates: Callable[[str, list[dict]], Awaitable[dict]]
     fetch_node: Callable[[str], Awaitable[dict | None]]
@@ -104,12 +106,11 @@ async def process_article_like_item(
     if data.parent_index_id:
         article_payload["parent_index_id"] = data.parent_index_id
 
-    article_id = await adapters.post_ingest(article_payload)
     summary_embedding = await adapters.embed(abstract) if abstract else embedding
-    display_title = data.title or article_id
-    summary_id = await adapters.post_ingest({
+    summary_title = data.title or data.document_instance_id or data.source_item_id
+    summary_payload = {
         "user_id": data.user_id,
-        "title": f"摘要：{display_title}",
+        "title": f"摘要：{summary_title}",
         "abstract": abstract,
         "embedding": summary_embedding,
         "embedding_model": adapters.embedding_model,
@@ -118,11 +119,31 @@ async def process_article_like_item(
         "raw_ref": {},
         "tags": tags,
         "object_type": "summary",
-        "summary_of": article_id,
-        "source_node_ids": [article_id],
         "doc_kind": data.doc_kind,
-    })
+    }
 
+    candidate_result = None
+    if data.replace_existing:
+        # Complete all external model work before the API starts its replacement
+        # transaction.  This is the fixed perspective vector for a default summary.
+        summary_payload["perspective_embedding"] = await adapters.embed("default\n默认摘要")
+        replacement = await adapters.replace_article_and_summary(
+            article_payload, summary_payload, entities
+        )
+        article_id = replacement["article_id"]
+        summary_id = replacement["summary_id"]
+        candidate_result = replacement.get("entity_candidates") or {}
+    else:
+        article_id = await adapters.post_ingest(article_payload)
+        if not data.title:
+            summary_payload["title"] = f"摘要：{article_id}"
+        summary_payload.update({
+            "summary_of": article_id,
+            "source_node_ids": [article_id],
+        })
+        summary_id = await adapters.post_ingest(summary_payload)
+
+    display_title = data.title or article_id
     created = data.item.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     adapters.write_wiki_article(
         article_id,
@@ -139,7 +160,9 @@ async def process_article_like_item(
             summary_id, article_id, display_title, abstract, tags, created, data.doc_kind or ""
         )
 
-    promoted_entity_ids = await _promote_entities(data, adapters, article_id, entities)
+    promoted_entity_ids = await _promote_entities(
+        data, adapters, article_id, entities, candidate_result=candidate_result
+    )
     for entity_id in promoted_entity_ids:
         try:
             await adapters.backfill_wikilinks(entity_id)
@@ -161,12 +184,14 @@ async def _promote_entities(
     adapters: ArticleIngestionAdapters,
     article_id: str,
     entities: list[dict],
+    candidate_result: dict | None = None,
 ) -> list[str]:
     if not entities:
         return []
 
     promoted_entity_ids: list[str] = []
-    candidate_result = await adapters.process_entity_candidates(article_id, entities)
+    if candidate_result is None:
+        candidate_result = await adapters.process_entity_candidates(article_id, entities)
     promoted_list = candidate_result.get("promoted", [])
 
     for promoted in promoted_list:

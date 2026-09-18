@@ -56,6 +56,7 @@ class IngestRequest(BaseModel):
     perspective: str | None = None
     perspective_label: str | None = None
     perspective_instruction: str | None = None
+    perspective_embedding: list[float] | None = None
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
     captured_at: datetime | None = None
@@ -78,6 +79,12 @@ class EntityCandidateItem(BaseModel):
 class ProcessCandidatesRequest(BaseModel):
     article_id: str
     entities: list[EntityCandidateItem]
+
+
+class ReingestRequest(BaseModel):
+    article: IngestRequest
+    summary: IngestRequest
+    entities: list[EntityCandidateItem] = []
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -132,26 +139,36 @@ def _summary_perspective(
 
 # ── Domain functions ──────────────────────────────────────────────────────────
 
-async def do_ingest(body: IngestRequest) -> str | dict:
+async def do_ingest(body: IngestRequest, *, replace_existing: bool = False) -> str | dict:
     """
     Core ingest logic: dedup checks, doc_kind cascade, node creation.
     Returns node_id on success, or a dict with {id, duplicate: True} if skipped.
     """
+    existing_node_id: str | None = None
+
     # Phase B: document_instance_id 去重（优先）
     if body.document_instance_id and body.object_type == "article":
         existing = await database.database.fetch_one(
             """
             SELECT n.id FROM knowledge_nodes n
             JOIN article_nodes an ON an.node_id = n.id
-            WHERE n.user_id = :uid AND an.document_instance_id = :di_id
+            WHERE n.user_id = :uid
+              AND (
+                an.document_instance_id = :di_id
+                OR an.source_item_id IN (
+                    SELECT id FROM source_items WHERE document_instance_id = :di_id
+                )
+              )
             """,
             {"uid": body.user_id, "di_id": body.document_instance_id},
         )
         if existing:
-            return {"id": existing["id"], "duplicate": True}
+            if not replace_existing:
+                return {"id": existing["id"], "duplicate": True}
+            existing_node_id = existing["id"]
 
     raw_path = (body.raw_ref or {}).get("path")
-    if raw_path:
+    if raw_path and existing_node_id is None:
         existing = await database.database.fetch_one(
             """
             SELECT n.id FROM knowledge_nodes n
@@ -161,10 +178,12 @@ async def do_ingest(body: IngestRequest) -> str | dict:
             {"uid": body.user_id, "path": raw_path},
         )
         if existing:
-            return {"id": existing["id"], "duplicate": True}
+            if not replace_existing:
+                return {"id": existing["id"], "duplicate": True}
+            existing_node_id = existing["id"]
 
     raw_url = (body.raw_ref or {}).get("url")
-    if raw_url:
+    if raw_url and existing_node_id is None:
         existing = await database.database.fetch_one(
             """
             SELECT n.id FROM knowledge_nodes n
@@ -174,7 +193,9 @@ async def do_ingest(body: IngestRequest) -> str | dict:
             {"uid": body.user_id, "url": raw_url},
         )
         if existing:
-            return {"id": existing["id"], "duplicate": True}
+            if not replace_existing:
+                return {"id": existing["id"], "duplicate": True}
+            existing_node_id = existing["id"]
 
     if body.object_type == "entity" and body.canonical_name:
         existing_ent = await database.database.fetch_one(
@@ -236,10 +257,32 @@ async def do_ingest(body: IngestRequest) -> str | dict:
             body.perspective,
         )
         body_embedding_literal = embedding_literal
-        perspective_embedding = await _embed_text(f"{perspective_label}\n{perspective_instruction}")
+        perspective_embedding = body.perspective_embedding
+        if perspective_embedding is None:
+            perspective_embedding = await _embed_text(
+                f"{perspective_label}\n{perspective_instruction}"
+            )
         perspective_embedding_literal = _vector_literal(perspective_embedding)
 
-    node_id = _make_node_id(
+    if body.object_type == "summary" and body.summary_of:
+        if replace_existing and is_default:
+            existing_summary = await database.database.fetch_one(
+                """
+                SELECT n.id
+                FROM knowledge_nodes n
+                JOIN summary_nodes sn ON sn.node_id = n.id
+                WHERE n.user_id = :uid
+                  AND sn.summary_of = :summary_of
+                  AND sn.is_default = true
+                ORDER BY sn.created_at ASC, n.id ASC
+                LIMIT 1
+                """,
+                {"uid": body.user_id, "summary_of": body.summary_of},
+            )
+            if existing_summary:
+                existing_node_id = existing_summary["id"]
+
+    node_id = existing_node_id or _make_node_id(
         body.object_type,
         body.raw_ref or {},
         body.user_id,
@@ -250,7 +293,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
         body.document_instance_id,
     )
 
-    if body.object_type == "summary" and body.summary_of:
+    if body.object_type == "summary" and body.summary_of and not replace_existing:
         existing_summary = await database.database.fetch_one(
             "SELECT id FROM knowledge_nodes WHERE user_id = :uid AND id = :id",
             {"uid": body.user_id, "id": node_id},
@@ -261,6 +304,21 @@ async def do_ingest(body: IngestRequest) -> str | dict:
     captured_at = body.captured_at or datetime.now(timezone.utc)
     published_at = body.effective_at or body.source_published_at or captured_at
 
+    conflict_sql = ""
+    if replace_existing:
+        conflict_sql = """
+        ON CONFLICT (id) DO UPDATE SET
+          title = EXCLUDED.title,
+          abstract = EXCLUDED.abstract,
+          embedding = EXCLUDED.embedding,
+          embedding_model = EXCLUDED.embedding_model,
+          source_id = EXCLUDED.source_id,
+          tags = EXCLUDED.tags,
+          published_at = EXCLUDED.published_at,
+          doc_kind = EXCLUDED.doc_kind,
+          updated_at = NOW()
+        """
+
     await database.database.execute(
         f"""
         INSERT INTO knowledge_nodes
@@ -269,6 +327,7 @@ async def do_ingest(body: IngestRequest) -> str | dict:
         VALUES
           (:id, :user_id, :title, :abstract, '{embedding_literal}'::vector,
            :source_id, :tags, :object_type, :published_at, :doc_kind, :embedding_model)
+        {conflict_sql}
         """,
         {
             "id": node_id,
@@ -545,6 +604,117 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
     return {"matched_existing": matched_existing, "promoted": promoted}
 
 
+async def _reset_article_entity_derivatives(article_id: str) -> None:
+    """Remove this article's prior contribution before applying fresh analysis."""
+    affected_entities = await database.database.fetch_all(
+        "SELECT DISTINCT entity_id FROM entity_facts WHERE article_id = :article_id",
+        {"article_id": article_id},
+    )
+    if affected_entities:
+        await database.database.execute(
+            """
+            UPDATE entity_nodes
+            SET abstract_stale = true, updated_at = NOW()
+            WHERE node_id = ANY(:entity_ids)
+            """,
+            {"entity_ids": [row["entity_id"] for row in affected_entities]},
+        )
+    await database.database.execute(
+        "DELETE FROM entity_facts WHERE article_id = :article_id",
+        {"article_id": article_id},
+    )
+    await database.database.execute(
+        """
+        UPDATE entity_candidates
+        SET source_article_ids = array_remove(
+                COALESCE(source_article_ids, '{}'::text[]), :article_id),
+            mention_count = GREATEST(COALESCE(mention_count, 0) - 1, 0),
+            updated_at = NOW()
+        WHERE :article_id = ANY(COALESCE(source_article_ids, '{}'::text[]))
+        """,
+        {"article_id": article_id},
+    )
+    await database.database.execute(
+        """
+        DELETE FROM entity_candidates
+        WHERE promoted_entity_id IS NULL
+          AND mention_count = 0
+          AND cardinality(COALESCE(source_article_ids, '{}'::text[])) = 0
+        """
+    )
+
+
+async def do_reingest(body: ReingestRequest) -> dict[str, Any]:
+    """Atomically replace one article and its default summary after generation."""
+    if body.article.object_type != "article":
+        raise ValueError("article payload 类型必须为 article")
+    if body.summary.object_type != "summary":
+        raise ValueError("summary payload 类型必须为 summary")
+    if not body.article.document_instance_id:
+        raise ValueError("重新生成必须指定 document_instance_id")
+    if body.article.user_id != body.summary.user_id:
+        raise ValueError("article 与 summary 的 user_id 必须一致")
+
+    async with database.database.transaction():
+        existing = await database.database.fetch_one(
+            """
+            SELECT n.id
+            FROM knowledge_nodes n
+            JOIN article_nodes an ON an.node_id = n.id
+            WHERE n.user_id = :uid
+              AND (
+                an.document_instance_id = :di_id
+                OR an.source_item_id IN (
+                    SELECT id FROM source_items WHERE document_instance_id = :di_id
+                )
+              )
+            FOR UPDATE OF n, an
+            """,
+            {
+                "uid": body.article.user_id,
+                "di_id": body.article.document_instance_id,
+            },
+        )
+        if not existing:
+            raise ValueError("找不到可重新生成的既有文章")
+
+        article_result = await do_ingest(body.article, replace_existing=True)
+        if isinstance(article_result, dict):
+            raise ValueError("既有文章未被更新")
+        article_id = article_result
+
+        summary_payload = body.summary.copy(
+            update={"summary_of": article_id, "source_node_ids": [article_id]}
+        )
+        summary_result = await do_ingest(summary_payload, replace_existing=True)
+        if isinstance(summary_result, dict):
+            raise ValueError("默认摘要未被更新")
+        summary_id = summary_result
+
+        await _reset_article_entity_derivatives(article_id)
+        candidate_result = await do_process_entity_candidates(
+            ProcessCandidatesRequest(article_id=article_id, entities=body.entities)
+        )
+        await database.database.execute(
+            """
+            DELETE FROM knowledge_edges
+            WHERE relation_type = 'similar_to'
+              AND created_by = 'auto_semantic'
+              AND (
+                from_node_id = ANY(:node_ids)
+                OR to_node_id = ANY(:node_ids)
+              )
+            """,
+            {"node_ids": [article_id, summary_id]},
+        )
+
+    return {
+        "article_id": article_id,
+        "summary_id": summary_id,
+        "entity_candidates": candidate_result,
+    }
+
+
 async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -> dict:
     """Back-fill entity_facts when a candidate is promoted."""
     cand = await database.database.fetch_one(
@@ -592,6 +762,28 @@ async def ingest_endpoint(
     if body.raw_ref:
         background_tasks.add_task(trim_raw_files, body.user_id)
     return {"id": node_id}
+
+
+@router.post("/reingest")
+async def reingest_endpoint(
+    body: ReingestRequest,
+    background_tasks: BackgroundTasks,
+    _: dict = Depends(require_auth_or_service_token),
+):
+    """Replace an existing article and its default summary in one transaction."""
+    try:
+        result = await do_reingest(body)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    background_tasks.add_task(
+        build_similar_edges, result["article_id"], body.article.user_id
+    )
+    background_tasks.add_task(
+        build_similar_edges, result["summary_id"], body.article.user_id
+    )
+    if body.article.raw_ref:
+        background_tasks.add_task(trim_raw_files, body.article.user_id)
+    return result
 
 
 @router.post("/entity_candidates/analyze_context")

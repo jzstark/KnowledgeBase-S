@@ -80,7 +80,7 @@ UNIQUE(from_node_id, to_node_id, relation_type)
 
 **sources**：id, name, type, config JSONB, is_primary, default_doc_kind, deleted_at（软删除）
 
-**source_items**：每条待处理/已处理内容项，含原始时间四列、doc_kind、**document_instance_id FK**、status(pending|processing|succeeded|failed|ignored|**deleted**)、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
+**source_items**：每条待处理/已处理内容项，含原始时间四列、doc_kind、**document_instance_id FK**、status(pending|processing|succeeded|failed|ignored|**deleted**)、`reprocess_requested_at`（显式重新生成意图）、UNIQUE(user_id, source_id, origin_ref_type, origin_ref)
 
 > `deleted` 是硬删除墓碑：materialize 的 `ON CONFLICT` 把 `succeeded`/`deleted` 视为终态保留，订阅源再次列出该条目也不会重新入库（防"复活"）。
 
@@ -171,6 +171,7 @@ CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`
 **Folders**：`GET /api/folders`（树形列表）、`POST /api/folders`（创建，同时生成 legacy source）、`PATCH/DELETE /api/folders/{id}`、`GET /api/folders/{id}/contents`（子资料夹 + document_instances）、`POST /api/folders/{id}/upload`（文件上传→raw_asset+document_instance+source_item）、`POST /api/folders/{id}/add-url`
 
 **Document Instances**：`GET/PATCH/DELETE /api/document-instances/{id}`、`POST .../copy`、`POST .../reprocess`
+- `POST .../reprocess`：只支持恰好关联一篇 article 的文档；持久化 `reprocess_requested_at` 后把条目置为 pending，并用其真实 source id 触发 worker。多 article 文档返回 409，防止误更新任意章节。
 - `DELETE /{id}`：默认软删（归档，status='ignored'）；`?hard=true` 硬删除——删该 di 的 article 节点 + **其所有 summary**（节点 + wiki 文件，DB 只级联 summary_nodes 行，故须显式删 summary 节点）+ raw/extracted 文件，并把 source_item / document_instance 置 `deleted` 墓碑，同时从 `entity_candidates`/`entity_pair_signals` 的 `source_article_ids` 数组剔除该 id。实现见 `folders.py:_hard_delete_document_instance`。
 
 **Connectors**：`GET/POST /api/connectors`、`PATCH/DELETE /api/connectors/{id}`、`POST /api/connectors/{id}/sync`（触发 ingestion-worker）
@@ -292,6 +293,8 @@ process_article_like_item：
   → post_ingest(article, document_instance_id=...) → post_ingest(summary)
   → write_wiki_article(doc_kind 写入 frontmatter)
   → process_entity_candidates → [晋升流程]
+
+显式重新生成时，worker 从 claim 响应读取 `reprocess_requested_at`，预先完成 LLM 与 embeddings，再调用 `POST /api/kb/reingest` 在单个事务内替换 article、默认 summary 及该 article 的 entity 派生数据；保留 article/default-summary ID 和自定义 summary，失败时旧内容仍可读取。旧 worker 不会 claim 带此意图的条目，支持滚动部署。
 
 run_book_pipeline（EPUB/MOBI）：
   extract_chapters → post_ingest(index_node)

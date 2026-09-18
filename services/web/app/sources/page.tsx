@@ -266,6 +266,7 @@ export default function FoldersPage() {
   const [contentsLoading, setContentsLoading] = useState(false);
   const [contentsError, setContentsError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [reprocessingId, setReprocessingId] = useState<string | null>(null);
   const activeFolderIdRef = useRef<string | null>(activeFolderId);
   const showArchivedRef = useRef(showArchived);
   const contentsRequestRef = useRef(0);
@@ -383,10 +384,27 @@ export default function FoldersPage() {
   }
 
   async function handleReprocess(di: DocumentInstance) {
-    await fetch(`/api/document-instances/${di.id}/reprocess`, {
-      method: "POST", credentials: "include",
-    });
-    if (activeFolderId) setTimeout(() => loadContents(activeFolderId), 1000);
+    if (reprocessingId) return;
+    setReprocessingId(di.id);
+    try {
+      const response = await fetch(`/api/document-instances/${di.id}/reprocess`, {
+        method: "POST", credentials: "include",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(body.detail || "重新处理提交失败");
+        return;
+      }
+      await refreshCurrentFolder();
+      if (!body.trigger_reached) {
+        alert("请求已持久化排队；worker 暂时未响应，将由后台轮询继续处理。");
+      }
+      if (activeFolderId) setTimeout(() => loadContents(activeFolderId, false), 1500);
+    } catch {
+      alert("重新处理提交失败，请检查网络后刷新状态再重试");
+    } finally {
+      setReprocessingId(null);
+    }
   }
 
   async function handleSingleDocKindChanged(docKind: string) {
@@ -479,6 +497,7 @@ export default function FoldersPage() {
               onDelete={handleDeleteItem}
               onHardDelete={handleHardDeleteItem}
               onReprocess={handleReprocess}
+              reprocessingId={reprocessingId}
               showArchived={showArchived}
               onShowArchivedChange={setShowArchived}
               onRefresh={refreshCurrentFolder}
@@ -494,6 +513,7 @@ export default function FoldersPage() {
             onDelete={() => handleDeleteItem(selectedItem)}
             onHardDelete={() => handleHardDeleteItem(selectedItem)}
             onReprocess={() => handleReprocess(selectedItem)}
+            reprocessing={reprocessingId === selectedItem.id}
             onDocKindChanged={handleSingleDocKindChanged}
           />
         )}
@@ -596,7 +616,7 @@ function FolderTreeItem({
 function FolderContentsPanel({
   contents, selectedItem, onSelectItem,
   onUpload, onAddUrl, onSync, onDelete, onHardDelete, onReprocess,
-  showArchived, onShowArchivedChange, onRefresh,
+  reprocessingId, showArchived, onShowArchivedChange, onRefresh,
 }: {
   contents: FolderContents;
   selectedItem: DocumentInstance | null;
@@ -607,6 +627,7 @@ function FolderContentsPanel({
   onDelete: (item: DocumentInstance) => void;
   onHardDelete: (item: DocumentInstance) => void;
   onReprocess: (item: DocumentInstance) => void;
+  reprocessingId: string | null;
   showArchived: boolean;
   onShowArchivedChange: (show: boolean) => void;
   onRefresh: () => Promise<void>;
@@ -906,6 +927,7 @@ function FolderContentsPanel({
                   onDelete={() => onDelete(item)}
                   onHardDelete={() => onHardDelete(item)}
                   onReprocess={() => onReprocess(item)}
+                  reprocessing={reprocessingId === item.id}
                 />
               ))}
             </tbody>
@@ -927,7 +949,7 @@ function FolderContentsPanel({
 
 function DocumentRow({
   item, selected, checked, selectable, onClick, onCheckedChange,
-  onDelete, onHardDelete, onReprocess,
+  onDelete, onHardDelete, onReprocess, reprocessing,
 }: {
   item: DocumentInstance;
   selected: boolean;
@@ -938,6 +960,7 @@ function DocumentRow({
   onDelete: () => void;
   onHardDelete: () => void;
   onReprocess: () => void;
+  reprocessing: boolean;
 }) {
   const name = item.display_name || item.origin_ref || item.id;
   const effectiveDocKind = item.doc_kind || item.article_doc_kind;
@@ -993,8 +1016,9 @@ function DocumentRow({
           {item.status === "failed" && (
             <button
               className="text-xs text-blue-600 hover:underline"
+              disabled={reprocessing}
               onClick={onReprocess}
-            >重试</button>
+            >{reprocessing ? "提交中…" : "重试"}</button>
           )}
           {item.status !== "ignored" && (
             <button
@@ -1026,13 +1050,14 @@ function fileIcon(mime: string | null, refType: string | null): string {
 // ── Detail Drawer ─────────────────────────────────────────────────────────────
 
 function DetailDrawer({
-  item, onClose, onDelete, onHardDelete, onReprocess, onDocKindChanged,
+  item, onClose, onDelete, onHardDelete, onReprocess, reprocessing, onDocKindChanged,
 }: {
   item: DocumentInstance;
   onClose: () => void;
   onDelete: () => void;
   onHardDelete: () => void;
   onReprocess: () => void;
+  reprocessing: boolean;
   onDocKindChanged: (docKind: string) => void | Promise<void>;
 }) {
   const [showDocKindDialog, setShowDocKindDialog] = useState(false);
@@ -1133,13 +1158,19 @@ function DetailDrawer({
             <p className="text-xs text-muted-foreground">{typeNotice}</p>
           )}
           {item.status === "failed" && (
-            <Button size="sm" variant="outline" className="w-full" onClick={onReprocess}>
-              重新处理
+            <Button size="sm" variant="outline" className="w-full" disabled={reprocessing} onClick={onReprocess}>
+              {reprocessing ? "提交中…" : "重新处理"}
             </Button>
           )}
-          {item.article_id && (
-            <Button size="sm" variant="outline" className="w-full" onClick={onReprocess}>
-              重新生成 Article
+          {item.article_id && item.status !== "failed" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              disabled={reprocessing || item.status === "pending" || item.status === "processing"}
+              onClick={onReprocess}
+            >
+              {reprocessing ? "提交中…" : "重新生成 Article"}
             </Button>
           )}
           {item.status !== "ignored" && (

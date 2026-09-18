@@ -910,34 +910,127 @@ async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Dep
 
 @di_router.post("/{di_id}/reprocess")
 async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth)) -> dict:
-    di = await database.database.fetch_one(
-        "SELECT di.*, ra.storage_key FROM document_instances di LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id WHERE di.id = :id AND di.user_id = :uid",
-        {"id": di_id, "uid": USER_ID},
-    )
-    if not di:
-        raise HTTPException(404, "文档实例不存在")
+    async with database.database.transaction():
+        di = await database.database.fetch_one(
+            """
+            SELECT id, status
+            FROM document_instances
+            WHERE id = :id AND user_id = :uid
+            FOR UPDATE
+            """,
+            {"id": di_id, "uid": USER_ID},
+        )
+        if not di:
+            raise HTTPException(404, "文档实例不存在")
+        if di["status"] == "processing":
+            raise HTTPException(409, "文档正在处理，不能重复提交")
+        if di["status"] in {"ignored", "deleted"}:
+            raise HTTPException(409, "已归档或删除的文档不能重新处理")
 
-    # 重置 document_instance 状态
-    await database.database.execute(
-        "UPDATE document_instances SET status = 'pending', updated_at = NOW() WHERE id = :id",
-        {"id": di_id},
-    )
-    # 重置对应 source_item
-    await database.database.execute(
-        "UPDATE source_items SET status = 'pending', error = NULL, attempts = 0, updated_at = NOW() WHERE document_instance_id = :di_id",
-        {"di_id": di_id},
-    )
+        source_items = await database.database.fetch_all(
+            """
+            SELECT si.*, s.deleted_at AS source_deleted_at
+            FROM source_items si
+            LEFT JOIN sources s ON s.id = si.source_id
+            WHERE si.document_instance_id = :di_id
+            ORDER BY si.created_at ASC, si.id ASC
+            FOR UPDATE OF si
+            """,
+            {"di_id": di_id},
+        )
+        if not source_items:
+            raise HTTPException(409, "文档缺少关联 source item，无法重新处理")
+        if any(item["status"] == "processing" for item in source_items):
+            raise HTTPException(409, "文档正在处理，不能重复提交")
 
-    # 找到对应 folder → source，触发 ingestion-worker
-    if di["folder_id"]:
-        source_id = _source_id(di["folder_id"])
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5)
-        except Exception:
-            pass
+        article_rows = await database.database.fetch_all(
+            """
+            SELECT DISTINCT an.node_id, an.source_item_id
+            FROM article_nodes an
+            WHERE an.document_instance_id = :di_id
+               OR an.source_item_id IN (
+                    SELECT id FROM source_items WHERE document_instance_id = :di_id
+               )
+            ORDER BY an.node_id
+            """,
+            {"di_id": di_id},
+        )
+        if len(article_rows) > 1:
+            raise HTTPException(409, "该文档关联多篇文章，暂不支持单篇重新生成")
 
-    return {"ok": True, "document_instance_id": di_id}
+        preferred_source_item_id = (
+            article_rows[0]["source_item_id"] if article_rows else None
+        )
+        source_item = next(
+            (
+                item
+                for item in source_items
+                if item["id"] == preferred_source_item_id
+            ),
+            source_items[0],
+        )
+        if source_item["status"] in {"ignored", "deleted"}:
+            raise HTTPException(409, "关联 source item 已归档或删除")
+        if source_item["status"] == "pending" and source_item["reprocess_requested_at"]:
+            raise HTTPException(409, "重新生成已经排队，请勿重复提交")
+        if not source_item["source_id"] or source_item["source_deleted_at"] is not None:
+            raise HTTPException(409, "关联来源不存在或已删除")
+
+        raw_snapshot_ref = source_item["raw_snapshot_ref"]
+        has_snapshot = bool(raw_snapshot_ref and Path(raw_snapshot_ref).is_file())
+        origin_ref = (source_item["origin_ref"] or "").strip()
+        can_refetch_url = source_item["origin_ref_type"] in {"url", "feed_entry"} and bool(origin_ref)
+        if not has_snapshot and not can_refetch_url:
+            raise HTTPException(409, "缺少可用原文或来源链接，无法重新处理")
+
+        regenerate = bool(article_rows)
+        await database.database.execute(
+            """
+            UPDATE source_items
+            SET status = 'pending',
+                error = NULL,
+                attempts = 0,
+                reprocess_requested_at = CASE WHEN :regenerate THEN NOW() ELSE NULL END,
+                updated_at = NOW()
+            WHERE id = :id
+            """,
+            {"id": source_item["id"], "regenerate": regenerate},
+        )
+        await database.database.execute(
+            """
+            UPDATE document_instances
+            SET status = 'pending', updated_at = NOW()
+            WHERE id = :id
+            """,
+            {"id": di_id},
+        )
+
+    trigger_reached = True
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{source_item['source_id']}", timeout=5
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        trigger_reached = False
+        logger.warning(
+            "ingestion trigger failed for reprocess %s via %s: %s; pending poll will retry",
+            di_id,
+            source_item["source_id"],
+            exc,
+        )
+
+    return {
+        "ok": True,
+        "accepted": True,
+        "mode": "regenerate" if regenerate else "retry",
+        "status": "pending",
+        "document_instance_id": di_id,
+        "source_item_id": source_item["id"],
+        "source_id": source_item["source_id"],
+        "trigger_reached": trigger_reached,
+    }
 
 
 # ── Connector CRUD ────────────────────────────────────────────────────────────
