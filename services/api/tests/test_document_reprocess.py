@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 os.environ.setdefault("AUTH_PASSWORD", "test-password")
@@ -84,6 +84,11 @@ class _StatusDatabase:
         return {"id": values["id"], "document_instance_id": None}
 
 
+class _FolderDatabase:
+    async def fetch_one(self, query, values):
+        return {"id": values["id"]}
+
+
 class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_status_clears_consumed_reprocess_intent(self):
         fake = _StatusDatabase()
@@ -122,6 +127,17 @@ class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(fake.executed, [])
 
+    async def test_rejects_already_pending_document_without_writes(self):
+        fake = _ReprocessDatabase(document_status="pending")
+
+        with patch.object(folders.database, "database", fake):
+            with self.assertRaises(HTTPException) as raised:
+                await folders.reprocess_document_instance("di_1", _={})
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("已经排队", raised.exception.detail)
+        self.assertEqual(fake.executed, [])
+
     async def test_rejects_multi_article_document_instead_of_updating_one(self):
         fake = _ReprocessDatabase(article_count=2)
 
@@ -132,6 +148,87 @@ class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 409)
         self.assertIn("关联多篇文章", raised.exception.detail)
         self.assertEqual(fake.executed, [])
+
+    async def test_batch_deduplicates_ids_and_triggers_each_source_once(self):
+        queue = AsyncMock(
+            side_effect=[
+                {
+                    "id": "di_1",
+                    "status": "accepted",
+                    "detail": "已排队",
+                    "source_id": "src_shared",
+                },
+                {
+                    "id": "di_2",
+                    "status": "accepted",
+                    "detail": "已排队",
+                    "source_id": "src_shared",
+                },
+                {
+                    "id": "di_3",
+                    "status": "skipped",
+                    "detail": "文档正在处理，已跳过",
+                    "http_status": 409,
+                },
+            ]
+        )
+        trigger = AsyncMock(return_value={"src_shared": False})
+
+        with (
+            patch.object(folders.database, "database", _FolderDatabase()),
+            patch.object(folders, "_queue_document_instance_reprocess", queue),
+            patch.object(folders, "_trigger_reprocess_sources", trigger),
+        ):
+            result = await folders.reprocess_document_instances(
+                folders.DocumentInstanceBatchRequest(
+                    folder_id="fld_1", ids=["di_1", "di_1", "di_2", "di_3"]
+                ),
+                _={},
+            )
+
+        self.assertEqual(queue.await_count, 3)
+        self.assertEqual(queue.await_args_list[0].kwargs["folder_id"], "fld_1")
+        trigger.assert_awaited_once_with({"src_shared"})
+        self.assertEqual(result["accepted"], 2)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["deferred_sources"], 1)
+        self.assertFalse(result["results"][0]["trigger_reached"])
+        self.assertFalse(result["results"][1]["trigger_reached"])
+        self.assertNotIn("http_status", result["results"][2])
+
+    async def test_batch_reports_one_queue_failure_and_continues(self):
+        queue = AsyncMock(
+            side_effect=[
+                RuntimeError("database unavailable"),
+                {
+                    "id": "di_2",
+                    "status": "accepted",
+                    "detail": "已排队",
+                    "source_id": "src_2",
+                },
+            ]
+        )
+        trigger = AsyncMock(return_value={"src_2": True})
+
+        with (
+            patch.object(folders.database, "database", _FolderDatabase()),
+            patch.object(folders, "_queue_document_instance_reprocess", queue),
+            patch.object(folders, "_trigger_reprocess_sources", trigger),
+            patch.object(folders.logger, "exception"),
+        ):
+            result = await folders.reprocess_document_instances(
+                folders.DocumentInstanceBatchRequest(
+                    folder_id="fld_1", ids=["di_1", "di_2"]
+                ),
+                _={},
+            )
+
+        self.assertEqual(result["accepted"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["results"][0]["status"], "failed")
+        self.assertTrue(result["results"][1]["trigger_reached"])
 
 
 if __name__ == "__main__":

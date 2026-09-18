@@ -15,6 +15,7 @@ ID 映射约定：
   ra_{hex}  <-> si_{hex}
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -908,12 +909,16 @@ async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Dep
             raise HTTPException(409, detail)
 
 
-@di_router.post("/{di_id}/reprocess")
-async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth)) -> dict:
+async def _queue_document_instance_reprocess(
+    di_id: str,
+    *,
+    folder_id: str | None = None,
+) -> dict:
+    """Persist one retry/regeneration request without triggering the worker."""
     async with database.database.transaction():
         di = await database.database.fetch_one(
             """
-            SELECT id, status
+            SELECT id, folder_id, status
             FROM document_instances
             WHERE id = :id AND user_id = :uid
             FOR UPDATE
@@ -921,11 +926,40 @@ async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth
             {"id": di_id, "uid": USER_ID},
         )
         if not di:
-            raise HTTPException(404, "文档实例不存在")
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "文档实例不存在",
+                "http_status": 404,
+            }
+        if folder_id is not None and di["folder_id"] != folder_id:
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "文档不属于当前资料夹",
+                "http_status": 409,
+            }
         if di["status"] == "processing":
-            raise HTTPException(409, "文档正在处理，不能重复提交")
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "文档正在处理，已跳过",
+                "http_status": 409,
+            }
+        if di["status"] == "pending":
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "文档已经排队，已跳过",
+                "http_status": 409,
+            }
         if di["status"] in {"ignored", "deleted"}:
-            raise HTTPException(409, "已归档或删除的文档不能重新处理")
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "已归档或删除的文档不能重新处理",
+                "http_status": 409,
+            }
 
         source_items = await database.database.fetch_all(
             """
@@ -939,9 +973,26 @@ async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth
             {"di_id": di_id},
         )
         if not source_items:
-            raise HTTPException(409, "文档缺少关联 source item，无法重新处理")
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "文档缺少关联 source item，无法重新处理",
+                "http_status": 409,
+            }
         if any(item["status"] == "processing" for item in source_items):
-            raise HTTPException(409, "文档正在处理，不能重复提交")
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "文档正在处理，已跳过",
+                "http_status": 409,
+            }
+        if any(item["status"] == "pending" for item in source_items):
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "文档已经排队，已跳过",
+                "http_status": 409,
+            }
 
         article_rows = await database.database.fetch_all(
             """
@@ -956,7 +1007,12 @@ async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth
             {"di_id": di_id},
         )
         if len(article_rows) > 1:
-            raise HTTPException(409, "该文档关联多篇文章，暂不支持单篇重新生成")
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "该文档关联多篇文章，暂不支持单篇重新生成",
+                "http_status": 409,
+            }
 
         preferred_source_item_id = (
             article_rows[0]["source_item_id"] if article_rows else None
@@ -970,18 +1026,31 @@ async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth
             source_items[0],
         )
         if source_item["status"] in {"ignored", "deleted"}:
-            raise HTTPException(409, "关联 source item 已归档或删除")
-        if source_item["status"] == "pending" and source_item["reprocess_requested_at"]:
-            raise HTTPException(409, "重新生成已经排队，请勿重复提交")
+            return {
+                "id": di_id,
+                "status": "skipped",
+                "detail": "关联 source item 已归档或删除",
+                "http_status": 409,
+            }
         if not source_item["source_id"] or source_item["source_deleted_at"] is not None:
-            raise HTTPException(409, "关联来源不存在或已删除")
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "关联来源不存在或已删除",
+                "http_status": 409,
+            }
 
         raw_snapshot_ref = source_item["raw_snapshot_ref"]
         has_snapshot = bool(raw_snapshot_ref and Path(raw_snapshot_ref).is_file())
         origin_ref = (source_item["origin_ref"] or "").strip()
         can_refetch_url = source_item["origin_ref_type"] in {"url", "feed_entry"} and bool(origin_ref)
         if not has_snapshot and not can_refetch_url:
-            raise HTTPException(409, "缺少可用原文或来源链接，无法重新处理")
+            return {
+                "id": di_id,
+                "status": "failed",
+                "detail": "缺少可用原文或来源链接，无法重新处理",
+                "http_status": 409,
+            }
 
         regenerate = bool(article_rows)
         await database.database.execute(
@@ -1005,30 +1074,110 @@ async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth
             {"id": di_id},
         )
 
-    trigger_reached = True
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{INGESTION_WORKER_URL}/trigger/{source_item['source_id']}", timeout=5
-            )
-            response.raise_for_status()
-    except Exception as exc:
-        trigger_reached = False
-        logger.warning(
-            "ingestion trigger failed for reprocess %s via %s: %s; pending poll will retry",
-            di_id,
-            source_item["source_id"],
-            exc,
-        )
-
     return {
-        "ok": True,
-        "accepted": True,
+        "id": di_id,
+        "status": "accepted",
+        "detail": "已排队，等待 worker 处理",
         "mode": "regenerate" if regenerate else "retry",
-        "status": "pending",
         "document_instance_id": di_id,
         "source_item_id": source_item["id"],
         "source_id": source_item["source_id"],
+    }
+
+
+async def _trigger_reprocess_sources(source_ids: set[str]) -> dict[str, bool]:
+    """Trigger each real source once; pending polling remains the fallback."""
+    async def trigger_one(client: httpx.AsyncClient, source_id: str) -> tuple[str, bool]:
+        try:
+            response = await client.post(
+                f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5
+            )
+            response.raise_for_status()
+            return source_id, True
+        except Exception as exc:
+            logger.warning(
+                "ingestion trigger failed for source %s: %s; pending poll will retry",
+                source_id,
+                exc,
+            )
+            return source_id, False
+
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *(trigger_one(client, source_id) for source_id in sorted(source_ids))
+        )
+    return dict(results)
+
+
+@di_router.post("/batch/reprocess")
+async def reprocess_document_instances(
+    body: DocumentInstanceBatchRequest,
+    _: dict = Depends(require_auth),
+) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        raise HTTPException(400, "至少选择一篇文档")
+    if len(ids) > 1000:
+        raise HTTPException(400, "单次最多重新处理 1000 篇文档")
+
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": body.folder_id, "uid": USER_ID},
+    )
+    if not folder:
+        raise HTTPException(404, "资料夹不存在")
+
+    results = []
+    for di_id in ids:
+        try:
+            result = await _queue_document_instance_reprocess(
+                di_id, folder_id=body.folder_id
+            )
+        except Exception:
+            logger.exception("failed to queue document reprocess for %s", di_id)
+            result = {
+                "id": di_id,
+                "status": "failed",
+                "detail": "重新生成排队失败，请重试",
+            }
+        results.append(result)
+    source_ids = {
+        item["source_id"] for item in results if item["status"] == "accepted"
+    }
+    trigger_results = await _trigger_reprocess_sources(source_ids)
+    for item in results:
+        if item["status"] == "accepted":
+            item["trigger_reached"] = trigger_results.get(item["source_id"], False)
+            if not item["trigger_reached"]:
+                item["detail"] = "已排队；worker 暂未响应，将由后台轮询继续处理"
+        item.pop("http_status", None)
+
+    return {
+        "ok": all(item["status"] != "failed" for item in results),
+        "accepted": sum(item["status"] == "accepted" for item in results),
+        "skipped": sum(item["status"] == "skipped" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "triggered_sources": sum(trigger_results.values()),
+        "deferred_sources": sum(not value for value in trigger_results.values()),
+        "results": results,
+    }
+
+
+@di_router.post("/{di_id}/reprocess")
+async def reprocess_document_instance(di_id: str, _: dict = Depends(require_auth)) -> dict:
+    result = await _queue_document_instance_reprocess(di_id)
+    if result["status"] != "accepted":
+        raise HTTPException(result["http_status"], result["detail"])
+    trigger_results = await _trigger_reprocess_sources({result["source_id"]})
+    trigger_reached = trigger_results.get(result["source_id"], False)
+    return {
+        "ok": True,
+        "accepted": True,
+        "mode": result["mode"],
+        "status": "pending",
+        "document_instance_id": di_id,
+        "source_item_id": result["source_item_id"],
+        "source_id": result["source_id"],
         "trigger_reached": trigger_reached,
     }
 

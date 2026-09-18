@@ -96,6 +96,31 @@ interface BatchDocKindResponse {
   results: BatchDocKindResult[];
 }
 
+interface BatchReprocessResult {
+  id: string;
+  status: "accepted" | "skipped" | "failed";
+  detail: string;
+  trigger_reached?: boolean;
+}
+
+interface BatchReprocessResponse {
+  accepted: number;
+  skipped: number;
+  failed: number;
+  deferred_sources: number;
+  results: BatchReprocessResult[];
+}
+
+type BatchProgressStatus = "pending" | "processing" | "succeeded" | "failed" | "skipped";
+
+interface BatchProgressItem {
+  id: string;
+  name: string;
+  status: BatchProgressStatus;
+  detail: string;
+  triggerDeferred: boolean;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const DOC_KIND_LABELS: Record<string, string> = {
@@ -637,13 +662,21 @@ function FolderContentsPanel({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batching, setBatching] = useState(false);
   const [batchNotice, setBatchNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<Record<string, BatchProgressItem>>({});
+  const [batchPollCount, setBatchPollCount] = useState(0);
+  const [batchPollingExpired, setBatchPollingExpired] = useState(false);
   const [showDocKindDialog, setShowDocKindDialog] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
 
   useEffect(() => {
     setQuery("");
     setSelectedIds(new Set());
     setBatchNotice(null);
+    setBatchProgress({});
+    setBatchPollCount(0);
+    setBatchPollingExpired(false);
     setShowDocKindDialog(false);
   }, [folder.id]);
 
@@ -673,6 +706,13 @@ function FolderContentsPanel({
   const allFilteredSelected = selectableItems.length > 0
     && selectableItems.every((item) => selectedIds.has(item.id));
   const someFilteredSelected = selectableItems.some((item) => selectedIds.has(item.id));
+  const batchProgressItems = useMemo(() => Object.values(batchProgress), [batchProgress]);
+  const batchCounts = useMemo(() => batchProgressItems.reduce(
+    (counts, item) => ({ ...counts, [item.status]: counts[item.status] + 1 }),
+    { pending: 0, processing: 0, succeeded: 0, failed: 0, skipped: 0 },
+  ), [batchProgressItems]);
+  const batchActive = batchCounts.pending + batchCounts.processing > 0;
+  const batchBusy = batching || batchActive;
 
   useEffect(() => {
     const visibleIds = new Set(selectableItems.map((item) => item.id));
@@ -687,6 +727,92 @@ function FolderContentsPanel({
       selectAllRef.current.indeterminate = someFilteredSelected && !allFilteredSelected;
     }
   }, [allFilteredSelected, someFilteredSelected]);
+
+  useEffect(() => {
+    setBatchProgress((previous) => {
+      if (Object.keys(previous).length === 0) return previous;
+      const itemById = new Map(items.map((item) => [item.id, item]));
+      let changed = false;
+      const next = { ...previous };
+      for (const [id, progress] of Object.entries(previous)) {
+        if (!["pending", "processing"].includes(progress.status)) continue;
+        const item = itemById.get(id);
+        if (!item) continue;
+        const status = ["pending", "processing", "succeeded", "failed"].includes(item.status)
+          ? item.status as BatchProgressStatus
+          : "failed";
+        if (status !== progress.status) {
+          next[id] = {
+            ...progress,
+            status,
+            detail: status === "failed" ? "后台处理失败" : progress.detail,
+            triggerDeferred: status === "pending" && progress.triggerDeferred,
+          };
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [items]);
+
+  useEffect(() => {
+    if (batchProgressItems.length === 0) return;
+    const summary = [
+      `待处理 ${batchCounts.pending} 篇`,
+      `处理中 ${batchCounts.processing} 篇`,
+      `成功 ${batchCounts.succeeded} 篇`,
+      `跳过 ${batchCounts.skipped} 篇`,
+      `失败 ${batchCounts.failed} 篇`,
+    ];
+    const resultDetails = batchProgressItems
+      .filter((item) => ["failed", "skipped"].includes(item.status))
+      .map((item) => `${item.name}：${item.detail}`);
+    const deferred = batchProgressItems.filter((item) => item.triggerDeferred).length;
+    if (deferred > 0) {
+      summary.push(`${deferred} 篇等待后台轮询触发`);
+    }
+    if (batchPollingExpired) {
+      summary.push("自动刷新已停止，请稍后手动刷新");
+    } else if (batchActive) {
+      summary.push("提交成功不代表生成完成，正在自动刷新");
+    }
+    setBatchNotice({
+      text: resultDetails.length > 0
+        ? `${summary.join("，")}；${resultDetails.join("；")}`
+        : summary.join("，"),
+      error: batchCounts.failed > 0 || batchPollingExpired,
+    });
+  }, [
+    batchCounts.failed,
+    batchCounts.pending,
+    batchCounts.processing,
+    batchCounts.skipped,
+    batchCounts.succeeded,
+    batchActive,
+    batchProgressItems,
+    batchPollingExpired,
+  ]);
+
+  useEffect(() => {
+    if (!batchActive) {
+      if (batchPollingExpired) setBatchPollingExpired(false);
+      return;
+    }
+    if (batchPollingExpired) return;
+    if (batchPollCount >= 120) {
+      setBatchPollingExpired(true);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      await onRefreshRef.current();
+      if (!cancelled) setBatchPollCount((count) => count + 1);
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [batchActive, batchPollCount, batchPollingExpired, folder.id]);
 
   function toggleSelectAll() {
     if (allFilteredSelected) {
@@ -746,6 +872,57 @@ function FolderContentsPanel({
     } catch (error) {
       setBatchNotice({
         text: error instanceof Error ? error.message : "批量归档失败",
+        error: true,
+      });
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  async function reprocessSelected() {
+    const ids = [...selectedIds];
+    if (ids.length === 0 || batchActive) return;
+    if (!confirm(
+      `重新生成选中的 ${ids.length} 篇文章？这会调用模型并可能产生费用。提交只表示排队，不表示生成已经完成。`,
+    )) return;
+
+    setBatching(true);
+    setBatchNotice(null);
+    setBatchProgress({});
+    setBatchPollCount(0);
+    setBatchPollingExpired(false);
+    try {
+      const response = await fetch("/api/document-instances/batch/reprocess", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_id: folder.id, ids }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "批量重新生成提交失败");
+      const result = body as BatchReprocessResponse;
+      const itemById = new Map(items.map((item) => [item.id, item]));
+      const progress = Object.fromEntries(result.results.map((item) => {
+        const document = itemById.get(item.id);
+        return [item.id, {
+          id: item.id,
+          name: document?.display_name || document?.article_title || document?.origin_ref || item.id,
+          status: item.status === "accepted" ? "pending" : item.status,
+          detail: item.detail,
+          triggerDeferred: item.trigger_reached === false,
+        } satisfies BatchProgressItem];
+      }));
+      setBatchProgress(progress);
+      const completed = new Set(
+        result.results
+          .filter((item) => item.status !== "failed")
+          .map((item) => item.id),
+      );
+      setSelectedIds((previous) => new Set([...previous].filter((id) => !completed.has(id))));
+      await onRefresh();
+    } catch (error) {
+      setBatchNotice({
+        text: error instanceof Error ? error.message : "批量重新生成提交失败",
         error: true,
       });
     } finally {
@@ -857,14 +1034,23 @@ function FolderContentsPanel({
           {selectedIds.size > 0 && (
             <>
               <span className="font-medium">已选择 {selectedIds.size} 篇</span>
-              <Button size="sm" variant="outline" className="h-7 text-xs" disabled={batching} onClick={archiveSelected}>
+              <Button size="sm" variant="outline" className="h-7 text-xs" disabled={batchBusy} onClick={archiveSelected}>
                 {batching ? "归档中…" : "归档"}
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 className="h-7 text-xs"
-                disabled={batching}
+                disabled={batchBusy}
+                onClick={reprocessSelected}
+              >
+                {batchActive ? "生成进行中…" : batching ? "提交中…" : "重新生成"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                disabled={batchBusy}
                 onClick={() => setShowDocKindDialog(true)}
               >
                 修改内容类型
@@ -875,7 +1061,7 @@ function FolderContentsPanel({
             </>
           )}
           {batchNotice && (
-            <span className={cn("min-w-0 flex-1", batchNotice.error ? "text-destructive" : "text-muted-foreground")}>
+            <span className={cn("min-w-0 flex-1 whitespace-normal", batchNotice.error ? "text-destructive" : "text-muted-foreground")}>
               {batchNotice.text}
             </span>
           )}
