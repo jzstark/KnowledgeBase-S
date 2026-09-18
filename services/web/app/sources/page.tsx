@@ -243,11 +243,11 @@ export default function FoldersPage() {
   const rootFolders = folders.filter((f) => !f.parent_id && f.status === "active");
 
   return (
-    <main className="min-h-screen bg-background flex flex-col">
-      <div className="flex flex-1 overflow-hidden" style={{ height: "calc(100vh - 0px)" }}>
+    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Left: Folder Tree */}
-        <aside className="w-64 shrink-0 border-r bg-muted/30 flex flex-col overflow-y-auto">
-          <div className="p-3 border-b flex items-center justify-between">
+        <aside className="flex min-h-0 w-64 shrink-0 flex-col overflow-hidden border-r bg-muted/30">
+          <div className="flex shrink-0 items-center justify-between border-b p-3">
             <span className="text-sm font-semibold">资料夹</span>
             <div className="flex gap-1">
               <Button
@@ -267,29 +267,31 @@ export default function FoldersPage() {
             </div>
           </div>
 
-          {loading ? (
-            <p className="text-xs text-muted-foreground p-3">加载中…</p>
-          ) : rootFolders.length === 0 ? (
-            <p className="text-xs text-muted-foreground p-3">暂无资料夹</p>
-          ) : (
-            <div className="py-1">
-              {rootFolders.map((f) => (
-                <FolderTreeItem
-                  key={f.id}
-                  folder={f}
-                  active={activeFolderId === f.id}
-                  onClick={() => setActiveFolderId(f.id)}
-                  onRename={() => setRenameTarget(f)}
-                  onArchive={() => handleArchiveFolder(f.id)}
-                  onNewSub={() => { setNewFolderParent(f.id); setShowNewFolder(true); }}
-                />
-              ))}
-            </div>
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {loading ? (
+              <p className="p-3 text-xs text-muted-foreground">加载中…</p>
+            ) : rootFolders.length === 0 ? (
+              <p className="p-3 text-xs text-muted-foreground">暂无资料夹</p>
+            ) : (
+              <div className="py-1">
+                {rootFolders.map((f) => (
+                  <FolderTreeItem
+                    key={f.id}
+                    folder={f}
+                    active={activeFolderId === f.id}
+                    onClick={() => setActiveFolderId(f.id)}
+                    onRename={() => setRenameTarget(f)}
+                    onArchive={() => handleArchiveFolder(f.id)}
+                    onNewSub={() => { setNewFolderParent(f.id); setShowNewFolder(true); }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </aside>
 
         {/* Center: Contents */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {!activeFolderId ? (
             <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
               选择左侧资料夹查看内容
@@ -438,7 +440,7 @@ function FolderContentsPanel({
   const { folder, items, connector } = contents;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="px-4 py-2.5 border-b flex items-center gap-2 shrink-0">
         <h2 className="font-medium text-sm flex-1 truncate">
@@ -471,7 +473,7 @@ function FolderContentsPanel({
 
       {/* Connector info bar (stream folders) */}
       {connector && (
-        <div className="px-4 py-1.5 bg-muted/30 border-b text-xs text-muted-foreground flex gap-4">
+        <div className="flex shrink-0 gap-4 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
           <span>{connector.type === "rss" ? "RSS" : "微信公众号"}</span>
           <span>状态：{connector.status === "active" ? "✅ 订阅中" : "⏸ 已暂停"}</span>
           <span>上次同步：{fmtDate(connector.last_fetched_at)}</span>
@@ -479,20 +481,20 @@ function FolderContentsPanel({
       )}
 
       {/* Items list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground p-6 text-center">
             {folder.kind === "stream" ? "暂无条目，点击「立即同步」拉取内容" : "暂无文件，点击「上传文件」或「添加 URL」"}
           </p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-xs text-muted-foreground bg-muted/20">
-                <th className="text-left px-4 py-2 font-medium">名称</th>
-                <th className="text-left px-4 py-2 font-medium w-20">类型</th>
-                <th className="text-left px-4 py-2 font-medium w-20">状态</th>
-                <th className="text-left px-4 py-2 font-medium w-36">时间</th>
-                <th className="px-4 py-2 w-20" />
+          <table className="w-full min-w-[720px] table-fixed text-sm">
+            <thead className="sticky top-0 z-10 bg-background">
+              <tr className="border-b bg-muted/95 text-xs text-muted-foreground">
+                <th className="px-4 py-2 text-left font-medium">名称</th>
+                <th className="w-24 whitespace-nowrap px-4 py-2 text-left font-medium">类型</th>
+                <th className="w-24 whitespace-nowrap px-4 py-2 text-left font-medium">状态</th>
+                <th className="w-32 whitespace-nowrap px-4 py-2 text-left font-medium">时间</th>
+                <th className="w-24 px-4 py-2" />
               </tr>
             </thead>
             <tbody>
@@ -536,25 +538,25 @@ function DocumentRow({
       )}
       onClick={onClick}
     >
-      <td className="px-4 py-2">
+      <td className="min-w-0 px-4 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-base leading-none">{fileIcon(item.mime_type, item.origin_ref_type)}</span>
+          <span className="shrink-0 text-base leading-none">{fileIcon(item.mime_type, item.origin_ref_type)}</span>
           <div className="min-w-0">
-            <p className="truncate max-w-xs font-medium text-sm">{name}</p>
+            <p className="truncate text-sm font-medium" title={name}>{name}</p>
             {item.article_title && item.article_title !== name && (
-              <p className="text-xs text-muted-foreground truncate max-w-xs">{item.article_title}</p>
+              <p className="truncate text-xs text-muted-foreground" title={item.article_title}>{item.article_title}</p>
             )}
           </div>
         </div>
       </td>
-      <td className="px-4 py-2">
+      <td className="whitespace-nowrap px-4 py-2">
         {item.doc_kind && (
           <span className="text-xs text-muted-foreground">{DOC_KIND_LABELS[item.doc_kind] ?? item.doc_kind}</span>
         )}
       </td>
-      <td className="px-4 py-2">
+      <td className="whitespace-nowrap px-4 py-2">
         <span className={cn(
-          "text-xs px-1.5 py-0.5 rounded-full",
+          "inline-flex whitespace-nowrap rounded-full px-1.5 py-0.5 text-xs",
           STATUS_COLORS[item.status] || "bg-muted text-muted-foreground",
         )}>
           {STATUS_LABELS[item.status] ?? item.status}
@@ -607,15 +609,15 @@ function DetailDrawer({
   onReprocess: () => void;
 }) {
   return (
-    <aside className="w-72 shrink-0 border-l bg-background flex flex-col overflow-y-auto">
-      <div className="p-3 border-b flex items-center justify-between">
+    <aside className="flex min-h-0 w-72 shrink-0 flex-col overflow-hidden border-l bg-background">
+      <div className="flex shrink-0 items-center justify-between border-b p-3">
         <span className="text-sm font-medium truncate">{item.display_name || "详情"}</span>
         <button
           className="text-muted-foreground hover:text-foreground text-lg leading-none"
           onClick={onClose}
         >×</button>
       </div>
-      <div className="p-4 space-y-3 text-sm">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm">
         <div>
           <p className="text-xs text-muted-foreground mb-0.5">名称</p>
           <p className="font-medium break-all">{item.display_name || item.origin_ref || item.id}</p>
