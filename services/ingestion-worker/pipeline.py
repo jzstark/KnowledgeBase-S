@@ -172,7 +172,7 @@ async def update_source_item_status(
     extracted_text_ref: str | None = None,
     error: str | None = None,
     title: str | None = None,
-) -> None:
+) -> bool:
     payload = {
         "status": status,
         "raw_snapshot_ref": raw_snapshot_ref,
@@ -186,7 +186,10 @@ async def update_source_item_status(
             json=payload,
             timeout=10,
         )
+        if status == "processing" and resp.status_code == 409:
+            return False
         resp.raise_for_status()
+        return True
 
 
 def save_extracted_text(source_type: str, source_item_id: str, text: str) -> str:
@@ -606,7 +609,10 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
         item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
-            await update_source_item_status(source_item["id"], "processing")
+            claimed = await update_source_item_status(source_item["id"], "processing")
+            if not claimed:
+                logger.info("[%s] 跳过状态已变化的条目: %s", source_id, source_item["id"])
+                continue
             item_source, item_source_type = source_for_item(source, source_config, source_item)
             item = _raw_item_from_source_item(source_item, item_source_type)
 
@@ -714,7 +720,10 @@ async def run_book_pipeline(
     for source_item in pending_items:
         item_title = source_item.get("title") or source_item.get("origin_ref") or source_item["id"]
         try:
-            await update_source_item_status(source_item["id"], "processing")
+            claimed = await update_source_item_status(source_item["id"], "processing")
+            if not claimed:
+                logger.info("[%s] 跳过状态已变化的书籍条目: %s", source_id, source_item["id"])
+                continue
             item_source_type = source_item.get("source_type") or source_type
             item = _raw_item_from_source_item(source_item, item_source_type)
 

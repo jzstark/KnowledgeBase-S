@@ -68,6 +68,19 @@ interface DocKindConfig {
   default: string;
 }
 
+interface BatchArchiveResult {
+  id: string;
+  status: "archived" | "skipped" | "failed";
+  detail: string;
+}
+
+interface BatchArchiveResponse {
+  archived: number;
+  skipped: number;
+  failed: number;
+  results: BatchArchiveResult[];
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const DOC_KIND_LABELS: Record<string, string> = {
@@ -85,7 +98,7 @@ const STATUS_LABELS: Record<string, string> = {
   processing: "处理中",
   succeeded: "已入库",
   failed: "失败",
-  ignored: "已忽略",
+  ignored: "已归档",
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -156,9 +169,12 @@ export default function FoldersPage() {
   const [loading, setLoading] = useState(true);
   const [contentsLoading, setContentsLoading] = useState(false);
   const [contentsError, setContentsError] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const activeFolderIdRef = useRef<string | null>(activeFolderId);
+  const showArchivedRef = useRef(showArchived);
   const contentsRequestRef = useRef(0);
   activeFolderIdRef.current = activeFolderId;
+  showArchivedRef.current = showArchived;
 
   // Modal states
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -177,14 +193,15 @@ export default function FoldersPage() {
     }
   }
 
-  async function loadContents(folderId: string) {
+  async function loadContents(folderId: string, showLoading = true) {
     if (activeFolderIdRef.current !== folderId) return;
     const requestId = ++contentsRequestRef.current;
-    setContentsLoading(true);
+    if (showLoading) setContentsLoading(true);
     setContentsError("");
     setSelectedItem(null);
     try {
-      const r = await fetch(`/api/folders/${folderId}/contents`, { credentials: "include" });
+      const includeArchived = showArchivedRef.current ? "?include_archived=true" : "";
+      const r = await fetch(`/api/folders/${folderId}/contents${includeArchived}`, { credentials: "include" });
       if (requestId !== contentsRequestRef.current || activeFolderIdRef.current !== folderId) return;
       if (!r.ok) {
         setContents(null);
@@ -217,7 +234,12 @@ export default function FoldersPage() {
       setContentsLoading(false);
       setSelectedItem(null);
     }
-  }, [activeFolderId]);
+  }, [activeFolderId, showArchived]);
+
+  async function refreshCurrentFolder() {
+    if (!activeFolderId) return;
+    await Promise.all([loadContents(activeFolderId, false), loadFolders()]);
+  }
 
   async function handleArchiveFolder(id: string) {
     if (!confirm("归档该资料夹？内容保留，不再显示在主列表中。")) return;
@@ -245,8 +267,11 @@ export default function FoldersPage() {
       method: "DELETE", credentials: "include",
     });
     if (r.ok || r.status === 204) {
-      if (activeFolderId) loadContents(activeFolderId);
+      await refreshCurrentFolder();
       if (selectedItem?.id === di.id) setSelectedItem(null);
+    } else {
+      const body = await r.json().catch(() => ({}));
+      alert(body.detail || "归档失败");
     }
   }
 
@@ -347,7 +372,9 @@ export default function FoldersPage() {
               onDelete={handleDeleteItem}
               onHardDelete={handleHardDeleteItem}
               onReprocess={handleReprocess}
-              onRefresh={() => activeFolderId && loadContents(activeFolderId)}
+              showArchived={showArchived}
+              onShowArchivedChange={setShowArchived}
+              onRefresh={refreshCurrentFolder}
             />
           ) : null}
         </div>
@@ -460,7 +487,8 @@ function FolderTreeItem({
 
 function FolderContentsPanel({
   contents, selectedItem, onSelectItem,
-  onUpload, onAddUrl, onSync, onDelete, onHardDelete, onReprocess, onRefresh,
+  onUpload, onAddUrl, onSync, onDelete, onHardDelete, onReprocess,
+  showArchived, onShowArchivedChange, onRefresh,
 }: {
   contents: FolderContents;
   selectedItem: DocumentInstance | null;
@@ -471,12 +499,22 @@ function FolderContentsPanel({
   onDelete: (item: DocumentInstance) => void;
   onHardDelete: (item: DocumentInstance) => void;
   onReprocess: (item: DocumentInstance) => void;
-  onRefresh: () => void;
+  showArchived: boolean;
+  onShowArchivedChange: (show: boolean) => void;
+  onRefresh: () => Promise<void>;
 }) {
   const { folder, items, connector } = contents;
   const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batching, setBatching] = useState(false);
+  const [batchNotice, setBatchNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setQuery(""), [folder.id]);
+  useEffect(() => {
+    setQuery("");
+    setSelectedIds(new Set());
+    setBatchNotice(null);
+  }, [folder.id]);
 
   const searchTerms = useMemo(
     () => query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean),
@@ -497,6 +535,92 @@ function FolderContentsPanel({
       return searchTerms.every((term) => searchable.includes(term));
     });
   }, [items, searchTerms]);
+  const selectableItems = useMemo(
+    () => filteredItems.filter((item) => !["ignored", "deleted", "processing"].includes(item.status)),
+    [filteredItems],
+  );
+  const allFilteredSelected = selectableItems.length > 0
+    && selectableItems.every((item) => selectedIds.has(item.id));
+  const someFilteredSelected = selectableItems.some((item) => selectedIds.has(item.id));
+
+  useEffect(() => {
+    const visibleIds = new Set(selectableItems.map((item) => item.id));
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => visibleIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [selectableItems]);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someFilteredSelected && !allFilteredSelected;
+    }
+  }, [allFilteredSelected, someFilteredSelected]);
+
+  function toggleSelectAll() {
+    if (allFilteredSelected) {
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds(new Set(selectableItems.map((item) => item.id)));
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function archiveSelected() {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    if (!confirm(`归档选中的 ${ids.length} 篇文章？知识文章和原始材料会保留。`)) return;
+
+    setBatching(true);
+    setBatchNotice(null);
+    try {
+      const response = await fetch("/api/document-instances/batch/archive", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_id: folder.id, ids }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "批量归档失败");
+      }
+      const result: BatchArchiveResponse = await response.json();
+      const completed = new Set(
+        result.results
+          .filter((item) => item.status !== "failed")
+          .map((item) => item.id),
+      );
+      setSelectedIds((previous) => new Set([...previous].filter((id) => !completed.has(id))));
+      const summary = [`已归档 ${result.archived} 篇`];
+      if (result.skipped) summary.push(`跳过 ${result.skipped} 篇`);
+      if (result.failed) summary.push(`失败 ${result.failed} 篇`);
+      const failedDetails = result.results
+        .filter((item) => item.status === "failed")
+        .map((item) => item.detail);
+      setBatchNotice({
+        text: failedDetails.length > 0
+          ? `${summary.join("，")}：${[...new Set(failedDetails)].join("；")}`
+          : summary.join("，"),
+        error: result.failed > 0,
+      });
+      await onRefresh();
+    } catch (error) {
+      setBatchNotice({
+        text: error instanceof Error ? error.message : "批量归档失败",
+        error: true,
+      });
+    } finally {
+      setBatching(false);
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -558,12 +682,41 @@ function FolderContentsPanel({
             清除
           </Button>
         )}
+        <label className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => onShowArchivedChange(e.target.checked)}
+          />
+          显示已归档
+        </label>
         <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
           {searchTerms.length > 0
             ? `匹配 ${filteredItems.length} 条，共 ${items.length} 条`
             : `共 ${items.length} 条`}
         </span>
       </div>
+
+      {(selectedIds.size > 0 || batchNotice) && (
+        <div className="flex shrink-0 items-center gap-3 border-b bg-muted/30 px-4 py-2 text-xs">
+          {selectedIds.size > 0 && (
+            <>
+              <span className="font-medium">已选择 {selectedIds.size} 篇</span>
+              <Button size="sm" variant="outline" className="h-7 text-xs" disabled={batching} onClick={archiveSelected}>
+                {batching ? "归档中…" : "归档"}
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={batching} onClick={() => setSelectedIds(new Set())}>
+                取消选择
+              </Button>
+            </>
+          )}
+          {batchNotice && (
+            <span className={cn("min-w-0 flex-1", batchNotice.error ? "text-destructive" : "text-muted-foreground")}>
+              {batchNotice.text}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Items list */}
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -577,9 +730,19 @@ function FolderContentsPanel({
             <Button size="sm" variant="outline" onClick={() => setQuery("")}>清除搜索</Button>
           </div>
         ) : (
-          <table className="w-full min-w-[720px] table-fixed text-sm">
+          <table className="w-full min-w-[760px] table-fixed text-sm">
             <thead className="sticky top-0 z-10 bg-background">
               <tr className="border-b bg-muted/95 text-xs text-muted-foreground">
+                <th className="w-12 px-4 py-2 text-left font-medium">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    disabled={selectableItems.length === 0}
+                    aria-label="全选当前筛选结果"
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th className="px-4 py-2 text-left font-medium">名称</th>
                 <th className="w-24 whitespace-nowrap px-4 py-2 text-left font-medium">类型</th>
                 <th className="w-24 whitespace-nowrap px-4 py-2 text-left font-medium">状态</th>
@@ -593,7 +756,10 @@ function FolderContentsPanel({
                   key={item.id}
                   item={item}
                   selected={selectedItem?.id === item.id}
+                  checked={selectedIds.has(item.id)}
+                  selectable={!['ignored', 'deleted', 'processing'].includes(item.status)}
                   onClick={() => onSelectItem(selectedItem?.id === item.id ? null : item)}
+                  onCheckedChange={() => toggleSelected(item.id)}
                   onDelete={() => onDelete(item)}
                   onHardDelete={() => onHardDelete(item)}
                   onReprocess={() => onReprocess(item)}
@@ -610,11 +776,15 @@ function FolderContentsPanel({
 // ── Document Row ──────────────────────────────────────────────────────────────
 
 function DocumentRow({
-  item, selected, onClick, onDelete, onHardDelete, onReprocess,
+  item, selected, checked, selectable, onClick, onCheckedChange,
+  onDelete, onHardDelete, onReprocess,
 }: {
   item: DocumentInstance;
   selected: boolean;
+  checked: boolean;
+  selectable: boolean;
   onClick: () => void;
+  onCheckedChange: () => void;
   onDelete: () => void;
   onHardDelete: () => void;
   onReprocess: () => void;
@@ -623,11 +793,21 @@ function DocumentRow({
   return (
     <tr
       className={cn(
-        "border-b cursor-pointer hover:bg-muted/40 transition-colors",
+        "group border-b cursor-pointer hover:bg-muted/40 transition-colors",
         selected && "bg-accent",
       )}
       onClick={onClick}
     >
+      <td className="w-12 px-4 py-2" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={!selectable}
+          aria-label={`选择 ${name}`}
+          title={selectable ? `选择 ${name}` : "处理中或已归档的文档不可选择"}
+          onChange={onCheckedChange}
+        />
+      </td>
       <td className="min-w-0 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="shrink-0 text-base leading-none">{fileIcon(item.mime_type, item.origin_ref_type)}</span>
@@ -663,10 +843,13 @@ function DocumentRow({
               onClick={onReprocess}
             >重试</button>
           )}
-          <button
-            className="text-xs text-muted-foreground hover:underline"
-            onClick={onDelete}
-          >归档</button>
+          {item.status !== "ignored" && (
+            <button
+              className="text-xs text-muted-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={item.status === "processing"}
+              onClick={onDelete}
+            >归档</button>
+          )}
           <button
             className="text-xs text-destructive hover:underline"
             onClick={onHardDelete}
@@ -771,14 +954,17 @@ function DetailDrawer({
               重新生成 Article
             </Button>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-full"
-            onClick={onDelete}
-          >
-            归档
-          </Button>
+          {item.status !== "ignored" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              disabled={item.status === "processing"}
+              onClick={onDelete}
+            >
+              归档
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"

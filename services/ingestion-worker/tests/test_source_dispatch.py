@@ -99,6 +99,30 @@ class PipelineDispatchTest(unittest.IsolatedAsyncioTestCase):
 
         return pipeline
 
+    async def test_processing_claim_conflict_is_reported_as_not_claimed(self):
+        pipeline = self._load_pipeline()
+
+        class ConflictResponse:
+            status_code = 409
+
+            def raise_for_status(self):
+                raise AssertionError("a processing claim conflict should be handled")
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return ConflictResponse()
+
+        with patch.object(pipeline.httpx, "AsyncClient", return_value=Client(), create=True):
+            claimed = await pipeline.update_source_item_status("si_archived", "processing")
+
+        self.assertFalse(claimed)
+
     async def test_pipeline_routes_epub_item_to_book_pipeline(self):
         pipeline = self._load_pipeline()
         source_item = {

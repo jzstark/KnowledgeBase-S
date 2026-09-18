@@ -124,7 +124,10 @@ async def list_folders(_: dict = Depends(require_auth)) -> list[dict]:
         d = _serialize_timestamps(dict(row), "created_at", "updated_at")
         # 附加 document_instance 计数
         cnt = await database.database.fetch_val(
-            "SELECT COUNT(*) FROM document_instances WHERE folder_id = :fid",
+            """
+            SELECT COUNT(*) FROM document_instances
+            WHERE folder_id = :fid AND status NOT IN ('ignored', 'deleted')
+            """,
             {"fid": row["id"]},
         )
         d["item_count"] = int(cnt or 0)
@@ -256,6 +259,7 @@ async def delete_folder(folder_id: str, _: dict = Depends(require_auth)):
 async def get_folder_contents(
     folder_id: str,
     status: str | None = None,
+    include_archived: bool = False,
     _: dict = Depends(require_auth),
 ) -> dict:
     folder = await database.database.fetch_one(
@@ -303,8 +307,10 @@ async def get_folder_contents(
     if status:
         q += " AND di.status = :status"
         params["status"] = status
-    else:
+    elif include_archived:
         q += " AND di.status <> 'deleted'"
+    else:
+        q += " AND di.status NOT IN ('ignored', 'deleted')"
     q += " ORDER BY di.created_at DESC"
     di_rows = await database.database.fetch_all(q, params)
     items = [_serialize_timestamps(dict(r), "created_at", "updated_at") for r in di_rows]
@@ -530,6 +536,104 @@ class DocumentInstanceUpdate(BaseModel):
     doc_kind: str | None = None
 
 
+class DocumentInstanceBatchRequest(BaseModel):
+    folder_id: str
+    ids: list[str]
+
+
+async def _archive_document_instance(
+    di_id: str,
+    *,
+    folder_id: str | None = None,
+) -> tuple[str, str]:
+    """Archive one document and its source item without deleting derived knowledge."""
+    async with database.database.transaction():
+        row = await database.database.fetch_one(
+            """
+            SELECT id, folder_id, status
+            FROM document_instances
+            WHERE id = :id AND user_id = :uid
+            FOR UPDATE
+            """,
+            {"id": di_id, "uid": USER_ID},
+        )
+        if not row:
+            return "failed", "文档不存在"
+        if folder_id is not None and row["folder_id"] != folder_id:
+            return "failed", "文档不属于当前资料夹"
+        if row["status"] == "deleted":
+            return "failed", "文档已永久删除"
+
+        source_items = await database.database.fetch_all(
+            """
+            SELECT id, status
+            FROM source_items
+            WHERE document_instance_id = :id
+            FOR UPDATE
+            """,
+            {"id": di_id},
+        )
+        if row["status"] == "processing" or any(
+            item["status"] == "processing" for item in source_items
+        ):
+            return "failed", "文档正在处理，请完成后再归档"
+
+        already_archived = row["status"] == "ignored" and all(
+            item["status"] in {"ignored", "deleted"} for item in source_items
+        )
+        await database.database.execute(
+            """
+            UPDATE source_items
+            SET status = 'ignored', updated_at = NOW()
+            WHERE document_instance_id = :id AND status <> 'deleted'
+            """,
+            {"id": di_id},
+        )
+        await database.database.execute(
+            """
+            UPDATE document_instances
+            SET status = 'ignored', updated_at = NOW()
+            WHERE id = :id
+            """,
+            {"id": di_id},
+        )
+        if already_archived:
+            return "skipped", "文档已经归档"
+        return "archived", "归档成功"
+
+
+@di_router.post("/batch/archive")
+async def archive_document_instances(
+    body: DocumentInstanceBatchRequest,
+    _: dict = Depends(require_auth),
+) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        raise HTTPException(400, "至少选择一篇文档")
+    if len(ids) > 1000:
+        raise HTTPException(400, "单次最多归档 1000 篇文档")
+
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": body.folder_id, "uid": USER_ID},
+    )
+    if not folder:
+        raise HTTPException(404, "资料夹不存在")
+
+    results = []
+    for di_id in ids:
+        result, detail = await _archive_document_instance(di_id, folder_id=body.folder_id)
+        results.append({"id": di_id, "status": result, "detail": detail})
+
+    return {
+        "ok": all(item["status"] != "failed" for item in results),
+        "archived": sum(item["status"] == "archived" for item in results),
+        "skipped": sum(item["status"] == "skipped" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "results": results,
+    }
+
+
 @di_router.get("/{di_id}")
 async def get_document_instance(di_id: str, _: dict = Depends(require_auth)) -> dict:
     row = await database.database.fetch_one(
@@ -713,10 +817,9 @@ async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Dep
     if hard:
         await _hard_delete_document_instance(di_id)
     else:
-        await database.database.execute(
-            "UPDATE document_instances SET status = 'ignored', updated_at = NOW() WHERE id = :id",
-            {"id": di_id},
-        )
+        result, detail = await _archive_document_instance(di_id)
+        if result == "failed":
+            raise HTTPException(409, detail)
 
 
 @di_router.post("/{di_id}/reprocess")

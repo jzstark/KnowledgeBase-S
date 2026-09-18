@@ -1,0 +1,113 @@
+import os
+import unittest
+from unittest.mock import patch
+
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
+os.environ.setdefault("AUTH_PASSWORD", "test-password")
+os.environ.setdefault("AUTH_SECRET", "test-secret")
+
+from fastapi import HTTPException
+from routers import folders, sources
+
+
+class _Transaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _ArchiveDatabase:
+    def __init__(self, document_status: str, source_statuses: list[str]):
+        self.document_status = document_status
+        self.source_statuses = source_statuses
+        self.executed: list[tuple[str, dict]] = []
+
+    def transaction(self):
+        return _Transaction()
+
+    async def fetch_one(self, query, values):
+        return {
+            "id": values["id"],
+            "folder_id": "fld_test",
+            "status": self.document_status,
+        }
+
+    async def fetch_all(self, query, values):
+        return [
+            {"id": f"si_{index}", "status": status}
+            for index, status in enumerate(self.source_statuses)
+        ]
+
+    async def execute(self, query, values):
+        self.executed.append((query, values))
+
+
+class ArchiveDocumentInstanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_archive_updates_document_and_source_item(self):
+        fake = _ArchiveDatabase("succeeded", ["succeeded"])
+
+        with patch.object(folders.database, "database", fake):
+            status, detail = await folders._archive_document_instance(
+                "di_test", folder_id="fld_test"
+            )
+
+        self.assertEqual((status, detail), ("archived", "归档成功"))
+        self.assertEqual(len(fake.executed), 2)
+        self.assertIn("UPDATE source_items", fake.executed[0][0])
+        self.assertIn("UPDATE document_instances", fake.executed[1][0])
+
+    async def test_archive_rejects_processing_source_item_without_writes(self):
+        fake = _ArchiveDatabase("pending", ["processing"])
+
+        with patch.object(folders.database, "database", fake):
+            status, detail = await folders._archive_document_instance(
+                "di_test", folder_id="fld_test"
+            )
+
+        self.assertEqual(status, "failed")
+        self.assertIn("正在处理", detail)
+        self.assertEqual(fake.executed, [])
+
+    async def test_archive_is_idempotent(self):
+        fake = _ArchiveDatabase("ignored", ["ignored"])
+
+        with patch.object(folders.database, "database", fake):
+            status, detail = await folders._archive_document_instance(
+                "di_test", folder_id="fld_test"
+            )
+
+        self.assertEqual((status, detail), ("skipped", "文档已经归档"))
+
+
+class _TerminalStatusDatabase:
+    def __init__(self):
+        self.update_query = ""
+
+    async def fetch_one(self, query, values):
+        self.update_query = query
+        return None
+
+    async def fetch_val(self, query, values):
+        return "ignored"
+
+
+class ArchivedWorkerCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_cannot_overwrite_archived_item_with_failed(self):
+        fake = _TerminalStatusDatabase()
+
+        with patch.object(sources.database, "database", fake):
+            with self.assertRaises(HTTPException) as raised:
+                await sources.update_source_item_status(
+                    "si_archived",
+                    sources.SourceItemStatusUpdate(status="failed"),
+                    _={"sub": "service"},
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("status NOT IN ('ignored', 'deleted')", fake.update_query)
+
+
+if __name__ == "__main__":
+    unittest.main()

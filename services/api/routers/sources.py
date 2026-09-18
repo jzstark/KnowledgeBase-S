@@ -231,7 +231,11 @@ async def _ensure_document_instance_for_source_item(source_row, item_row) -> dic
           origin_ref = COALESCE(EXCLUDED.origin_ref, document_instances.origin_ref),
           origin_ref_type = COALESCE(EXCLUDED.origin_ref_type, document_instances.origin_ref_type),
           doc_kind = COALESCE(EXCLUDED.doc_kind, document_instances.doc_kind),
-          status = EXCLUDED.status,
+          status = CASE
+            WHEN document_instances.status IN ('ignored', 'deleted')
+              THEN document_instances.status
+            ELSE EXCLUDED.status
+          END,
           updated_at = NOW()
         """,
         {
@@ -293,7 +297,7 @@ async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, A
           doc_kind = COALESCE(EXCLUDED.doc_kind, source_items.doc_kind),
           raw_retention_policy = COALESCE(EXCLUDED.raw_retention_policy, source_items.raw_retention_policy),
           status = CASE
-            WHEN source_items.status IN ('succeeded', 'deleted') THEN source_items.status
+            WHEN source_items.status IN ('succeeded', 'ignored', 'deleted') THEN source_items.status
             ELSE EXCLUDED.status
           END,
           error = NULL,
@@ -571,17 +575,35 @@ async def update_source_item_status(
         updates.append("title = :title")
         params["title"] = body.title
 
+    where = "id = :id"
+    if body.status not in {"ignored", "deleted"}:
+        # User archive/delete states are terminal for worker callbacks. This
+        # also keeps an older worker from changing an archived claim to failed
+        # during a staggered deployment.
+        where += " AND status NOT IN ('ignored', 'deleted')"
+    if body.status == "processing":
+        # Claim pending work atomically. An item archived after the worker listed
+        # it must not be moved back to processing.
+        where += " AND status = 'pending'"
+
     row = await database.database.fetch_one(
         f"""
         UPDATE source_items
         SET {', '.join(updates)}
-        WHERE id = :id
+        WHERE {where}
         RETURNING *
         """,
         params,
     )
     if not row:
-        raise HTTPException(404, "source item 不存在")
+        current_status = await database.database.fetch_val(
+            "SELECT status FROM source_items WHERE id = :id", {"id": item_id},
+        )
+        if current_status is None:
+            raise HTTPException(404, "source item 不存在")
+        if body.status == "processing":
+            raise HTTPException(409, f"source item 当前状态为 {current_status}，不能领取")
+        raise HTTPException(409, "source item 状态已变化")
     if row["document_instance_id"]:
         await database.database.execute(
             """
