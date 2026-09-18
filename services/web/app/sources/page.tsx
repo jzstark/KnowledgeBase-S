@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,7 @@ interface DocumentInstance {
   size: number | null;
   article_id: string | null;
   article_title: string | null;
+  article_titles: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -154,6 +155,10 @@ export default function FoldersPage() {
   const [selectedItem, setSelectedItem] = useState<DocumentInstance | null>(null);
   const [loading, setLoading] = useState(true);
   const [contentsLoading, setContentsLoading] = useState(false);
+  const [contentsError, setContentsError] = useState("");
+  const activeFolderIdRef = useRef<string | null>(activeFolderId);
+  const contentsRequestRef = useRef(0);
+  activeFolderIdRef.current = activeFolderId;
 
   // Modal states
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -173,13 +178,31 @@ export default function FoldersPage() {
   }
 
   async function loadContents(folderId: string) {
+    if (activeFolderIdRef.current !== folderId) return;
+    const requestId = ++contentsRequestRef.current;
     setContentsLoading(true);
+    setContentsError("");
     setSelectedItem(null);
     try {
       const r = await fetch(`/api/folders/${folderId}/contents`, { credentials: "include" });
-      if (r.ok) setContents(await r.json());
+      if (requestId !== contentsRequestRef.current || activeFolderIdRef.current !== folderId) return;
+      if (!r.ok) {
+        setContents(null);
+        setContentsError("加载资料夹内容失败，请重试");
+        return;
+      }
+      const nextContents = await r.json();
+      if (requestId !== contentsRequestRef.current || activeFolderIdRef.current !== folderId) return;
+      setContents(nextContents);
+    } catch {
+      if (requestId === contentsRequestRef.current && activeFolderIdRef.current === folderId) {
+        setContents(null);
+        setContentsError("加载资料夹内容失败，请重试");
+      }
     } finally {
-      setContentsLoading(false);
+      if (requestId === contentsRequestRef.current && activeFolderIdRef.current === folderId) {
+        setContentsLoading(false);
+      }
     }
   }
 
@@ -187,7 +210,13 @@ export default function FoldersPage() {
 
   useEffect(() => {
     if (activeFolderId) loadContents(activeFolderId);
-    else setContents(null);
+    else {
+      contentsRequestRef.current += 1;
+      setContents(null);
+      setContentsError("");
+      setContentsLoading(false);
+      setSelectedItem(null);
+    }
   }, [activeFolderId]);
 
   async function handleArchiveFolder(id: string) {
@@ -299,6 +328,13 @@ export default function FoldersPage() {
           ) : contentsLoading ? (
             <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
               加载中…
+            </div>
+          ) : contentsError ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+              <p>{contentsError}</p>
+              <Button size="sm" variant="outline" onClick={() => loadContents(activeFolderId)}>
+                重试
+              </Button>
             </div>
           ) : contents ? (
             <FolderContentsPanel
@@ -438,6 +474,29 @@ function FolderContentsPanel({
   onRefresh: () => void;
 }) {
   const { folder, items, connector } = contents;
+  const [query, setQuery] = useState("");
+
+  useEffect(() => setQuery(""), [folder.id]);
+
+  const searchTerms = useMemo(
+    () => query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean),
+    [query],
+  );
+  const filteredItems = useMemo(() => {
+    if (searchTerms.length === 0) return items;
+    return items.filter((item) => {
+      const searchable = [
+        item.display_name,
+        item.article_title,
+        ...(item.article_titles ?? []),
+        item.origin_ref,
+      ]
+        .filter(Boolean)
+        .join("\n")
+        .toLocaleLowerCase();
+      return searchTerms.every((term) => searchable.includes(term));
+    });
+  }, [items, searchTerms]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -480,12 +539,43 @@ function FolderContentsPanel({
         </div>
       )}
 
+      {/* Current-folder search */}
+      <div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索名称、文章标题或来源链接"
+          aria-label="搜索当前资料夹"
+          className="h-8 min-w-0 flex-1"
+        />
+        {query && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 shrink-0 px-2 text-xs"
+            onClick={() => setQuery("")}
+          >
+            清除
+          </Button>
+        )}
+        <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+          {searchTerms.length > 0
+            ? `匹配 ${filteredItems.length} 条，共 ${items.length} 条`
+            : `共 ${items.length} 条`}
+        </span>
+      </div>
+
       {/* Items list */}
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground p-6 text-center">
             {folder.kind === "stream" ? "暂无条目，点击「立即同步」拉取内容" : "暂无文件，点击「上传文件」或「添加 URL」"}
           </p>
+        ) : filteredItems.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-muted-foreground">
+            <p>没有匹配的文章</p>
+            <Button size="sm" variant="outline" onClick={() => setQuery("")}>清除搜索</Button>
+          </div>
         ) : (
           <table className="w-full min-w-[720px] table-fixed text-sm">
             <thead className="sticky top-0 z-10 bg-background">
@@ -498,7 +588,7 @@ function FolderContentsPanel({
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {filteredItems.map((item) => (
                 <DocumentRow
                   key={item.id}
                   item={item}

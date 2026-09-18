@@ -273,7 +273,32 @@ async def get_folder_contents(
     subfolders = [_serialize_timestamps(dict(r), "created_at", "updated_at") for r in sub_rows]
 
     # 文档实例
-    q = "SELECT di.*, an.node_id as article_id FROM document_instances di LEFT JOIN article_nodes an ON an.document_instance_id = di.id WHERE di.folder_id = :fid"
+    q = """
+        SELECT di.*,
+               ra.mime_type,
+               ra.size,
+               articles.article_id,
+               articles.article_title,
+               articles.article_titles
+        FROM document_instances di
+        LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
+        LEFT JOIN LATERAL (
+            SELECT
+                (array_agg(an.node_id ORDER BY kn.created_at DESC NULLS LAST, an.node_id))[1]
+                    AS article_id,
+                (array_agg(kn.title ORDER BY kn.created_at DESC NULLS LAST, an.node_id))[1]
+                    AS article_title,
+                COALESCE(
+                    array_agg(kn.title ORDER BY kn.created_at DESC NULLS LAST, an.node_id)
+                        FILTER (WHERE kn.title IS NOT NULL),
+                    ARRAY[]::text[]
+                ) AS article_titles
+            FROM article_nodes an
+            JOIN knowledge_nodes kn ON kn.id = an.node_id
+            WHERE an.document_instance_id = di.id
+        ) articles ON TRUE
+        WHERE di.folder_id = :fid
+    """
     params: dict[str, Any] = {"fid": folder_id}
     if status:
         q += " AND di.status = :status"
