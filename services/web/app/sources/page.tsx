@@ -121,6 +121,46 @@ interface BatchProgressItem {
   triggerDeferred: boolean;
 }
 
+interface DeletePreviewItem {
+  id: string;
+  name: string;
+  status: "eligible" | "blocked" | "skipped" | "failed";
+  detail: string;
+  articles: number;
+  summaries: number;
+  removable_files: number;
+  shared_files: number;
+}
+
+interface DeletePreviewResponse {
+  confirmation_token: string;
+  documents: number;
+  eligible: number;
+  blocked: number;
+  skipped: number;
+  failed: number;
+  articles: number;
+  summaries: number;
+  removable_files: number;
+  shared_files: number;
+  results: DeletePreviewItem[];
+}
+
+interface BatchDeleteResult {
+  id: string;
+  status: "deleted" | "skipped" | "failed";
+  detail: string;
+  file_warnings: string[];
+}
+
+interface BatchDeleteResponse {
+  deleted: number;
+  skipped: number;
+  failed: number;
+  file_warnings: string[];
+  results: BatchDeleteResult[];
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const DOC_KIND_LABELS: Record<string, string> = {
@@ -280,6 +320,197 @@ function DocKindChangeDialog({
   );
 }
 
+function PermanentDeleteDialog({
+  open, folderId, ids, onClose, onDone, onUnknown,
+}: {
+  open: boolean;
+  folderId: string;
+  ids: string[];
+  onClose: () => void;
+  onDone: (result: BatchDeleteResponse) => void | Promise<void>;
+  onUnknown: () => void | Promise<void>;
+}) {
+  const [preview, setPreview] = useState<DeletePreviewResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState({ completed: 0, total: 0 });
+  const [error, setError] = useState("");
+
+  async function requestPreview(requestIds: string[]) {
+    const response = await fetch("/api/document-instances/batch/delete-preview", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder_id: folderId, ids: requestIds }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.detail || "无法检查删除范围");
+    return body as DeletePreviewResponse;
+  }
+
+  async function loadPreview(message = "") {
+    setLoading(true);
+    setError(message);
+    try {
+      setPreview(await requestPreview(ids));
+    } catch (reason) {
+      setPreview(null);
+      setError(reason instanceof Error ? reason.message : "无法检查删除范围");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (open) void loadPreview();
+    else {
+      setPreview(null);
+      setError("");
+      setDeleteProgress({ completed: 0, total: 0 });
+    }
+  }, [open, folderId, ids.join("\u0000")]);
+
+  async function submit() {
+    if (!preview || preview.eligible === 0) return;
+    setSubmitting(true);
+    setError("");
+    const eligibleIds = preview.results
+      .filter((item) => item.status === "eligible")
+      .map((item) => item.id);
+    setDeleteProgress({ completed: 0, total: eligibleIds.length });
+    try {
+      const latest = await requestPreview(ids);
+      if (latest.confirmation_token !== preview.confirmation_token) {
+        setPreview(latest);
+        setError("删除范围或文档状态已变化，请重新确认");
+        return;
+      }
+      const initialImpact = new Map(
+        preview.results.map((item) => [item.id, item]),
+      );
+      const results: BatchDeleteResult[] = [];
+      const warnings: string[] = [];
+      for (let offset = 0; offset < eligibleIds.length; offset += 5) {
+        const chunkIds = eligibleIds.slice(offset, offset + 5);
+        const chunkPreview = await requestPreview(chunkIds);
+        const impactChanged = chunkPreview.results.some((item) => {
+          const initial = initialImpact.get(item.id);
+          return !initial
+            || item.status !== "eligible"
+            || item.articles !== initial.articles
+            || item.summaries !== initial.summaries;
+        });
+        if (impactChanged) {
+          await onUnknown();
+          await loadPreview(
+            `已处理 ${results.length} 篇；剩余文档范围已变化，请重新确认。`,
+          );
+          return;
+        }
+        const response = await fetch("/api/document-instances/batch/delete", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            folder_id: folderId,
+            ids: chunkIds,
+            confirmation_token: chunkPreview.confirmation_token,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 409 && body.detail?.code === "impact_changed") {
+          await onUnknown();
+          await loadPreview(
+            `已处理 ${results.length} 篇；删除范围刚刚发生变化，请重新确认。`,
+          );
+          return;
+        }
+        if (!response.ok) throw new Error(body.detail || "批量永久删除失败");
+        const chunkResult = body as BatchDeleteResponse;
+        results.push(...chunkResult.results);
+        warnings.push(...chunkResult.file_warnings);
+        setDeleteProgress({
+          completed: Math.min(offset + chunkIds.length, eligibleIds.length),
+          total: eligibleIds.length,
+        });
+      }
+      const nonEligibleResults: BatchDeleteResult[] = latest.results
+        .filter((item) => item.status !== "eligible")
+        .map((item) => ({
+          id: item.id,
+          status: item.status === "failed" ? "failed" : "skipped",
+          detail: item.detail,
+          file_warnings: [],
+        }));
+      const allResults = [...results, ...nonEligibleResults];
+      await onDone({
+        deleted: allResults.filter((item) => item.status === "deleted").length,
+        skipped: allResults.filter((item) => item.status === "skipped").length,
+        failed: allResults.filter((item) => item.status === "failed").length,
+        file_warnings: warnings,
+        results: allResults,
+      });
+      onClose();
+    } catch {
+      await onUnknown();
+      setPreview(null);
+      setError("请求结果未能确认，列表已刷新；请关闭窗口核对状态后再重试。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && !submitting && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>永久删除所选文档</DialogTitle></DialogHeader>
+        {loading && <p className="text-sm text-muted-foreground">正在检查删除范围…</p>}
+        {preview && (
+          <div className="space-y-3 text-sm">
+            <p className="font-medium text-destructive">此操作不可恢复。</p>
+            <p>
+              选择 {preview.documents} 篇，可删除 {preview.eligible} 篇；将删除关联文章 {preview.articles} 篇、
+              摘要 {preview.summaries} 篇和独占文件 {preview.removable_files} 个。
+            </p>
+            {preview.shared_files > 0 && (
+              <p className="text-muted-foreground">
+                另有 {preview.shared_files} 个共享文件仍被其他文档引用，将予以保留。
+              </p>
+            )}
+            {(preview.blocked > 0 || preview.skipped > 0 || preview.failed > 0) && (
+              <div className="max-h-40 space-y-1 overflow-auto rounded border p-2 text-xs">
+                {preview.results
+                  .filter((item) => item.status !== "eligible")
+                  .map((item) => (
+                    <p key={item.id}>
+                      <span className="font-medium">{item.name}</span>：{item.detail}
+                    </p>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {submitting && deleteProgress.total > 0 && (
+          <p className="text-sm text-muted-foreground">
+            正在按小批次删除：已处理 {deleteProgress.completed} / {deleteProgress.total} 篇
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button
+            variant="destructive"
+            onClick={submit}
+            disabled={loading || submitting || !preview || preview.eligible === 0}
+          >
+            {submitting ? "删除中…" : preview ? `确认永久删除 ${preview.eligible} 篇` : "确认永久删除"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function FoldersPage() {
@@ -402,9 +633,13 @@ export default function FoldersPage() {
     const r = await fetch(`/api/document-instances/${di.id}?hard=true`, {
       method: "DELETE", credentials: "include",
     });
-    if (r.ok || r.status === 204) {
-      if (activeFolderId) loadContents(activeFolderId);
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      if (!body.ok) alert(body.detail || "数据库已删除，但部分文件清理失败");
+      await refreshCurrentFolder();
       if (selectedItem?.id === di.id) setSelectedItem(null);
+    } else {
+      alert(body.detail || "永久删除失败");
     }
   }
 
@@ -666,6 +901,7 @@ function FolderContentsPanel({
   const [batchPollCount, setBatchPollCount] = useState(0);
   const [batchPollingExpired, setBatchPollingExpired] = useState(false);
   const [showDocKindDialog, setShowDocKindDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -678,6 +914,7 @@ function FolderContentsPanel({
     setBatchPollCount(0);
     setBatchPollingExpired(false);
     setShowDocKindDialog(false);
+    setShowDeleteDialog(false);
   }, [folder.id]);
 
   const searchTerms = useMemo(
@@ -700,7 +937,7 @@ function FolderContentsPanel({
     });
   }, [items, searchTerms]);
   const selectableItems = useMemo(
-    () => filteredItems.filter((item) => !["ignored", "deleted", "processing"].includes(item.status)),
+    () => filteredItems.filter((item) => !["deleted", "processing"].includes(item.status)),
     [filteredItems],
   );
   const allFilteredSelected = selectableItems.length > 0
@@ -930,6 +1167,32 @@ function FolderContentsPanel({
     }
   }
 
+  async function handlePermanentDeleteDone(result: BatchDeleteResponse) {
+    const completed = new Set(
+      result.results
+        .filter((item) => item.status !== "failed")
+        .map((item) => item.id),
+    );
+    setSelectedIds((previous) => new Set([...previous].filter((id) => !completed.has(id))));
+    const summary = [`已永久删除 ${result.deleted} 篇`];
+    if (result.skipped) summary.push(`跳过 ${result.skipped} 篇`);
+    if (result.failed) summary.push(`失败 ${result.failed} 篇`);
+    if (result.file_warnings.length > 0) {
+      summary.push(`文件清理警告 ${result.file_warnings.length} 项`);
+    }
+    const details = result.results.flatMap((item) => {
+      if (item.status !== "failed" && item.file_warnings.length === 0) return [];
+      return [item.detail, ...item.file_warnings];
+    });
+    setBatchNotice({
+      text: details.length > 0
+        ? `${summary.join("，")}：${[...new Set(details)].join("；")}`
+        : summary.join("，"),
+      error: result.failed > 0 || result.file_warnings.length > 0,
+    });
+    await onRefresh();
+  }
+
   async function handleDocKindChanged(result: BatchDocKindResponse) {
     const completed = new Set(
       result.results
@@ -1055,6 +1318,15 @@ function FolderContentsPanel({
               >
                 修改内容类型
               </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7 text-xs"
+                disabled={batchBusy}
+                onClick={() => setShowDeleteDialog(true)}
+              >
+                永久删除
+              </Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={batching} onClick={() => setSelectedIds(new Set())}>
                 取消选择
               </Button>
@@ -1107,7 +1379,7 @@ function FolderContentsPanel({
                   item={item}
                   selected={selectedItem?.id === item.id}
                   checked={selectedIds.has(item.id)}
-                  selectable={!['ignored', 'deleted', 'processing'].includes(item.status)}
+                  selectable={!['deleted', 'processing'].includes(item.status)}
                   onClick={() => onSelectItem(selectedItem?.id === item.id ? null : item)}
                   onCheckedChange={() => toggleSelected(item.id)}
                   onDelete={() => onDelete(item)}
@@ -1126,6 +1398,14 @@ function FolderContentsPanel({
         ids={[...selectedIds]}
         onClose={() => setShowDocKindDialog(false)}
         onDone={handleDocKindChanged}
+      />
+      <PermanentDeleteDialog
+        open={showDeleteDialog}
+        folderId={folder.id}
+        ids={[...selectedIds]}
+        onClose={() => setShowDeleteDialog(false)}
+        onDone={handlePermanentDeleteDone}
+        onUnknown={onRefresh}
       />
     </div>
   );
@@ -1164,7 +1444,7 @@ function DocumentRow({
           checked={checked}
           disabled={!selectable}
           aria-label={`选择 ${name}`}
-          title={selectable ? `选择 ${name}` : "处理中或已归档的文档不可选择"}
+          title={selectable ? `选择 ${name}` : "处理中的文档不可选择"}
           onChange={onCheckedChange}
         />
       </td>
@@ -1214,7 +1494,8 @@ function DocumentRow({
             >归档</button>
           )}
           <button
-            className="text-xs text-destructive hover:underline"
+            className="text-xs text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={item.status === "processing"}
             onClick={onHardDelete}
           >删除</button>
         </div>
@@ -1374,6 +1655,7 @@ function DetailDrawer({
             size="sm"
             variant="outline"
             className="w-full text-destructive border-destructive/30 hover:bg-destructive/10"
+            disabled={item.status === "processing"}
             onClick={onHardDelete}
           >
             删除（含摘要，不可恢复）

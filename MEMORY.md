@@ -173,7 +173,8 @@ CRUD + wechat2rss 专属接口 + source-items 状态管理 + doc_kind 覆盖（`
 **Document Instances**：`GET/PATCH/DELETE /api/document-instances/{id}`、`POST .../copy`、`POST .../reprocess`
 - `POST .../reprocess`：只支持恰好关联一篇 article 的文档；持久化 `reprocess_requested_at` 后把条目置为 pending，并用其真实 source id 触发 worker。多 article 文档返回 409，防止误更新任意章节。
 - `POST /api/document-instances/batch/reprocess`：逐项持久化并反馈 accepted/skipped/failed，再按真实 source id 去重触发 worker；触发失败时 pending 轮询继续兜底。
-- `DELETE /{id}`：默认软删（归档，status='ignored'）；`?hard=true` 硬删除——删该 di 的 article 节点 + **其所有 summary**（节点 + wiki 文件，DB 只级联 summary_nodes 行，故须显式删 summary 节点）+ raw/extracted 文件，并把 source_item / document_instance 置 `deleted` 墓碑，同时从 `entity_candidates`/`entity_pair_signals` 的 `source_article_ids` 数组剔除该 id。实现见 `folders.py:_hard_delete_document_instance`。
+- `POST /api/document-instances/batch/delete-preview` + `/batch/delete`：先返回文章/摘要/独占与共享文件影响范围及确认 token；提交时范围变化返回 409 要求重确认。数据库派生数据按文档事务删除，source item/document instance 保留 deleted 墓碑；共享文件保留，文件清理失败单独报告并记录供重试。
+- `DELETE /{id}`：默认软删（归档，status='ignored'）；`?hard=true` 硬删除——在单文档事务内删除 article + **其所有 summary**，更新 entity 派生数组并写入 source_item/document_instance 的 `deleted` 墓碑；提交后删除 Wiki 与未共享的 raw/extracted 文件。实现见 `folders.py:_hard_delete_document_instance`。
 
 **Connectors**：`GET/POST /api/connectors`、`PATCH/DELETE /api/connectors/{id}`、`POST /api/connectors/{id}/sync`（触发 ingestion-worker）
 

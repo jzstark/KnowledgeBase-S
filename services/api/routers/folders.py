@@ -17,6 +17,7 @@ ID 映射约定：
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -37,8 +38,7 @@ from document_types import (
     validate_explicit_doc_kind,
 )
 from settings import settings
-from kb.internal import do_delete_node
-from kb.summary import do_delete_summary
+from kb.wiki import wiki_file_path
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
 di_router = APIRouter(prefix="/api/document-instances", tags=["document-instances"])
@@ -556,6 +556,10 @@ class DocumentInstanceDocKindBatchRequest(DocumentInstanceBatchRequest):
     doc_kind: str
 
 
+class DocumentInstanceDeleteBatchRequest(DocumentInstanceBatchRequest):
+    confirmation_token: str
+
+
 async def _archive_document_instance(
     di_id: str,
     *,
@@ -822,91 +826,468 @@ async def copy_document_instance(
     return await get_document_instance(new_di_id, _)
 
 
-async def _delete_di_files(di_id: str) -> None:
-    """Unlink the raw-snapshot / extracted-text files for a document instance.
-    Only removes files that resolve inside USER_DATA_DIR; URLs and missing refs
-    are skipped."""
+def _managed_file_path(ref: str | None) -> Path | None:
+    """Resolve a stored reference only when it points inside user_data."""
+    if not ref:
+        return None
+    try:
+        path = Path(ref).resolve()
+    except (OSError, ValueError):
+        return None
+    return path if path.is_relative_to(USER_DATA_DIR.resolve()) else None
+
+
+async def _document_file_paths(di_ids: set[str]) -> set[Path]:
+    if not di_ids:
+        return set()
     rows = await database.database.fetch_all(
         """
         SELECT ra.storage_key, si.raw_snapshot_ref, si.extracted_text_ref
         FROM document_instances di
         LEFT JOIN raw_assets ra ON ra.id = di.raw_asset_id
         LEFT JOIN source_items si ON si.document_instance_id = di.id
-        WHERE di.id = :id
+        WHERE di.id = ANY(:ids)
         """,
-        {"id": di_id},
+        {"ids": list(di_ids)},
     )
-    base = USER_DATA_DIR.resolve()
-    for r in rows:
-        for ref in (r["storage_key"], r["raw_snapshot_ref"], r["extracted_text_ref"]):
-            if not ref:
-                continue
-            try:
-                p = Path(ref).resolve()
-            except (OSError, ValueError):
-                continue
-            if p.is_file() and p.is_relative_to(base):
-                p.unlink(missing_ok=True)
+    paths: set[Path] = set()
+    for row in rows:
+        for ref in (row["storage_key"], row["raw_snapshot_ref"], row["extracted_text_ref"]):
+            path = _managed_file_path(ref)
+            if path and path.is_file():
+                paths.add(path)
+    return paths
 
 
-async def _hard_delete_article(node_id: str) -> None:
-    """Delete an article node and everything hanging off it: all its summaries
-    (their own knowledge_nodes + wiki files — the DB only cascades the
-    summary_nodes row, not the summary node), then the article node, then prune
-    the article id from the non-FK array columns."""
-    summary_rows = await database.database.fetch_all(
-        "SELECT node_id FROM summary_nodes WHERE summary_of = :id", {"id": node_id},
+async def _shared_file_paths(paths: set[Path], excluded_di_ids: set[str]) -> set[Path]:
+    """Return candidate paths still referenced by a non-deleted document/item."""
+    if not paths:
+        return set()
+    rows = await database.database.fetch_all(
+        """
+        SELECT ra.storage_key AS ref
+        FROM document_instances di
+        JOIN raw_assets ra ON ra.id = di.raw_asset_id
+        WHERE di.status <> 'deleted'
+          AND NOT (di.id = ANY(:excluded_ids))
+        UNION ALL
+        SELECT si.raw_snapshot_ref AS ref
+        FROM source_items si
+        WHERE si.status <> 'deleted'
+          AND (si.document_instance_id IS NULL
+               OR NOT (si.document_instance_id = ANY(:excluded_ids)))
+        UNION ALL
+        SELECT si.extracted_text_ref AS ref
+        FROM source_items si
+        WHERE si.status <> 'deleted'
+          AND (si.document_instance_id IS NULL
+               OR NOT (si.document_instance_id = ANY(:excluded_ids)))
+        """,
+        {"excluded_ids": list(excluded_di_ids)},
     )
-    for s in summary_rows:
-        try:
-            await do_delete_summary(s["node_id"])
-        except ValueError:
-            pass  # already gone
-    await do_delete_node(node_id)
-    for table in ("entity_candidates", "entity_pair_signals"):
-        await database.database.execute(
-            f"UPDATE {table} SET source_article_ids = array_remove(source_article_ids, :id), "
-            "updated_at = NOW() WHERE :id = ANY(source_article_ids)",
-            {"id": node_id},
-        )
+    referenced = {
+        path
+        for row in rows
+        if (path := _managed_file_path(row["ref"])) is not None
+    }
+    return paths & referenced
 
 
-async def _hard_delete_document_instance(di_id: str) -> None:
-    """Permanently delete the article(s) behind a document instance plus their
-    summaries and raw files, and tombstone the source item / document instance as
-    'deleted' so a subscription feed re-listing the item won't resurrect it."""
-    article_rows = await database.database.fetch_all(
-        "SELECT node_id FROM article_nodes WHERE document_instance_id = :id", {"id": di_id},
-    )
-    for a in article_rows:
-        await _hard_delete_article(a["node_id"])
-
-    await _delete_di_files(di_id)
-
-    await database.database.execute(
-        "UPDATE source_items SET status = 'deleted', updated_at = NOW() WHERE document_instance_id = :id",
-        {"id": di_id},
-    )
-    await database.database.execute(
-        "UPDATE document_instances SET status = 'deleted', updated_at = NOW() WHERE id = :id",
-        {"id": di_id},
-    )
-
-
-@di_router.delete("/{di_id}", status_code=204)
-async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Depends(require_auth)):
-    row = await database.database.fetch_one(
-        "SELECT id FROM document_instances WHERE id = :id AND user_id = :uid",
+async def _delete_impact(
+    di_id: str,
+    *,
+    folder_id: str,
+) -> dict:
+    di = await database.database.fetch_one(
+        """
+        SELECT id, folder_id, display_name, origin_ref, status
+        FROM document_instances
+        WHERE id = :id AND user_id = :uid
+        """,
         {"id": di_id, "uid": USER_ID},
     )
-    if not row:
-        raise HTTPException(404, "文档实例不存在")
-    if hard:
-        await _hard_delete_document_instance(di_id)
+    if not di:
+        return {
+            "id": di_id, "name": di_id, "status": "failed",
+            "detail": "文档不存在", "articles": 0, "summaries": 0,
+            "removable_files": 0, "shared_files": 0,
+        }
+    name = di["display_name"] or di["origin_ref"] or di_id
+    if di["folder_id"] != folder_id:
+        return {
+            "id": di_id, "name": name, "status": "failed",
+            "detail": "文档不属于当前资料夹", "articles": 0, "summaries": 0,
+            "removable_files": 0, "shared_files": 0,
+        }
+    if di["status"] == "deleted":
+        return {
+            "id": di_id, "name": name, "status": "skipped",
+            "detail": "文档已经永久删除", "articles": 0, "summaries": 0,
+            "removable_files": 0, "shared_files": 0,
+        }
+    source_rows = await database.database.fetch_all(
+        "SELECT id, status FROM source_items WHERE document_instance_id = :id",
+        {"id": di_id},
+    )
+    if di["status"] == "processing" or any(
+        row["status"] == "processing" for row in source_rows
+    ):
+        impact_status = "blocked"
+        detail = "文档正在处理，不能永久删除"
     else:
-        result, detail = await _archive_document_instance(di_id)
-        if result == "failed":
-            raise HTTPException(409, detail)
+        impact_status = "eligible"
+        detail = "可永久删除"
+    article_rows = await database.database.fetch_all(
+        """
+        SELECT DISTINCT an.node_id
+        FROM article_nodes an
+        WHERE an.document_instance_id = :di_id
+           OR an.source_item_id IN (
+                SELECT id FROM source_items WHERE document_instance_id = :di_id
+           )
+        """,
+        {"di_id": di_id},
+    )
+    article_ids = [row["node_id"] for row in article_rows]
+    summary_count = 0
+    if article_ids:
+        summary_count = int(await database.database.fetch_val(
+            "SELECT COUNT(*) FROM summary_nodes WHERE summary_of = ANY(:article_ids)",
+            {"article_ids": article_ids},
+        ) or 0)
+    return {
+        "id": di_id,
+        "name": name,
+        "status": impact_status,
+        "detail": detail,
+        "articles": len(article_ids),
+        "summaries": summary_count,
+        "removable_files": 0,
+        "shared_files": 0,
+    }
+
+
+async def _build_delete_preview(folder_id: str, ids: list[str]) -> dict:
+    unique_ids = list(dict.fromkeys(ids))
+    results = [
+        await _delete_impact(di_id, folder_id=folder_id)
+        for di_id in unique_ids
+    ]
+    eligible_ids = {item["id"] for item in results if item["status"] == "eligible"}
+    for item in results:
+        if item["status"] != "eligible":
+            continue
+        item_paths = await _document_file_paths({item["id"]})
+        item_shared_paths = await _shared_file_paths(item_paths, eligible_ids)
+        item["removable_files"] = len(item_paths - item_shared_paths)
+        item["shared_files"] = len(item_shared_paths)
+    batch_paths = await _document_file_paths(eligible_ids)
+    shared_paths = await _shared_file_paths(batch_paths, eligible_ids)
+    fingerprint_payload = [
+        {
+            key: item[key]
+            for key in (
+                "id", "status", "articles", "summaries",
+                "removable_files", "shared_files",
+            )
+        }
+        for item in results
+    ]
+    token = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "confirmation_token": token,
+        "documents": len(results),
+        "eligible": sum(item["status"] == "eligible" for item in results),
+        "blocked": sum(item["status"] == "blocked" for item in results),
+        "skipped": sum(item["status"] == "skipped" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "articles": sum(
+            item["articles"] for item in results if item["status"] == "eligible"
+        ),
+        "summaries": sum(
+            item["summaries"] for item in results if item["status"] == "eligible"
+        ),
+        "removable_files": len(batch_paths - shared_paths),
+        "shared_files": len(shared_paths),
+        "results": results,
+    }
+
+
+async def _hard_delete_document_instance(
+    di_id: str,
+    *,
+    folder_id: str | None = None,
+) -> dict:
+    """Atomically delete DB derivatives, then best-effort delete unshared files."""
+    raw_paths = await _document_file_paths({di_id})
+    wiki_paths: set[Path] = set()
+    pending_cleanup_paths: set[Path] = set()
+    already_deleted = False
+    article_ids: list[str] = []
+    summary_ids: list[str] = []
+
+    async with database.database.transaction():
+        di = await database.database.fetch_one(
+            """
+            SELECT id, folder_id, status
+            FROM document_instances
+            WHERE id = :id AND user_id = :uid
+            FOR UPDATE
+            """,
+            {"id": di_id, "uid": USER_ID},
+        )
+        if not di:
+            return {"id": di_id, "status": "failed", "detail": "文档不存在", "file_warnings": []}
+        if folder_id is not None and di["folder_id"] != folder_id:
+            return {
+                "id": di_id, "status": "failed",
+                "detail": "文档不属于当前资料夹", "file_warnings": [],
+            }
+        source_rows = await database.database.fetch_all(
+            """
+            SELECT id, status, error
+            FROM source_items
+            WHERE document_instance_id = :id
+            FOR UPDATE
+            """,
+            {"id": di_id},
+        )
+        for row in source_rows:
+            error = row["error"] or ""
+            if not error.startswith("file_cleanup_pending:"):
+                continue
+            try:
+                refs = json.loads(error.removeprefix("file_cleanup_pending:"))
+            except (json.JSONDecodeError, TypeError):
+                refs = []
+            for ref in refs if isinstance(refs, list) else []:
+                path = _managed_file_path(ref)
+                if path:
+                    pending_cleanup_paths.add(path)
+        already_deleted = di["status"] == "deleted"
+        if not already_deleted and (
+            di["status"] == "processing" or any(
+                row["status"] == "processing" for row in source_rows
+            )
+        ):
+            return {
+                "id": di_id, "status": "failed",
+                "detail": "文档正在处理，不能永久删除", "file_warnings": [],
+            }
+        if not already_deleted:
+            article_rows = await database.database.fetch_all(
+                """
+                SELECT DISTINCT an.node_id
+                FROM article_nodes an
+                WHERE an.document_instance_id = :di_id
+                   OR an.source_item_id IN (
+                        SELECT id FROM source_items WHERE document_instance_id = :di_id
+                   )
+                """,
+                {"di_id": di_id},
+            )
+            article_ids = [row["node_id"] for row in article_rows]
+        if not already_deleted and article_ids:
+            summary_rows = await database.database.fetch_all(
+                "SELECT node_id FROM summary_nodes WHERE summary_of = ANY(:article_ids)",
+                {"article_ids": article_ids},
+            )
+            summary_ids = [row["node_id"] for row in summary_rows]
+            entity_rows = await database.database.fetch_all(
+                "SELECT DISTINCT entity_id FROM entity_facts WHERE article_id = ANY(:article_ids)",
+                {"article_ids": article_ids},
+            )
+            entity_ids = [row["entity_id"] for row in entity_rows]
+            if entity_ids:
+                await database.database.execute(
+                    "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() "
+                    "WHERE node_id = ANY(:entity_ids)",
+                    {"entity_ids": entity_ids},
+                )
+            for article_id in article_ids:
+                await database.database.execute(
+                    """
+                    UPDATE entity_candidates
+                    SET source_article_ids = array_remove(
+                            COALESCE(source_article_ids, '{}'::text[]), :article_id),
+                        mention_count = GREATEST(COALESCE(mention_count, 0) - 1, 0),
+                        updated_at = NOW()
+                    WHERE :article_id = ANY(COALESCE(source_article_ids, '{}'::text[]))
+                    """,
+                    {"article_id": article_id},
+                )
+                await database.database.execute(
+                    """
+                    UPDATE entity_pair_signals
+                    SET source_article_ids = array_remove(
+                            COALESCE(source_article_ids, '{}'::text[]), :article_id),
+                        co_occurrence_count = GREATEST(COALESCE(co_occurrence_count, 0) - 1, 0),
+                        updated_at = NOW()
+                    WHERE :article_id = ANY(COALESCE(source_article_ids, '{}'::text[]))
+                    """,
+                    {"article_id": article_id},
+                )
+            await database.database.execute(
+                "DELETE FROM entity_candidates WHERE promoted_entity_id IS NULL "
+                "AND cardinality(COALESCE(source_article_ids, '{}'::text[])) = 0"
+            )
+            await database.database.execute(
+                "DELETE FROM entity_pair_signals "
+                "WHERE cardinality(COALESCE(source_article_ids, '{}'::text[])) = 0"
+            )
+        if not already_deleted and summary_ids:
+            await database.database.execute(
+                "DELETE FROM knowledge_nodes WHERE id = ANY(:ids)", {"ids": summary_ids}
+            )
+        if not already_deleted and article_ids:
+            await database.database.execute(
+                "DELETE FROM knowledge_nodes WHERE id = ANY(:ids)", {"ids": article_ids}
+            )
+        if not already_deleted:
+            await database.database.execute(
+                """
+                UPDATE source_items
+                SET status = 'deleted', error = NULL, reprocess_requested_at = NULL,
+                    updated_at = NOW()
+                WHERE document_instance_id = :id
+                """,
+                {"id": di_id},
+            )
+            await database.database.execute(
+                "UPDATE document_instances SET status = 'deleted', updated_at = NOW() WHERE id = :id",
+                {"id": di_id},
+            )
+            wiki_paths.update(
+                wiki_file_path(USER_ID, node_id, "article") for node_id in article_ids
+            )
+            wiki_paths.update(
+                wiki_file_path(USER_ID, node_id, "summary") for node_id in summary_ids
+            )
+
+    # Re-check shared references after the DB commit.  Another document may have
+    # begun referencing the same asset while this deletion was running.
+    cleanup_paths = raw_paths | wiki_paths | pending_cleanup_paths
+    shared_paths = await _shared_file_paths(cleanup_paths, {di_id})
+    warnings = []
+    failed_paths = []
+    for path in sorted(cleanup_paths - shared_paths):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as exc:
+            warnings.append(f"{path.name}: {exc}")
+            failed_paths.append(path)
+    try:
+        pending_error = (
+            "file_cleanup_pending:" + json.dumps([str(path) for path in failed_paths])
+            if failed_paths else None
+        )
+        await database.database.execute(
+            "UPDATE source_items SET error = :error, updated_at = NOW() "
+            "WHERE document_instance_id = :id AND status = 'deleted'",
+            {"id": di_id, "error": pending_error},
+        )
+    except Exception as exc:
+        warnings.append(f"文件清理状态记录失败: {exc}")
+    return {
+        "id": di_id,
+        "status": "skipped" if already_deleted else "deleted",
+        "detail": (
+            "文档已删除，遗留文件清理完成" if already_deleted and not warnings
+            else "文档已删除，但遗留文件清理仍失败" if already_deleted
+            else "永久删除成功" if not warnings
+            else "数据库已删除，但部分文件清理失败"
+        ),
+        "articles": len(article_ids),
+        "summaries": len(summary_ids),
+        "shared_files_preserved": len(shared_paths),
+        "file_warnings": warnings,
+    }
+
+
+@di_router.post("/batch/delete-preview")
+async def preview_delete_document_instances(
+    body: DocumentInstanceBatchRequest,
+    _: dict = Depends(require_auth),
+) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        raise HTTPException(400, "至少选择一篇文档")
+    if len(ids) > 50:
+        raise HTTPException(400, "单次最多永久删除 50 篇文档")
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": body.folder_id, "uid": USER_ID},
+    )
+    if not folder:
+        raise HTTPException(404, "资料夹不存在")
+    return await _build_delete_preview(body.folder_id, ids)
+
+
+@di_router.post("/batch/delete")
+async def delete_document_instances(
+    body: DocumentInstanceDeleteBatchRequest,
+    _: dict = Depends(require_auth),
+) -> dict:
+    ids = list(dict.fromkeys(body.ids))
+    if not ids:
+        raise HTTPException(400, "至少选择一篇文档")
+    if len(ids) > 50:
+        raise HTTPException(400, "单次最多永久删除 50 篇文档")
+    folder = await database.database.fetch_one(
+        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
+        {"id": body.folder_id, "uid": USER_ID},
+    )
+    if not folder:
+        raise HTTPException(404, "资料夹不存在")
+    preview = await _build_delete_preview(body.folder_id, ids)
+    if preview["confirmation_token"] != body.confirmation_token:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "impact_changed",
+                "message": "删除范围或文档状态已变化，请重新确认",
+                "preview": preview,
+            },
+        )
+
+    results = []
+    for di_id in ids:
+        try:
+            result = await _hard_delete_document_instance(
+                di_id, folder_id=body.folder_id
+            )
+        except Exception:
+            logger.exception("failed to permanently delete document %s", di_id)
+            result = {
+                "id": di_id, "status": "failed",
+                "detail": "数据库删除失败，请核实状态后重试", "file_warnings": [],
+            }
+        results.append(result)
+    warnings = [warning for item in results for warning in item["file_warnings"]]
+    return {
+        "ok": all(item["status"] != "failed" for item in results) and not warnings,
+        "deleted": sum(item["status"] == "deleted" for item in results),
+        "skipped": sum(item["status"] == "skipped" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "file_warnings": warnings,
+        "results": results,
+    }
+
+
+@di_router.delete("/{di_id}")
+async def delete_document_instance(di_id: str, hard: bool = False, _: dict = Depends(require_auth)):
+    if hard:
+        result = await _hard_delete_document_instance(di_id)
+        if result["status"] == "failed":
+            raise HTTPException(409, result["detail"])
+        return {"ok": not result["file_warnings"], **result}
+    result, detail = await _archive_document_instance(di_id)
+    if result == "failed":
+        raise HTTPException(409, detail)
+    return {"ok": True, "status": result, "detail": detail}
 
 
 async def _queue_document_instance_reprocess(
