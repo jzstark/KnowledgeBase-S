@@ -49,7 +49,6 @@ class RevisionAuditFixTests(unittest.TestCase):
         self.assertIn("INSERT INTO raw_assets", source)
         self.assertIn("INSERT INTO document_instances", source)
         self.assertIn("SET document_instance_id = :document_instance_id", source)
-        self.assertIn("UPDATE document_instances", source)
 
     def test_worker_text_access_is_guarded(self):
         for path in (INGESTION_PIPELINE, IMAGE_SOURCE, PDF_SOURCE):

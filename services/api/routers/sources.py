@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from pydantic import BaseModel
 
 import database
+import document_lifecycle
 from document_types import DocumentTypeError, set_source_item_doc_kind
 from settings import settings
 from auth import require_auth, require_auth_or_service_token
@@ -552,98 +553,26 @@ async def update_source_item_status(
     body: SourceItemStatusUpdate,
     _: dict = Depends(require_auth_or_service_token),
 ):
-    if body.status not in {"pending", "processing", "succeeded", "failed", "ignored", "deleted"}:
-        raise HTTPException(400, "不支持的 source item 状态")
-
-    updates = ["status = :status", "updated_at = NOW()"]
-    params: dict[str, Any] = {
-        "id": item_id,
-        "status": body.status,
-    }
-    if body.status == "processing":
-        updates.append("attempts = attempts + 1")
-        updates.append("error = NULL")
-    elif body.status == "failed":
-        updates.append("error = :error")
-        params["error"] = body.error[:4000] if body.error else None
-    elif body.status == "succeeded":
-        updates.append("error = NULL")
-        updates.append("reprocess_requested_at = NULL")
-    if body.raw_snapshot_ref is not None:
-        updates.append("raw_snapshot_ref = :raw_snapshot_ref")
-        params["raw_snapshot_ref"] = body.raw_snapshot_ref
-    if body.extracted_text_ref is not None:
-        updates.append("extracted_text_ref = :extracted_text_ref")
-        params["extracted_text_ref"] = body.extracted_text_ref
-    if body.title is not None:
-        updates.append("title = :title")
-        params["title"] = body.title
-
-    where = "id = :id"
-    if body.status not in {"ignored", "deleted"}:
-        # User archive/delete states are terminal for worker callbacks. This
-        # also keeps an older worker from changing an archived claim to failed
-        # during a staggered deployment.
-        where += " AND status NOT IN ('ignored', 'deleted')"
-    if body.status == "processing":
-        # Claim pending work atomically. An item archived after the worker listed
-        # it must not be moved back to processing.
-        where += " AND status = 'pending'"
-        if not body.reprocess_capable:
-            # During a staggered deployment, an older worker must not consume an
-            # explicit regeneration request and turn it into a normal dedup skip.
-            where += " AND reprocess_requested_at IS NULL"
-
-    row = await database.database.fetch_one(
-        f"""
-        UPDATE source_items
-        SET {', '.join(updates)}
-        WHERE {where}
-        RETURNING *
-        """,
-        params,
-    )
-    if not row:
-        current_status = await database.database.fetch_val(
-            "SELECT status FROM source_items WHERE id = :id", {"id": item_id},
+    try:
+        row = await document_lifecycle.report_source_item_status(
+            item_id, body.status,
+            raw_snapshot_ref=body.raw_snapshot_ref,
+            extracted_text_ref=body.extracted_text_ref,
+            error=body.error,
+            title=body.title,
+            reprocess_capable=body.reprocess_capable,
         )
-        if current_status is None:
-            raise HTTPException(404, "source item 不存在")
-        if body.status == "processing":
-            raise HTTPException(409, f"source item 当前状态为 {current_status}，不能领取")
-        raise HTTPException(409, "source item 状态已变化")
-    if row["document_instance_id"]:
-        await database.database.execute(
-            """
-            UPDATE document_instances
-            SET status = :status,
-                display_name = COALESCE(:title, display_name),
-                updated_at = NOW()
-            WHERE id = :id
-            """,
-            {"id": row["document_instance_id"], "status": body.status, "title": body.title},
-        )
+    except document_lifecycle.LifecycleError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     return _serialize_source_item(row)
 
 
 @router.post("/source-items/{item_id}/retry")
 async def retry_source_item(item_id: str, _: dict = Depends(require_auth)):
-    row = await database.database.fetch_one(
-        """
-        UPDATE source_items
-        SET status = 'pending', error = NULL, updated_at = NOW()
-        WHERE id = :id AND status = 'failed'
-        RETURNING *
-        """,
-        {"id": item_id},
-    )
-    if not row:
-        raise HTTPException(404, "failed source item 不存在")
-    if row["document_instance_id"]:
-        await database.database.execute(
-            "UPDATE document_instances SET status = 'pending', updated_at = NOW() WHERE id = :id",
-            {"id": row["document_instance_id"]},
-        )
+    try:
+        row = await document_lifecycle.retry_source_item(item_id)
+    except document_lifecycle.LifecycleError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
     return _serialize_source_item(row)
 
 

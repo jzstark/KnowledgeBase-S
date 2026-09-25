@@ -231,6 +231,18 @@ async def set_source_item_doc_kind(
 
     effective_doc_kind = doc_kind or item["default_doc_kind"] or settings.doc_kind.default
     async with database.database.transaction():
+        document_id = item["document_instance_id"]
+        document = None
+        if document_id:
+            document = await database.database.fetch_one(
+                """
+                SELECT status
+                FROM document_instances
+                WHERE id = :id AND user_id = :uid
+                FOR UPDATE
+                """,
+                {"id": document_id, "uid": user_id},
+            )
         locked_item = await database.database.fetch_one(
             """
             SELECT id, status, document_instance_id
@@ -242,20 +254,12 @@ async def set_source_item_doc_kind(
         )
         if not locked_item:
             raise DocumentTypeError("source item 不存在", 404)
+        if locked_item["document_instance_id"] != document_id:
+            raise DocumentTypeError("source item 关联文档已变化", 409)
         if locked_item["status"] == "processing":
             raise DocumentTypeError("文档正在处理，请完成后再修改类型", 409)
-        if locked_item["document_instance_id"]:
-            document = await database.database.fetch_one(
-                """
-                SELECT status
-                FROM document_instances
-                WHERE id = :id AND user_id = :uid
-                FOR UPDATE
-                """,
-                {"id": locked_item["document_instance_id"], "uid": user_id},
-            )
-            if document and document["status"] == "processing":
-                raise DocumentTypeError("文档正在处理，请完成后再修改类型", 409)
+        if document and document["status"] == "processing":
+            raise DocumentTypeError("文档正在处理，请完成后再修改类型", 409)
 
         if locked_item["document_instance_id"]:
             article_ids, summary_ids = await _related_node_ids(

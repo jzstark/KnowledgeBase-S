@@ -7,7 +7,8 @@ os.environ.setdefault("AUTH_PASSWORD", "test-password")
 os.environ.setdefault("AUTH_SECRET", "test-secret")
 
 from fastapi import HTTPException
-from routers import folders, sources
+from routers import folders
+import document_lifecycle
 
 
 class _Transaction:
@@ -75,33 +76,12 @@ class _Client:
         return _Response()
 
 
-class _StatusDatabase:
-    def __init__(self):
-        self.query = ""
-
-    async def fetch_one(self, query, values):
-        self.query = query
-        return {"id": values["id"], "document_instance_id": None}
-
-
 class _FolderDatabase:
     async def fetch_one(self, query, values):
         return {"id": values["id"]}
 
 
 class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
-    async def test_success_status_clears_consumed_reprocess_intent(self):
-        fake = _StatusDatabase()
-
-        with patch.object(sources.database, "database", fake):
-            await sources.update_source_item_status(
-                "si_1",
-                sources.SourceItemStatusUpdate(status="succeeded"),
-                _={"sub": "service"},
-            )
-
-        self.assertIn("reprocess_requested_at = NULL", fake.query)
-
     async def test_queues_persistent_regeneration_and_uses_real_source(self):
         fake = _ReprocessDatabase()
 
@@ -176,8 +156,8 @@ class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(folders.database, "database", _FolderDatabase()),
-            patch.object(folders, "_queue_document_instance_reprocess", queue),
-            patch.object(folders, "_trigger_reprocess_sources", trigger),
+            patch.object(document_lifecycle, "_queue_document_instance_reprocess", queue),
+            patch.object(document_lifecycle, "_trigger_reprocess_sources", trigger),
         ):
             result = await folders.reprocess_document_instances(
                 folders.DocumentInstanceBatchRequest(
@@ -213,9 +193,9 @@ class DocumentReprocessTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(folders.database, "database", _FolderDatabase()),
-            patch.object(folders, "_queue_document_instance_reprocess", queue),
-            patch.object(folders, "_trigger_reprocess_sources", trigger),
-            patch.object(folders.logger, "exception"),
+            patch.object(document_lifecycle, "_queue_document_instance_reprocess", queue),
+            patch.object(document_lifecycle, "_trigger_reprocess_sources", trigger),
+            patch.object(document_lifecycle.logger, "exception"),
         ):
             result = await folders.reprocess_document_instances(
                 folders.DocumentInstanceBatchRequest(

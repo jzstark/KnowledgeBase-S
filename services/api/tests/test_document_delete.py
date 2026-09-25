@@ -10,6 +10,7 @@ os.environ.setdefault("AUTH_SECRET", "test-secret")
 
 from fastapi import HTTPException
 from routers import folders
+import document_lifecycle
 
 
 class _Transaction:
@@ -85,11 +86,11 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
             return {path} if "di_1" in ids else set()
 
         with (
-            patch.object(folders, "_delete_impact", AsyncMock(side_effect=[eligible, blocked])),
-            patch.object(folders, "_document_file_paths", side_effect=file_paths),
-            patch.object(folders, "_shared_file_paths", AsyncMock(return_value=set())),
+            patch.object(document_lifecycle, "_delete_impact", AsyncMock(side_effect=[eligible, blocked])),
+            patch.object(document_lifecycle, "_document_file_paths", side_effect=file_paths),
+            patch.object(document_lifecycle, "_shared_file_paths", AsyncMock(return_value=set())),
         ):
-            preview = await folders._build_delete_preview("fld_1", ["di_1", "di_2"])
+            preview = await document_lifecycle._build_delete_preview("fld_1", ["di_1", "di_2"])
 
         self.assertEqual(preview["eligible"], 1)
         self.assertEqual(preview["blocked"], 1)
@@ -114,10 +115,10 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(folders.database, "database", fake),
-                patch.object(folders, "USER_DATA_DIR", base),
-                patch.object(folders, "wiki_file_path", wiki_path),
+                patch.object(document_lifecycle, "USER_DATA_DIR", base),
+                patch.object(document_lifecycle, "wiki_file_path", wiki_path),
             ):
-                result = await folders._hard_delete_document_instance(
+                result = await document_lifecycle._hard_delete_document_instance(
                     "di_1", folder_id="fld_1"
                 )
             self.assertFalse(raw.exists())
@@ -144,14 +145,14 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(folders.database, "database", fake),
-                patch.object(folders, "USER_DATA_DIR", base),
+                patch.object(document_lifecycle, "USER_DATA_DIR", base),
                 patch.object(
-                    folders,
+                    document_lifecycle,
                     "wiki_file_path",
                     lambda *_: base / "missing-wiki.md",
                 ),
             ):
-                result = await folders._hard_delete_document_instance("di_1")
+                result = await document_lifecycle._hard_delete_document_instance("di_1")
 
             self.assertTrue(raw.exists())
             self.assertEqual(result["shared_files_preserved"], 1)
@@ -165,9 +166,9 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(folders.database, "database", fake),
-                patch.object(folders, "USER_DATA_DIR", base),
+                patch.object(document_lifecycle, "USER_DATA_DIR", base),
             ):
-                result = await folders._hard_delete_document_instance("di_1")
+                result = await document_lifecycle._hard_delete_document_instance("di_1")
             self.assertTrue(raw.exists())
 
         self.assertEqual(result["status"], "failed")
@@ -183,15 +184,15 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(folders.database, "database", fake),
-                patch.object(folders, "USER_DATA_DIR", base),
+                patch.object(document_lifecycle, "USER_DATA_DIR", base),
                 patch.object(
-                    folders,
+                    document_lifecycle,
                     "wiki_file_path",
                     lambda *_: base / "missing-wiki.md",
                 ),
                 patch.object(Path, "unlink", side_effect=PermissionError("permission denied")),
             ):
-                result = await folders._hard_delete_document_instance("di_1")
+                result = await document_lifecycle._hard_delete_document_instance("di_1")
 
         self.assertEqual(result["status"], "deleted")
         self.assertEqual(len(result["file_warnings"]), 1)
@@ -209,9 +210,9 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(folders.database, "database", fake),
-                patch.object(folders, "USER_DATA_DIR", base),
+                patch.object(document_lifecycle, "USER_DATA_DIR", base),
             ):
-                result = await folders._hard_delete_document_instance("di_1")
+                result = await document_lifecycle._hard_delete_document_instance("di_1")
 
             self.assertFalse(leftover.exists())
 
@@ -235,7 +236,7 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch.object(folders.database, "database", _FolderDatabase()),
-            patch.object(folders, "_build_delete_preview", AsyncMock(return_value=preview)),
+            patch.object(document_lifecycle, "_build_delete_preview", AsyncMock(return_value=preview)),
         ):
             with self.assertRaises(HTTPException) as raised:
                 await folders.delete_document_instances(
@@ -264,8 +265,8 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch.object(folders.database, "database", _FolderDatabase()),
-            patch.object(folders, "_build_delete_preview", AsyncMock(return_value=preview)),
-            patch.object(folders, "_hard_delete_document_instance", delete_one),
+            patch.object(document_lifecycle, "_build_delete_preview", AsyncMock(return_value=preview)),
+            patch.object(document_lifecycle, "_hard_delete_document_instance", delete_one),
             patch.object(folders.logger, "exception"),
         ):
             result = await folders.delete_document_instances(

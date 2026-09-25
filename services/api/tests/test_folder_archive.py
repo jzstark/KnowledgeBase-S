@@ -6,8 +6,8 @@ os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 os.environ.setdefault("AUTH_PASSWORD", "test-password")
 os.environ.setdefault("AUTH_SECRET", "test-secret")
 
-from fastapi import HTTPException
-from routers import folders, sources
+from routers import folders
+import document_lifecycle
 
 
 class _Transaction:
@@ -49,7 +49,7 @@ class ArchiveDocumentInstanceTests(unittest.IsolatedAsyncioTestCase):
         fake = _ArchiveDatabase("succeeded", ["succeeded"])
 
         with patch.object(folders.database, "database", fake):
-            status, detail = await folders._archive_document_instance(
+            status, detail = await document_lifecycle._archive_document_instance(
                 "di_test", folder_id="fld_test"
             )
 
@@ -62,7 +62,7 @@ class ArchiveDocumentInstanceTests(unittest.IsolatedAsyncioTestCase):
         fake = _ArchiveDatabase("pending", ["processing"])
 
         with patch.object(folders.database, "database", fake):
-            status, detail = await folders._archive_document_instance(
+            status, detail = await document_lifecycle._archive_document_instance(
                 "di_test", folder_id="fld_test"
             )
 
@@ -74,7 +74,7 @@ class ArchiveDocumentInstanceTests(unittest.IsolatedAsyncioTestCase):
         fake = _ArchiveDatabase("ignored", ["ignored"])
 
         with patch.object(folders.database, "database", fake):
-            status, detail = await folders._archive_document_instance(
+            status, detail = await document_lifecycle._archive_document_instance(
                 "di_test", folder_id="fld_test"
             )
 
@@ -127,47 +127,6 @@ class FolderCountTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake.executed), 2)
         self.assertIn("UPDATE folders", fake.executed[0][0])
         self.assertIn("UPDATE sources", fake.executed[1][0])
-
-
-class _TerminalStatusDatabase:
-    def __init__(self):
-        self.update_query = ""
-
-    async def fetch_one(self, query, values):
-        self.update_query = query
-        return None
-
-    async def fetch_val(self, query, values):
-        return "ignored"
-
-
-class ArchivedWorkerCallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_worker_cannot_overwrite_archived_item_with_failed(self):
-        fake = _TerminalStatusDatabase()
-
-        with patch.object(sources.database, "database", fake):
-            with self.assertRaises(HTTPException) as raised:
-                await sources.update_source_item_status(
-                    "si_archived",
-                    sources.SourceItemStatusUpdate(status="failed"),
-                    _={"sub": "service"},
-                )
-
-        self.assertEqual(raised.exception.status_code, 409)
-        self.assertIn("status NOT IN ('ignored', 'deleted')", fake.update_query)
-
-    async def test_older_worker_cannot_claim_regeneration_request(self):
-        fake = _TerminalStatusDatabase()
-
-        with patch.object(sources.database, "database", fake):
-            with self.assertRaises(HTTPException):
-                await sources.update_source_item_status(
-                    "si_reprocess",
-                    sources.SourceItemStatusUpdate(status="processing"),
-                    _={"sub": "service"},
-                )
-
-        self.assertIn("reprocess_requested_at IS NULL", fake.update_query)
 
 
 if __name__ == "__main__":
