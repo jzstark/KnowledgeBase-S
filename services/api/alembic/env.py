@@ -16,8 +16,10 @@ target_metadata = None
 
 def _db_url() -> str:
     url = os.environ["DATABASE_URL"]
-    # Alembic runs on a sync driver (psycopg2); normalize an async URL if set.
-    return url.replace("postgresql+asyncpg://", "postgresql://")
+    # Alembic uses psycopg2 explicitly; SQLAlchemy's default PostgreSQL driver can change.
+    return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1).replace(
+        "postgresql://", "postgresql+psycopg2://", 1
+    )
 
 
 def run_migrations_offline() -> None:
