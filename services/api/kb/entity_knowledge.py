@@ -49,7 +49,7 @@ async def request_refresh(entity_id: str, *, user_id: str = "default") -> dict[s
     async with database.database.transaction():
         entity = await database.database.fetch_one(
             """
-            SELECT n.id FROM knowledge_nodes n JOIN entity_nodes en ON en.node_id = n.id
+            SELECT n.id, en.published_revision FROM knowledge_nodes n JOIN entity_nodes en ON en.node_id = n.id
             WHERE n.id = :id AND n.user_id = :uid AND en.merged_into IS NULL
             FOR UPDATE OF en
             """,
@@ -57,6 +57,9 @@ async def request_refresh(entity_id: str, *, user_id: str = "default") -> dict[s
         )
         if entity is None:
             raise EntityKnowledgeError("entity 不存在或已合并")
+        await _recover_legacy_sources_locked(
+            entity_id, user_id, read_legacy_wiki=entity["published_revision"] == 0,
+        )
         return await _request_locked(entity_id, user_id)
 
 
@@ -96,6 +99,61 @@ async def enqueue_pending(*, user_id: str = "default", limit: int = 100) -> dict
     return {"enqueued": len(rows)}
 
 
+async def _recover_legacy_sources_locked(
+    entity_id: str, user_id: str, *, read_legacy_wiki: bool,
+) -> list[Any]:
+    """Import old article links before a refresh reads the canonical source table."""
+    recovered = await database.database.fetch_all(
+        """INSERT INTO entity_sources (entity_id, article_id, user_id)
+           SELECT CAST(:entity AS VARCHAR), article.id, CAST(:uid AS VARCHAR)
+           FROM knowledge_nodes article
+           WHERE article.user_id = :uid AND article.object_type = 'article'
+             AND (
+               EXISTS (SELECT 1 FROM entity_facts ef
+                       WHERE ef.entity_id = :entity AND ef.article_id = article.id)
+               OR EXISTS (SELECT 1 FROM knowledge_edges ke
+                          WHERE ke.to_node_id = :entity AND ke.from_node_id = article.id
+                            AND ke.relation_type IN ('mentions', 'wikilink'))
+               OR EXISTS (SELECT 1 FROM entity_candidates ec
+                          WHERE ec.promoted_entity_id = :entity
+                            AND article.id = ANY(ec.source_article_ids))
+             )
+           ON CONFLICT (entity_id, article_id) DO NOTHING RETURNING article_id""",
+        {"entity": entity_id, "uid": user_id},
+    )
+    from kb.wiki import read_wiki_body, wiki_file_path
+    legacy = wiki_file_path(user_id, entity_id, "entity")
+    if read_legacy_wiki and legacy.is_file():
+        try:
+            metadata = yaml.safe_load(split_frontmatter(legacy.read_text(encoding="utf-8"))[0]) or {}
+            legacy_body = read_wiki_body(user_id, entity_id, "entity", limit=None)
+            if legacy_body:
+                await import_legacy_body(entity_id, legacy_body, user_id=user_id)
+            legacy_ids = (metadata.get("sources") or []) if isinstance(metadata, dict) else []
+            if isinstance(legacy_ids, list):
+                for legacy_id in legacy_ids:
+                    legacy_row = await database.database.fetch_one(
+                        """INSERT INTO entity_sources (entity_id, article_id, user_id)
+                           SELECT CAST(:entity AS VARCHAR), id, CAST(:uid AS VARCHAR)
+                           FROM knowledge_nodes
+                           WHERE id = :article AND user_id = :uid AND object_type = 'article'
+                           ON CONFLICT (entity_id, article_id) DO NOTHING RETURNING article_id""",
+                        {"entity": entity_id, "article": str(legacy_id), "uid": user_id},
+                    )
+                    if legacy_row:
+                        recovered.append(legacy_row)
+        except (OSError, yaml.YAMLError):
+            pass
+    await database.database.execute(
+        """INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
+           SELECT article_id, CAST(:entity AS VARCHAR), 'mentions', 0.5, 'entity_knowledge'
+           FROM entity_sources WHERE entity_id = :entity
+           ON CONFLICT (from_node_id, to_node_id, relation_type) DO NOTHING""",
+        {"entity": entity_id},
+    )
+    return recovered
+
+
 async def record_contribution(
     entity_id: str, article_id: str, *, user_id: str = "default",
     summary_hint: str | None = None, salience: float = 0.5,
@@ -119,54 +177,8 @@ async def record_contribution(
         )
         if not entity or not article:
             raise EntityKnowledgeError("entity 或来源文章不存在")
-        recovered = await database.database.fetch_all(
-            """INSERT INTO entity_sources (entity_id, article_id, user_id)
-               SELECT CAST(:entity AS VARCHAR), article.id, CAST(:uid AS VARCHAR)
-               FROM knowledge_nodes article
-               WHERE article.user_id = :uid AND article.object_type = 'article'
-                 AND (
-                   EXISTS (SELECT 1 FROM entity_facts ef
-                           WHERE ef.entity_id = :entity AND ef.article_id = article.id)
-                   OR EXISTS (SELECT 1 FROM knowledge_edges ke
-                              WHERE ke.to_node_id = :entity AND ke.from_node_id = article.id
-                                AND ke.relation_type = 'mentions')
-                   OR EXISTS (SELECT 1 FROM entity_candidates ec
-                              WHERE ec.promoted_entity_id = :entity
-                                AND article.id = ANY(ec.source_article_ids))
-                 )
-               ON CONFLICT (entity_id, article_id) DO NOTHING RETURNING article_id""",
-            {"entity": entity_id, "uid": user_id},
-        )
-        if entity["published_revision"] == 0:
-            from kb.wiki import read_wiki_body, wiki_file_path
-            legacy = wiki_file_path(user_id, entity_id, "entity")
-            if legacy.is_file():
-                try:
-                    metadata = yaml.safe_load(split_frontmatter(legacy.read_text(encoding="utf-8"))[0]) or {}
-                    legacy_body = read_wiki_body(user_id, entity_id, "entity", limit=None)
-                    if legacy_body:
-                        await import_legacy_body(entity_id, legacy_body, user_id=user_id)
-                    legacy_ids = (metadata.get("sources") or []) if isinstance(metadata, dict) else []
-                    if isinstance(legacy_ids, list):
-                        for legacy_id in legacy_ids:
-                            legacy_row = await database.database.fetch_one(
-                                """INSERT INTO entity_sources (entity_id, article_id, user_id)
-                                   SELECT CAST(:entity AS VARCHAR), id, CAST(:uid AS VARCHAR)
-                                   FROM knowledge_nodes
-                                   WHERE id = :article AND user_id = :uid AND object_type = 'article'
-                                   ON CONFLICT (entity_id, article_id) DO NOTHING RETURNING article_id""",
-                                {"entity": entity_id, "article": str(legacy_id), "uid": user_id},
-                            )
-                            if legacy_row:
-                                recovered.append(legacy_row)
-                except (OSError, yaml.YAMLError):
-                    pass
-        await database.database.execute(
-            """INSERT INTO knowledge_edges (from_node_id, to_node_id, relation_type, weight, created_by)
-               SELECT article_id, CAST(:entity AS VARCHAR), 'mentions', 0.5, 'entity_knowledge'
-               FROM entity_sources WHERE entity_id = :entity
-               ON CONFLICT (from_node_id, to_node_id, relation_type) DO NOTHING""",
-            {"entity": entity_id},
+        recovered = await _recover_legacy_sources_locked(
+            entity_id, user_id, read_legacy_wiki=entity["published_revision"] == 0,
         )
         linked = await database.database.fetch_one(
             """
@@ -210,8 +222,9 @@ async def remove_article(article_id: str, *, user_id: str = "default") -> list[s
             """SELECT DISTINCT entity_id FROM (
                  SELECT entity_id FROM entity_sources WHERE article_id = :id
                  UNION SELECT entity_id FROM entity_facts WHERE article_id = :id
-                 UNION SELECT to_node_id AS entity_id FROM knowledge_edges
-                   WHERE from_node_id = :id AND relation_type = 'mentions'
+                 UNION SELECT ke.to_node_id AS entity_id FROM knowledge_edges ke
+                   JOIN entity_nodes en ON en.node_id = ke.to_node_id
+                   WHERE ke.from_node_id = :id AND ke.relation_type IN ('mentions', 'wikilink')
                ) related ORDER BY entity_id""",
             {"id": article_id},
         )
@@ -228,7 +241,9 @@ async def remove_article(article_id: str, *, user_id: str = "default") -> list[s
             "DELETE FROM entity_facts WHERE article_id = :id", {"id": article_id}
         )
         await database.database.execute(
-            "DELETE FROM knowledge_edges WHERE from_node_id = :id AND relation_type = 'mentions'",
+            """DELETE FROM knowledge_edges ke USING entity_nodes en
+               WHERE ke.from_node_id = :id AND ke.to_node_id = en.node_id
+                 AND ke.relation_type IN ('mentions', 'wikilink')""",
             {"id": article_id},
         )
         for entity_id in entity_ids:

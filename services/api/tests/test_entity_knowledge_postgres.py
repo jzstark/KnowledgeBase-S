@@ -78,6 +78,54 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
             detail = await internal.get_node(self.entity_id, _={})
         self.assertIn("第二篇文章讲述某项政策", detail["wiki_body"])
 
+    async def test_manual_regeneration_recovers_articles_visible_on_legacy_entity(self):
+        other_id = f"art_{uuid4().hex[:12]}"
+        await database.execute(
+            "INSERT INTO knowledge_nodes (id, user_id, title, abstract, object_type) "
+            "VALUES (:id, 'default', '第一篇文章', '另一项政策', 'article')",
+            {"id": other_id},
+        )
+        try:
+            for article_id, relation in ((self.article_id, "mentions"), (other_id, "wikilink")):
+                await database.execute(
+                    """INSERT INTO knowledge_edges
+                       (from_node_id, to_node_id, relation_type, weight, created_by)
+                       VALUES (:article, :entity, :relation, 0.5, 'legacy')""",
+                    {"article": article_id, "entity": self.entity_id, "relation": relation},
+                )
+            await database.execute(
+                """UPDATE entity_nodes SET body_markdown = '暂无可用的库内来源。',
+                   requested_revision = 1, published_revision = 1, body_published_at = NOW()
+                   WHERE node_id = :id""",
+                {"id": self.entity_id},
+            )
+            before = await internal.get_node(self.entity_id, _={})
+            self.assertEqual(2, len(before["edges"]))
+            self.assertEqual("暂无可用的库内来源。", before["wiki_body"])
+            self.assertEqual(0, await database.fetch_val(
+                "SELECT count(*) FROM entity_sources WHERE entity_id = :id", {"id": self.entity_id}
+            ))
+
+            result = await entity.regenerate_entity_profile(self.entity_id, _={})
+            async def generate(_, sources):
+                if not sources:
+                    return "暂无可用的库内来源。", "暂无可用的库内来源。"
+                self.assertEqual({self.article_id, other_id}, {source["id"] for source in sources})
+                return f"两篇文章提供证据 [[{self.article_id}]] [[{other_id}]]", "两篇文章提供证据"
+            async def no_embedding(_):
+                return None
+            with patch.object(wiki, "USER_DATA_DIR", Path(self.storage.name)), patch.object(entity_knowledge, "USER_DATA_DIR", Path(self.storage.name)):
+                await entity_knowledge.run_refresh(
+                    self.entity_id, result["revision"], generator=generate, embedder=no_embedding,
+                )
+            detail = await internal.get_node(self.entity_id, _={})
+            self.assertIn("两篇文章提供证据", detail["wiki_body"])
+            self.assertEqual(2, await database.fetch_val(
+                "SELECT count(*) FROM entity_sources WHERE entity_id = :id", {"id": self.entity_id}
+            ))
+        finally:
+            await database.execute("DELETE FROM knowledge_nodes WHERE id = :id", {"id": other_id})
+
     async def test_new_revision_cannot_be_overwritten_by_older_generation(self):
         await entity_knowledge.record_contribution(self.entity_id, self.article_id)
         old_revision = await database.fetch_val(
@@ -131,6 +179,50 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await database.fetch_val(
             "SELECT requested_revision FROM entity_nodes WHERE node_id = :id", {"id": self.entity_id}
         ), 2)
+
+    async def test_removed_legacy_wikilink_cannot_restore_source_on_later_refresh(self):
+        other_id = f"art_{uuid4().hex[:12]}"
+        await database.execute(
+            "INSERT INTO knowledge_nodes (id, user_id, title, object_type) "
+            "VALUES (:id, 'default', '关联文章', 'article')", {"id": other_id},
+        )
+        await database.execute(
+            """INSERT INTO knowledge_edges
+               (from_node_id, to_node_id, relation_type, weight, created_by)
+               VALUES (:article, :entity, 'wikilink', 0.5, 'legacy')""",
+            {"article": self.article_id, "entity": self.entity_id},
+        )
+        try:
+            await database.execute(
+                """INSERT INTO knowledge_edges
+                   (from_node_id, to_node_id, relation_type, weight, created_by)
+                   VALUES (:article, :other, 'wikilink', 0.5, 'legacy')""",
+                {"article": self.article_id, "other": other_id},
+            )
+            await entity_knowledge.request_refresh(self.entity_id)
+            self.assertEqual(1, await database.fetch_val(
+                "SELECT count(*) FROM entity_sources WHERE entity_id = :id", {"id": self.entity_id}
+            ))
+            await database.execute(
+                """UPDATE entity_nodes SET body_markdown = '旧页面', published_revision = 1
+                   WHERE node_id = :id""",
+                {"id": self.entity_id},
+            )
+            legacy = Path(self.storage.name) / "default" / "wiki" / "entities" / f"{self.entity_id}.md"
+            legacy.write_text(f"---\nsources:\n  - {self.article_id}\n---\n\n# 印度\n\n旧页面\n")
+            await entity_knowledge.remove_article(self.article_id)
+            with patch.object(wiki, "USER_DATA_DIR", Path(self.storage.name)):
+                await entity_knowledge.request_refresh(self.entity_id)
+            self.assertEqual(0, await database.fetch_val(
+                "SELECT count(*) FROM entity_sources WHERE entity_id = :id", {"id": self.entity_id}
+            ))
+            self.assertEqual(1, await database.fetch_val(
+                """SELECT count(*) FROM knowledge_edges WHERE from_node_id = :article
+                   AND to_node_id = :other AND relation_type = 'wikilink'""",
+                {"article": self.article_id, "other": other_id},
+            ))
+        finally:
+            await database.execute("DELETE FROM knowledge_nodes WHERE id = :id", {"id": other_id})
 
     async def test_merge_deduplicates_sources_and_invalidates_old_job(self):
         source_id = f"ent_{uuid4().hex[:12]}"
