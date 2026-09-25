@@ -15,7 +15,6 @@ ID 映射约定：
   ra_{hex}  <-> si_{hex}
 """
 
-import hashlib
 import logging
 import os
 import secrets
@@ -29,6 +28,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import database
+import document_intake
 import document_lifecycle
 from auth import require_auth
 from document_types import (
@@ -67,6 +67,12 @@ FILE_SOURCE_TYPE: dict[str, str] = {
     ".doc": "word", ".docx": "word",
     ".epub": "epub", ".mobi": "epub",
 }
+
+
+async def _trigger_ingestion(source_id: str) -> bool:
+    async with httpx.AsyncClient() as client:
+        await client.post(f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5)
+    return True
 
 
 # ── ID 映射工具 ───────────────────────────────────────────────────────────────
@@ -370,85 +376,19 @@ async def upload_to_folder(
     cap_dt = _parse_dt(captured_at) or now
     eff_dt = _parse_dt(effective_at) or now
 
-    created_items = []
-    for file in files:
-        ext = Path(file.filename or "").suffix.lower()
-        src_type = FILE_SOURCE_TYPE.get(ext, "plaintext")
-        mime = FILE_MIME.get(ext, "application/octet-stream")
+    async def upload_inputs():
+        for file in files:
+            ext = Path(file.filename or "").suffix.lower()
+            yield (file.filename, await file.read(),
+                   FILE_SOURCE_TYPE.get(ext, "plaintext"),
+                   FILE_MIME.get(ext, "application/octet-stream"))
 
-        # 存文件
-        raw_dir = USER_DATA_DIR / USER_ID / "raw" / src_type
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(4)}-{file.filename or 'upload'}"
-        file_path = raw_dir / safe_name
-        content = await file.read()
-        file_path.write_bytes(content)
-        sha256 = hashlib.sha256(content).hexdigest()
-        display_name = Path(file.filename or safe_name).stem
-
-        si_hex = secrets.token_hex(8)
-        si_id = f"si_{si_hex}"
-        ra_id = f"ra_{si_hex}"
-        di_id = f"di_{si_hex}"
-
-        # raw_asset
-        await database.database.execute(
-            """
-            INSERT INTO raw_assets (id, user_id, storage_key, original_filename, mime_type, size, sha256, created_at)
-            VALUES (:id, :uid, :storage_key, :fname, :mime, :size, :sha256, NOW())
-            """,
-            {"id": ra_id, "uid": USER_ID, "storage_key": str(file_path),
-             "fname": file.filename, "mime": mime, "size": len(content), "sha256": sha256},
-        )
-
-        # document_instance
-        await database.database.execute(
-            """
-            INSERT INTO document_instances
-              (id, user_id, folder_id, raw_asset_id, display_name, origin_ref, origin_ref_type,
-               doc_kind, status, created_at, updated_at)
-            VALUES (:id, :uid, :fid, :ra_id, :name, :origin_ref, 'upload', :doc_kind, 'pending', NOW(), NOW())
-            """,
-            {"id": di_id, "uid": USER_ID, "fid": folder_id, "ra_id": ra_id,
-             "name": display_name, "origin_ref": f"upload://{safe_name}",
-             "doc_kind": doc_kind_val},
-        )
-
-        # source_item（ingestion-worker 向后兼容）
-        si_row = await database.database.fetch_one(
-            """
-            INSERT INTO source_items
-              (id, user_id, source_id, source_type, origin_ref, origin_ref_type,
-               raw_snapshot_ref, content_hash, title, captured_at, effective_at,
-               doc_kind, raw_retention_policy, document_instance_id, status)
-            VALUES
-              (:id, :uid, :source_id, :src_type, :origin_ref, 'upload',
-               :raw_snapshot_ref, :hash, :title, :cap, :eff,
-               :doc_kind, 'keep_raw', :di_id, 'pending')
-            ON CONFLICT (user_id, source_id, origin_ref_type, origin_ref)
-            DO UPDATE SET
-              raw_snapshot_ref = EXCLUDED.raw_snapshot_ref,
-              document_instance_id = EXCLUDED.document_instance_id,
-              status = CASE WHEN source_items.status = 'succeeded' THEN source_items.status ELSE 'pending' END,
-              updated_at = NOW()
-            RETURNING *
-            """,
-            {
-                "id": si_id, "uid": USER_ID, "source_id": source_id, "src_type": src_type,
-                "origin_ref": f"upload://{safe_name}", "raw_snapshot_ref": str(file_path),
-                "hash": sha256, "title": display_name, "cap": cap_dt, "eff": eff_dt,
-                "doc_kind": doc_kind_val, "di_id": di_id,
-            },
-        )
-        assert si_row is not None
-        created_items.append({"document_instance_id": di_id, "source_item_id": si_row["id"]})
-
-    # 触发 ingestion-worker
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5)
-    except Exception:
-        pass
+    created_items = await document_intake.receive_folder_uploads(
+        user_id=USER_ID, folder_id=folder_id, source_id=source_id,
+        uploads=upload_inputs(), captured_at=cap_dt, effective_at=eff_dt,
+        doc_kind=doc_kind_val, storage_root=USER_DATA_DIR,
+        trigger=_trigger_ingestion,
+    )
 
     return {"ok": True, "files_saved": len(files), "items": created_items}
 
@@ -477,63 +417,13 @@ async def add_url_to_folder(
     if not urls:
         raise HTTPException(400, "至少提供一个 URL")
     doc_kind_val = _validate_doc_kind(body.get("doc_kind"))
-    now = datetime.now(timezone.utc)
-
-    created_items = []
-    for url in urls:
-        si_hex = secrets.token_hex(8)
-        si_id = f"si_{si_hex}"
-        ra_id = f"ra_{si_hex}"
-        di_id = f"di_{si_hex}"
-        url_hash = hashlib.sha256(url.encode()).hexdigest()
-
-        await database.database.execute(
-            """
-            INSERT INTO raw_assets (id, user_id, storage_key, original_filename, mime_type, sha256, created_at)
-            VALUES (:id, :uid, :url, :url, 'text/html', :sha256, NOW())
-            ON CONFLICT (id) DO NOTHING
-            """,
-            {"id": ra_id, "uid": USER_ID, "url": url, "sha256": url_hash},
-        )
-        await database.database.execute(
-            """
-            INSERT INTO document_instances
-              (id, user_id, folder_id, raw_asset_id, display_name, origin_ref, origin_ref_type,
-               doc_kind, status, created_at, updated_at)
-            VALUES (:id, :uid, :fid, :ra_id, :url, :url, 'url', :doc_kind, 'pending', NOW(), NOW())
-            ON CONFLICT (id) DO NOTHING
-            """,
-            {"id": di_id, "uid": USER_ID, "fid": folder_id, "ra_id": ra_id,
-             "url": url, "doc_kind": doc_kind_val},
-        )
-        si_row = await database.database.fetch_one(
-            """
-            INSERT INTO source_items
-              (id, user_id, source_id, source_type, origin_ref, origin_ref_type,
-               content_hash, captured_at, doc_kind, raw_retention_policy, document_instance_id, status)
-            VALUES
-              (:id, :uid, :source_id, 'url', :url, 'url',
-               :hash, :now, :doc_kind, 'keep_extracted_only', :di_id, 'pending')
-            ON CONFLICT (user_id, source_id, origin_ref_type, origin_ref)
-            DO UPDATE SET
-              document_instance_id = EXCLUDED.document_instance_id,
-              status = CASE WHEN source_items.status = 'succeeded' THEN source_items.status ELSE 'pending' END,
-              updated_at = NOW()
-            RETURNING id
-            """,
-            {"id": si_id, "uid": USER_ID, "source_id": source_id, "url": url,
-             "hash": url_hash, "now": now, "doc_kind": doc_kind_val, "di_id": di_id},
-        )
-        assert si_row is not None
-        created_items.append({"document_instance_id": di_id, "source_item_id": si_row["id"]})
-
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{INGESTION_WORKER_URL}/trigger/{source_id}", timeout=5)
-    except Exception:
-        pass
-
-    return {"ok": True, "urls_queued": len(urls), "items": created_items}
+        return await document_intake.receive_folder_urls(
+            source_row=source_row, folder_id=folder_id, urls=urls,
+            doc_kind=doc_kind_val, trigger=_trigger_ingestion,
+        )
+    except document_intake.IntakeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
 
 
 # ── Document Instance CRUD ────────────────────────────────────────────────────

@@ -1,9 +1,8 @@
-import hashlib
 import json
 import logging
 import os
 import secrets
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from pydantic import BaseModel
 
 import database
+import document_intake
 import document_lifecycle
 from document_types import DocumentTypeError, set_source_item_doc_kind
 from settings import settings
@@ -159,177 +159,6 @@ def _serialize_source_item(row) -> dict[str, Any]:
         if d.get(key):
             d[key] = d[key].isoformat()
     return d
-
-
-def _mapped_folder_id(source_id: str) -> str | None:
-    if not source_id.startswith("src_"):
-        return None
-    return "fld_" + source_id[4:]
-
-
-def _mapped_connector_id(source_id: str) -> str | None:
-    if not source_id.startswith("src_"):
-        return None
-    return "con_" + source_id[4:]
-
-
-async def _ensure_document_instance_for_source_item(source_row, item_row) -> dict[str, Any]:
-    source = dict(source_row)
-    item = dict(item_row)
-    if item.get("document_instance_id"):
-        return item
-
-    folder_id = _mapped_folder_id(source["id"])
-    if not folder_id:
-        return item
-    folder = await database.database.fetch_one(
-        "SELECT id FROM folders WHERE id = :id AND user_id = :uid",
-        {"id": folder_id, "uid": source["user_id"]},
-    )
-    if not folder:
-        return item
-
-    suffix = item["id"][3:]
-    raw_asset_id = f"ra_{suffix}"
-    document_instance_id = f"di_{suffix}"
-    storage_key = item.get("raw_snapshot_ref") or item.get("extracted_text_ref") or item.get("origin_ref")
-    connector_id = None
-    if source.get("type") in ("rss", "wechat") and source.get("fetch_mode") == "subscription":
-        candidate_connector_id = _mapped_connector_id(source["id"])
-        if candidate_connector_id:
-            connector = await database.database.fetch_one(
-                "SELECT id FROM connectors WHERE id = :id AND user_id = :uid",
-                {"id": candidate_connector_id, "uid": source["user_id"]},
-            )
-            if connector:
-                connector_id = candidate_connector_id
-
-    await database.database.execute(
-        """
-        INSERT INTO raw_assets (id, user_id, storage_key, original_filename, mime_type, sha256, created_at)
-        VALUES (:id, :uid, :storage_key, :filename, 'text/html', :sha256, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-          storage_key = COALESCE(EXCLUDED.storage_key, raw_assets.storage_key),
-          original_filename = COALESCE(EXCLUDED.original_filename, raw_assets.original_filename),
-          sha256 = COALESCE(EXCLUDED.sha256, raw_assets.sha256)
-        """,
-        {
-            "id": raw_asset_id,
-            "uid": source["user_id"],
-            "storage_key": storage_key,
-            "filename": item.get("title"),
-            "sha256": item.get("content_hash"),
-        },
-    )
-    await database.database.execute(
-        """
-        INSERT INTO document_instances
-          (id, user_id, folder_id, raw_asset_id, connector_id,
-           display_name, origin_ref, origin_ref_type, doc_kind, status, created_at, updated_at)
-        VALUES
-          (:id, :uid, :folder_id, :raw_asset_id, :connector_id,
-           :display_name, :origin_ref, :origin_ref_type, :doc_kind, :status, NOW(), NOW())
-        ON CONFLICT (id) DO UPDATE SET
-          connector_id = COALESCE(EXCLUDED.connector_id, document_instances.connector_id),
-          display_name = COALESCE(EXCLUDED.display_name, document_instances.display_name),
-          origin_ref = COALESCE(EXCLUDED.origin_ref, document_instances.origin_ref),
-          origin_ref_type = COALESCE(EXCLUDED.origin_ref_type, document_instances.origin_ref_type),
-          doc_kind = COALESCE(EXCLUDED.doc_kind, document_instances.doc_kind),
-          status = CASE
-            WHEN document_instances.status IN ('ignored', 'deleted')
-              THEN document_instances.status
-            ELSE EXCLUDED.status
-          END,
-          updated_at = NOW()
-        """,
-        {
-            "id": document_instance_id,
-            "uid": source["user_id"],
-            "folder_id": folder_id,
-            "raw_asset_id": raw_asset_id,
-            "connector_id": connector_id,
-            "display_name": item.get("title") or item.get("origin_ref"),
-            "origin_ref": item.get("origin_ref"),
-            "origin_ref_type": item.get("origin_ref_type"),
-            "doc_kind": item.get("doc_kind") or source.get("default_doc_kind"),
-            "status": item.get("status") or "pending",
-        },
-    )
-    updated = await database.database.fetch_one(
-        """
-        UPDATE source_items
-        SET document_instance_id = :document_instance_id,
-            updated_at = NOW()
-        WHERE id = :id
-          AND document_instance_id IS NULL
-        RETURNING *
-        """,
-        {"id": item["id"], "document_instance_id": document_instance_id},
-    )
-    if updated:
-        return dict(updated)
-    item["document_instance_id"] = document_instance_id
-    return item
-
-
-async def _create_source_item(source_row, item: SourceItemCreate) -> dict[str, Any]:
-    if not item.origin_ref:
-        raise HTTPException(400, "origin_ref 不能为空")
-    item_id = f"si_{secrets.token_hex(8)}"
-    row = await database.database.fetch_one(
-        """
-        INSERT INTO source_items
-          (id, user_id, source_id, source_type, origin_ref, origin_ref_type,
-           raw_snapshot_ref, extracted_text_ref, content_hash, title,
-           source_published_at, source_updated_at, captured_at, effective_at,
-           doc_kind, raw_retention_policy, status)
-        VALUES
-          (:id, :user_id, :source_id, :source_type, :origin_ref, :origin_ref_type,
-           :raw_snapshot_ref, :extracted_text_ref, :content_hash, :title,
-           :source_published_at, :source_updated_at, :captured_at, :effective_at,
-           :doc_kind, :raw_retention_policy, :status)
-        ON CONFLICT (user_id, source_id, origin_ref_type, origin_ref)
-        DO UPDATE SET
-          raw_snapshot_ref = COALESCE(EXCLUDED.raw_snapshot_ref, source_items.raw_snapshot_ref),
-          extracted_text_ref = COALESCE(EXCLUDED.extracted_text_ref, source_items.extracted_text_ref),
-          content_hash = COALESCE(EXCLUDED.content_hash, source_items.content_hash),
-          title = COALESCE(EXCLUDED.title, source_items.title),
-          source_published_at = COALESCE(EXCLUDED.source_published_at, source_items.source_published_at),
-          source_updated_at = COALESCE(EXCLUDED.source_updated_at, source_items.source_updated_at),
-          captured_at = COALESCE(EXCLUDED.captured_at, source_items.captured_at),
-          effective_at = COALESCE(EXCLUDED.effective_at, source_items.effective_at),
-          doc_kind = COALESCE(EXCLUDED.doc_kind, source_items.doc_kind),
-          raw_retention_policy = COALESCE(EXCLUDED.raw_retention_policy, source_items.raw_retention_policy),
-          status = CASE
-            WHEN source_items.status IN ('succeeded', 'ignored', 'deleted') THEN source_items.status
-            ELSE EXCLUDED.status
-          END,
-          error = NULL,
-          updated_at = NOW()
-        RETURNING *
-        """,
-        {
-            "id": item_id,
-            "user_id": source_row["user_id"],
-            "source_id": source_row["id"],
-            "source_type": source_row["type"],
-            "origin_ref": item.origin_ref,
-            "origin_ref_type": item.origin_ref_type,
-            "raw_snapshot_ref": item.raw_snapshot_ref,
-            "extracted_text_ref": item.extracted_text_ref,
-            "content_hash": item.content_hash,
-            "title": item.title,
-            "source_published_at": item.source_published_at,
-            "source_updated_at": item.source_updated_at,
-            "captured_at": item.captured_at,
-            "effective_at": item.effective_at,
-            "doc_kind": _validate_doc_kind(item.doc_kind),
-            "raw_retention_policy": item.raw_retention_policy,
-            "status": item.status,
-        },
-    )
-    row = await _ensure_document_instance_for_source_item(source_row, row)
-    return _serialize_source_item(row)
 
 
 def _source_config(row) -> dict[str, Any]:
@@ -543,8 +372,17 @@ async def create_source_items(
         raise HTTPException(404, "source 不存在")
     if not body.items:
         raise HTTPException(400, "items 不能为空")
-    created = [await _create_source_item(row, item) for item in body.items]
-    return {"ok": True, "items": created}
+    def intake_items():
+        for item in body.items:
+            values = dict(item)
+            values["doc_kind"] = _validate_doc_kind(item.doc_kind)
+            yield values
+
+    try:
+        created, _ = await document_intake.receive_source_items(row, intake_items())
+    except document_intake.IntakeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    return {"ok": True, "items": [_serialize_source_item(item) for item in created]}
 
 
 @router.post("/source-items/{item_id}/status")
@@ -722,44 +560,29 @@ async def upload_to_source(
     if src_type not in FILE_ACCEPT:
         raise HTTPException(400, f"source 类型 {src_type} 不支持文件上传")
 
-    raw_dir = USER_DATA_DIR / USER_ID / "raw" / src_type
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
     captured_at = _validate_optional_time(captured_at, "captured_at")
     effective_at = _validate_optional_time(effective_at, "effective_at")
     doc_kind = _validate_doc_kind(doc_kind)
     now = datetime.now(timezone.utc)
 
-    saved: list[str] = []
-    source_items: list[dict[str, Any]] = []
-    for file in files:
-        safe_name = f"{date.today()}-{secrets.token_hex(4)}-{file.filename or 'upload'}"
-        file_path = raw_dir / safe_name
-        content = await file.read()
-        file_path.write_bytes(content)
-        saved.append(str(file_path))
-        item = await _create_source_item(
-            row,
-            SourceItemCreate(
-                origin_ref=f"upload://{safe_name}",
-                origin_ref_type="upload",
-                raw_snapshot_ref=str(file_path),
-                content_hash=hashlib.sha256(content).hexdigest(),
-                title=Path(file.filename or safe_name).stem,
-                captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else now,
-                effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else now,
-                doc_kind=doc_kind,
-                raw_retention_policy="keep_raw",
-            ),
-        )
-        source_items.append(item)
+    async def upload_inputs():
+        for file in files:
+            yield file.filename, await file.read()
 
-    # 触发 ingestion-worker（best-effort；失败由 worker 轮询兜底）
-    triggered = await _trigger_ingestion(source_id)
+    try:
+        received, triggered = await document_intake.receive_source_uploads(
+            source_row=row, uploads=upload_inputs(),
+            captured_at=datetime.fromisoformat(captured_at.replace("Z", "+00:00")) if captured_at else now,
+            effective_at=datetime.fromisoformat(effective_at.replace("Z", "+00:00")) if effective_at else now,
+            doc_kind=doc_kind, storage_root=USER_DATA_DIR, trigger=_trigger_ingestion,
+        )
+    except document_intake.IntakeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    source_items = [_serialize_source_item(item) for item in received]
 
     return {
         "ok": True,
-        "files_saved": len(saved),
+        "files_saved": len(source_items),
         "source_items": source_items,
         "triggered": triggered,
     }
@@ -787,26 +610,18 @@ async def add_url_to_source(
 
     doc_kind = _validate_doc_kind(body.get("doc_kind"))
 
-    source_items = [
-        await _create_source_item(
-            row,
-            SourceItemCreate(
-                origin_ref=url,
-                origin_ref_type="url",
-                content_hash=hashlib.sha256(url.encode("utf-8")).hexdigest(),
-                captured_at=datetime.now(timezone.utc),
-                doc_kind=doc_kind,
-                raw_retention_policy="keep_extracted_only",
-            ),
+    try:
+        received, queued, triggered = await document_intake.receive_source_urls(
+            row, urls, doc_kind, _trigger_ingestion
         )
-        for url in urls
-    ]
-
-    triggered = await _trigger_ingestion(source_id)
+    except document_intake.IntakeError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    source_items = [_serialize_source_item(item) for item in received]
 
     return {
         "ok": True,
-        "urls_queued": len(urls),
+        "urls_queued": queued,
+        "urls_reused": len(received) - queued,
         "source_items": source_items,
         "triggered": triggered,
     }

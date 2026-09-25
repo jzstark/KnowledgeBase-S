@@ -1991,7 +1991,10 @@ function AddUrlModal({
       });
       if (r.ok) {
         const data = await r.json();
-        setResult(`已加入 ${data.urls_queued} 条 URL，处理中…`);
+        const messages = [];
+        if (data.urls_queued) messages.push(`已加入 ${data.urls_queued} 条 URL，处理中…`);
+        if (data.urls_reused) messages.push(`${data.urls_reused} 条 URL 已存在，未重新处理`);
+        setResult(messages.join("；"));
         setTimeout(onDone, 1500);
       } else {
         const err = await r.json().catch(() => ({}));

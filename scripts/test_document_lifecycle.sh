@@ -29,4 +29,6 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-test-key}"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-test-key}"
 
 (cd services/api && alembic upgrade head)
-PYTHONPATH="$PWD/services/api${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest services/api/tests/test_document_lifecycle_postgres.py -q
+PYTHONPATH="$PWD/services/api${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest \
+  services/api/tests/test_document_lifecycle_postgres.py \
+  services/api/tests/test_document_intake_postgres.py -q

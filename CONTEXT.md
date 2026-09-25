@@ -10,6 +10,9 @@ A folder entry representing a user's organization of a raw asset. Multiple docum
 **Source item**:
 A record of material received through a source, carrying provenance, processing state, and any explicit regeneration request. It may be linked to a document instance.
 
+**Document intake**:
+The creation and linking of raw assets, document instances, and source items when material arrives through a manual or connector source. It owns source identity, database commit, and cleanup of a newly saved file when persistence fails.
+
 **Document lifecycle**:
 The rules governing processing, retry, regeneration, archive, and permanent deletion of a document instance and its associated source items. A document lifecycle module concentrates those rules and the coordinated persistence they require.
 
