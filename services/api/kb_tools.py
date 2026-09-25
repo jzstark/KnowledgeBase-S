@@ -348,7 +348,12 @@ async def get_node(node_id: str, user_id: str = USER_ID) -> dict[str, Any]:
     if node.get("raw_ref") and isinstance(node["raw_ref"], str):
         node["raw_ref"] = json.loads(node["raw_ref"])
     object_type = node.get("object_type") or "article"
-    node["wiki_body"] = _read_wiki_body(user_id, node_id, object_type)
+    if object_type == "entity":
+        from kb.entity_knowledge import read_body
+        page = await read_body(node_id, user_id=user_id)
+        node["wiki_body"] = (page or {}).get("body_markdown") or _read_wiki_body(user_id, node_id, object_type, limit=None)
+    else:
+        node["wiki_body"] = _read_wiki_body(user_id, node_id, object_type)
     node = _jsonable(node)
     return {"tool": "kb_get_node", "node": node, "references": [_reference(node)]}
 

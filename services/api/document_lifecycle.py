@@ -107,6 +107,19 @@ async def report_source_item_status(
                 "WHERE id = :id",
                 {"id": document_id, "status": status, "title": title},
             )
+        if status == "succeeded" and extracted_text_ref:
+            from kb.entity_knowledge import request_refresh
+            waiting = await database.database.fetch_all(
+                """SELECT DISTINCT es.entity_id FROM entity_sources es
+                   JOIN article_nodes an ON an.node_id = es.article_id
+                   JOIN entity_nodes en ON en.node_id = es.entity_id
+                   WHERE an.source_item_id = :id AND an.extracted_text_ref IS NULL
+                     AND en.requested_revision > en.published_revision
+                   ORDER BY es.entity_id""",
+                {"id": item_id},
+            )
+            for entity in waiting:
+                await request_refresh(entity["entity_id"])
     return dict(row)
 
 
@@ -601,18 +614,9 @@ async def _hard_delete_document_instance(
                 {"article_ids": article_ids},
             )
             summary_ids = [row["node_id"] for row in summary_rows]
-            entity_rows = await database.database.fetch_all(
-                "SELECT DISTINCT entity_id FROM entity_facts WHERE article_id = ANY(:article_ids)",
-                {"article_ids": article_ids},
-            )
-            entity_ids = [row["entity_id"] for row in entity_rows]
-            if entity_ids:
-                await database.database.execute(
-                    "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() "
-                    "WHERE node_id = ANY(:entity_ids)",
-                    {"entity_ids": entity_ids},
-                )
+            from kb.entity_knowledge import remove_article
             for article_id in article_ids:
+                await remove_article(article_id, user_id=USER_ID)
                 await database.database.execute(
                     """
                     UPDATE entity_candidates

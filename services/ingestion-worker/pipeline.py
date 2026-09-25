@@ -5,7 +5,7 @@ Ingestion 流水线（所有 source 类型共用）：
     → analyze_article (Claude: abstract + tags + entity candidates)
     → embed → post_ingest(article) → post_ingest(summary)
     → process_entity_candidates (API)
-    → for each promoted candidate: generate_entity_page (Claude) → post_ingest(entity)
+    → for each promoted candidate: post_ingest(entity) → queue evidence refresh
     → write wiki files
     → update_last_fetched
 """
@@ -44,7 +44,6 @@ claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TEXT_CHARS = settings.ingestion.max_text_chars
-MAX_ENTITY_PAGE_SOURCES = settings.ingestion.max_entity_page_sources
 
 
 def _service_headers() -> dict[str, str]:
@@ -358,25 +357,6 @@ def analyze_article(
     }
 
 
-def generate_entity_page(canonical_name: str, aliases: list[str], source_abstracts: list[str]) -> str:
-    """Call Claude to generate a Wikipedia-style entity page body (markdown)."""
-    message = claude.messages.create(
-        model=settings.models.entity_page,
-        max_tokens=settings.llm_output_tokens.entity_page,
-        messages=[
-            {
-                "role": "user",
-                "content": prompts.entity_page(
-                    entity_name=canonical_name,
-                    aliases="、".join(aliases) if aliases else "无",
-                    source_abstracts="\n\n".join(source_abstracts) or "（暂无来源信息）",
-                ),
-            }
-        ],
-    )
-    return _message_text(message)
-
-
 async def embed(text: str) -> list[float]:
     resp = await openai_client.embeddings.create(
         model=settings.embedding.model,
@@ -410,22 +390,6 @@ async def replace_article_and_summary(
         )
         resp.raise_for_status()
         return resp.json()
-
-
-async def refresh_stale_entities() -> None:
-    """Pipeline 结束后调用，触发 API 批量刷新 abstract_stale=true 的 entity。"""
-    async with httpx.AsyncClient(headers=_service_headers()) as client:
-        try:
-            resp = await client.post(
-                f"{API_BASE_URL}/api/kb/entities/refresh_stale",
-                timeout=300,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("stale_found", 0) > 0:
-                logger.info("[entity-refresh] %s", result)
-        except Exception as exc:
-            logger.warning("[entity-refresh] failed: %s", exc)
 
 
 async def _post_ingest_full(payload: dict) -> dict:
@@ -462,21 +426,14 @@ async def process_entity_candidates(article_id: str, entities: list[dict]) -> di
     return {"matched_existing": [], "promoted": []}
 
 
-async def get_node(node_id: str) -> dict | None:
-    async with httpx.AsyncClient(headers=_service_headers()) as client:
-        resp = await client.get(f"{API_BASE_URL}/api/kb/node/{node_id}", timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-    return None
-
-
 async def mark_candidate_promoted(candidate_id: int, entity_node_id: str):
     async with httpx.AsyncClient(headers=_service_headers()) as client:
-        await client.post(
+        response = await client.post(
             f"{API_BASE_URL}/api/kb/entity_candidates/{candidate_id}/mark_promoted",
             json={"entity_node_id": entity_node_id},
             timeout=10,
         )
+        response.raise_for_status()
 
 
 async def backfill_wikilinks(entity_id: str) -> None:
@@ -564,29 +521,6 @@ def write_wiki_summary(summary_id: str, article_id: str, article_title: str,
     (wiki_dir / f"{summary_id}.md").write_text(content, encoding="utf-8")
 
 
-def write_wiki_entity(entity_id: str, canonical_name: str, aliases: list[str],
-                       source_ids: list[str], body: str, tags: list[str]):
-    """Write wiki/entities/{entity_id}.md."""
-    wiki_dir = USER_DATA_DIR / USER_ID / "wiki" / "entities"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-
-    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    frontmatter = {
-        "id": entity_id,
-        "type": "entity",
-        "title": canonical_name,
-        "tags": list(tags),
-        "wikilinks": [],
-        "canonical_name": canonical_name,
-        "aliases": list(aliases),
-        "sources": list(source_ids),
-        "created_at": created,
-        "updated_at": created,
-    }
-    content = _wiki_document(frontmatter, canonical_name, body)
-    (wiki_dir / f"{entity_id}.md").write_text(content, encoding="utf-8")
-
-
 def _article_ingestion_adapters() -> ArticleIngestionAdapters:
     return ArticleIngestionAdapters(
         analyze_article=analyze_article,
@@ -595,14 +529,10 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
         replace_article_and_summary=replace_article_and_summary,
         get_analysis_context=get_analysis_context,
         process_entity_candidates=process_entity_candidates,
-        fetch_node=get_node,
-        generate_entity_page=generate_entity_page,
         mark_candidate_promoted=mark_candidate_promoted,
         backfill_wikilinks=backfill_wikilinks,
         write_wiki_article=write_wiki_article,
         write_wiki_summary=write_wiki_summary,
-        write_wiki_entity=write_wiki_entity,
-        max_entity_page_sources=MAX_ENTITY_PAGE_SOURCES,
         embedding_model=settings.embedding.model,
     )
 
@@ -689,6 +619,7 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                     item=item,
                     title=item.title,
                     text=text,
+                    extracted_text_ref=extracted_text_ref,
                     raw_ref=raw_ref,
                     time_payload=_time_payload(item),
                     use_entity_context=True,
@@ -718,7 +649,6 @@ async def run_pipeline(source: BaseSource, source_config: dict):
 
     await update_last_fetched(source_id)
     logger.info(f"[{source_id}] 完成，已更新 last_fetched_at")
-    await refresh_stale_entities()
 
 
 async def run_book_pipeline(
@@ -837,6 +767,9 @@ async def run_book_pipeline(
                             item=item,
                             title=ch.title,
                             text=ch.text,
+                            extracted_text_ref=save_extracted_text(
+                                item_source_type, f"{source_item['id']}_chapter_{ch.order}", ch.text
+                            ),
                             raw_ref=chapter_raw_ref,
                             time_payload=_time_payload(item),
                             parent_index_id=index_id,
@@ -871,4 +804,3 @@ async def run_book_pipeline(
     if finalize:
         await update_last_fetched(source_id)
         logger.info(f"[{source_id}] book pipeline done")
-        await refresh_stale_entities()

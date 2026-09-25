@@ -11,6 +11,7 @@ os.environ.setdefault("AUTH_SECRET", "test-secret")
 from fastapi import HTTPException
 from routers import folders
 import document_lifecycle
+from kb import entity_knowledge
 
 
 class _Transaction:
@@ -71,6 +72,12 @@ class _FolderDatabase:
 
 
 class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.remove_article = AsyncMock(return_value=["ent_1"])
+        patcher = patch.object(entity_knowledge, "remove_article", self.remove_article)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_preview_excludes_blocked_documents_from_delete_totals(self):
         eligible = {
             "id": "di_1", "name": "one", "status": "eligible", "detail": "可永久删除",
@@ -129,6 +136,7 @@ class DocumentDeleteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "deleted")
         self.assertEqual(result["articles"], 1)
         self.assertEqual(result["summaries"], 2)
+        self.remove_article.assert_awaited_once_with("art_1", user_id="default")
         sql = "\n".join(query for query, _ in fake.executed)
         self.assertIn("DELETE FROM knowledge_nodes", sql)
         self.assertIn("UPDATE source_items", sql)

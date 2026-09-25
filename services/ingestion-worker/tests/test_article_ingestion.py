@@ -77,12 +77,6 @@ class FakeIngestion:
             ]
         }
 
-    async def fetch_node(self, node_id: str) -> dict | None:
-        return {"title": "Article", "abstract": "Article abstract"}
-
-    def generate_entity_page(self, canonical_name: str, aliases: list[str], source_abstracts: list[str]) -> str:
-        return f"{canonical_name}: {'; '.join(source_abstracts)}"
-
     async def mark_candidate_promoted(self, candidate_id: int, entity_node_id: str) -> None:
         self.marked.append((candidate_id, entity_node_id))
 
@@ -118,17 +112,6 @@ class FakeIngestion:
             (summary_id, article_id, article_title, abstract, tags, created, doc_kind)
         )
 
-    def write_wiki_entity(
-        self,
-        entity_id: str,
-        canonical_name: str,
-        aliases: list[str],
-        source_ids: list[str],
-        body: str,
-        tags: list[str],
-    ) -> None:
-        self.wiki_entities.append((entity_id, canonical_name, aliases, source_ids, body, tags))
-
     def adapters(self) -> ArticleIngestionAdapters:
         return ArticleIngestionAdapters(
             analyze_article=self.analyze_article,
@@ -137,14 +120,10 @@ class FakeIngestion:
             replace_article_and_summary=self.replace_article_and_summary,
             get_analysis_context=self.get_analysis_context,
             process_entity_candidates=self.process_entity_candidates,
-            fetch_node=self.fetch_node,
-            generate_entity_page=self.generate_entity_page,
             mark_candidate_promoted=self.mark_candidate_promoted,
             backfill_wikilinks=self.backfill_wikilinks,
             write_wiki_article=self.write_wiki_article,
             write_wiki_summary=self.write_wiki_summary,
-            write_wiki_entity=self.write_wiki_entity,
-            max_entity_page_sources=5,
             embedding_model="text-embedding-3-small",
         )
 
@@ -173,6 +152,7 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
                 item=raw_item(),
                 title="Title",
                 text="Article text",
+                extracted_text_ref="/app/user_data/default/extracted/rss/si_1.txt",
                 raw_ref={"type": "url", "url": "https://example.com", "cached": "/tmp/raw.html"},
                 time_payload={"captured_at": "2026-05-15T10:00:00+00:00"},
                 use_entity_context=True,
@@ -187,6 +167,7 @@ class ArticleIngestionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(fake.context_calls), 1)
         self.assertEqual(fake.analyze_calls[0][1], [{"id": "ent_old", "title": "Old Entity"}])
         self.assertEqual(fake.posted[0]["object_type"], "article")
+        self.assertEqual(fake.posted[0]["extracted_text_ref"], "/app/user_data/default/extracted/rss/si_1.txt")
         self.assertEqual(fake.posted[0]["captured_at"], "2026-05-15T10:00:00+00:00")
         self.assertEqual(fake.posted[1]["summary_of"], "art_1")
         self.assertEqual(fake.posted[1]["doc_kind"], "news")

@@ -358,10 +358,12 @@ async def _fetch_one(
 
     if include_body:
         body_chars = settings.kb_public.fetch_body_chars
-        result["body"] = (
-            _read_wiki_body(USER_ID, node_id, object_type, limit=body_chars)
-            if object_type == "article" else None
-        )
+        if object_type == "entity":
+            from kb.entity_knowledge import read_body
+            page = await read_body(node_id, user_id=USER_ID)
+            result["body"] = (page or {}).get("body_markdown") or _read_wiki_body(USER_ID, node_id, "entity", limit=None)
+        else:
+            result["body"] = _read_wiki_body(USER_ID, node_id, object_type, limit=body_chars) if object_type == "article" else None
 
     if include_related_ids:
         edge_rows = await database.database.fetch_all(

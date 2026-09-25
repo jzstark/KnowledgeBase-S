@@ -1,14 +1,10 @@
 import os
 import pathlib
 
-import anthropic
 import httpx
 
 import database
 from settings import settings
-from prompts import prompts
-from kb.common import message_text
-from kb.graph import refresh_entity_profile, upsert_fact_from_mention
 
 
 async def promote_entity_candidates(user_id: str) -> dict:
@@ -44,36 +40,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
             continue
 
         source_ids = list(row["source_article_ids"] or [])
-        # Fetch abstracts for source articles
-        source_abstracts = []
-        for art_id in source_ids[:settings.ingestion.max_entity_page_sources]:
-            art = await database.database.fetch_one(
-                "SELECT title, abstract FROM knowledge_nodes WHERE id = :id",
-                {"id": art_id},
-            )
-            if art and art["abstract"]:
-                source_abstracts.append(f"《{art['title'] or art_id}》: {art['abstract']}")
-
         aliases = list(row["aliases"]) if row["aliases"] else []
-
-        # Call Claude to generate entity page
-        try:
-            prompt = prompts.entity_page(
-                entity_name=row["canonical_name"],
-                aliases="、".join(aliases) if aliases else "无",
-                source_abstracts="\n\n".join(source_abstracts) or "（暂无来源信息）",
-            )
-            claude_api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
-            claude_client = anthropic.AsyncAnthropic(api_key=claude_api_key)
-            resp = await claude_client.messages.create(
-                model=settings.models.entity_page,
-                max_tokens=settings.llm_output_tokens.entity_page,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            entity_body = message_text(resp)
-        except Exception as e:
-            print(f"[maintenance] entity page generation failed for {row['canonical_name']}: {e}")
-            continue
 
         # Ingest entity node
         try:
@@ -83,7 +50,7 @@ async def promote_entity_candidates(user_id: str) -> dict:
                     json={
                         "user_id": user_id,
                         "title": row["canonical_name"],
-                        "abstract": entity_body[:500],
+                        "abstract": row["canonical_name"],
                         "embedding": [],
                         "source_type": "entity",
                         "source_id": "maintenance",
@@ -96,24 +63,11 @@ async def promote_entity_candidates(user_id: str) -> dict:
                     },
                     timeout=30,
                 )
+                ingest_resp.raise_for_status()
                 entity_node_id = ingest_resp.json().get("id")
 
-            # wiki file written by write_wiki_node background task via ingest endpoint
-
-            # Mark candidate as promoted
-            await database.database.execute(
-                "UPDATE entity_candidates SET promoted_entity_id = :eid WHERE id = :cid",
-                {"eid": entity_node_id, "cid": row["id"]},
-            )
-            for article_id in source_ids:
-                await upsert_fact_from_mention(
-                    entity_node_id,
-                    article_id,
-                    canonical_name=row["canonical_name"],
-                    salience=max_salience or 0.5,
-                    user_id=user_id,
-                )
-            await refresh_entity_profile(entity_node_id)
+            from kb.ingest import mark_candidate_promoted
+            await mark_candidate_promoted(row["id"], {"entity_node_id": entity_node_id}, _={})
             promoted_count += 1
         except Exception as e:
             print(f"[maintenance] failed to ingest entity {row['canonical_name']}: {e}")
@@ -159,8 +113,10 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             salience_map[aid] = float(r["confidence"] or 0.5)
 
     articles = await database.database.fetch_all(
-        "SELECT id, user_id FROM knowledge_nodes WHERE user_id = :uid AND object_type = 'article'",
-        {"uid": user_id},
+        """SELECT n.id, n.user_id FROM entity_sources es
+           JOIN knowledge_nodes n ON n.id = es.article_id
+           WHERE es.entity_id = :eid AND n.user_id = :uid AND n.object_type = 'article'""",
+        {"eid": entity_id, "uid": user_id},
     )
 
     user_data_dir = pathlib.Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
@@ -196,7 +152,7 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
 
         wiki_file.write_text(modified, encoding="utf-8")
 
-        # Use real salience if available; default 0.5 for text-scan finds not in entity_candidates
+        # The source relation was recorded during ingestion; this only decorates its Wiki text.
         salience = salience_map.get(art["id"], 0.5)
 
         await database.database.execute(
@@ -207,30 +163,25 @@ async def backfill_wikilinks_for_entity(entity_id: str, user_id: str) -> dict:
             """,
             {"from_id": art["id"], "to_id": entity_id, "weight": salience},
         )
-        await upsert_fact_from_mention(
-            entity_id,
-            art["id"],
-            canonical_name=canonical,
-            salience=salience,
-            user_id=user_id,
-        )
-
         wikilinks_added += 1
 
     return {"articles_scanned": len(articles), "wikilinks_added": wikilinks_added}
 
 
 async def cleanup_orphan_entities(user_id: str) -> dict:
-    """找出没有 source-grounded facts 的 entity 节点，标记为待审核（打 tag: orphan）。"""
+    """找出没有来源文章的 entity 节点，标记为待审核（打 tag: orphan）。"""
     rows = await database.database.fetch_all(
         """
         SELECT n.id, n.title, n.tags
         FROM knowledge_nodes n
-        LEFT JOIN entity_facts ef ON ef.entity_id = n.id
         WHERE n.user_id = :uid
           AND n.object_type = 'entity'
-        GROUP BY n.id
-        HAVING COUNT(ef.id) = 0
+          AND NOT EXISTS (SELECT 1 FROM entity_sources es WHERE es.entity_id = n.id)
+          AND NOT EXISTS (SELECT 1 FROM entity_facts ef WHERE ef.entity_id = n.id AND ef.article_id IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM knowledge_edges ke
+                          WHERE ke.to_node_id = n.id AND ke.relation_type = 'mentions')
+          AND NOT EXISTS (SELECT 1 FROM entity_candidates ec
+                          WHERE ec.promoted_entity_id = n.id AND cardinality(ec.source_article_ids) > 0)
         """,
         {"uid": user_id},
     )

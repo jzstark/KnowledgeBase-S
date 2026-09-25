@@ -23,25 +23,15 @@ Public surface:
   Entity facts and signals
     upsert_entity_fact(entity_id, article_id, fact_text, ...)
     upsert_fact_from_mention(entity_id, article_id, ...)
-    backfill_entity_facts_from_mentions(user_id)
-    refresh_entity_profile(entity_id)          -- 确定性拼接，无 LLM（保留用于兜底）
-    lm_refresh_entity_abstract(entity_id)      -- LLM 更新 abstract + embedding
-    refresh_stale_entity_abstracts(user_id)    -- 批量刷新 abstract_stale=true 的 entity
     rebuild_entity_pair_signals(user_id)
 """
 from __future__ import annotations
 
 import json
-import logging
 import math
 from typing import Any
 
 import database
-from kb.common import message_text
-from prompts import prompts
-from settings import settings
-
-logger = logging.getLogger(__name__)
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -78,30 +68,10 @@ async def fetch_source_node_ids(node_id: str, object_type: str) -> list[str]:
         return list(dict.fromkeys(str(i) for i in ids if i))
 
     if object_type == "entity":
-        rows = await database.database.fetch_all(
-            """
-            SELECT article_id
-            FROM entity_facts
-            WHERE entity_id = :node_id AND article_id IS NOT NULL
-            ORDER BY fact_time DESC NULLS LAST, updated_at DESC
-            """,
+        return [row["article_id"] for row in await database.database.fetch_all(
+            "SELECT article_id FROM entity_sources WHERE entity_id = :node_id ORDER BY article_id",
             {"node_id": node_id},
-        )
-        ids = [r["article_id"] for r in rows if r["article_id"]]
-        if not ids:
-            edge_rows = await database.database.fetch_all(
-                """
-                SELECT from_node_id
-                FROM knowledge_edges
-                WHERE to_node_id = :node_id
-                  AND relation_type IN ('mentions', 'wikilink')
-                ORDER BY id DESC
-                """,
-                {"node_id": node_id},
-            )
-            ids = [r["from_node_id"] for r in edge_rows if r["from_node_id"]]
-        return list(dict.fromkeys(ids))
-
+        )]
     return []
 
 
@@ -111,10 +81,10 @@ async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, A
             """
             INSERT INTO article_nodes
               (node_id, source_item_id, document_instance_id, raw_ref, source_type,
-               source_published_at, source_updated_at, captured_at, effective_at, tags, status)
+               source_published_at, source_updated_at, captured_at, effective_at, tags, status, extracted_text_ref)
             VALUES
               (:node_id, :source_item_id, :document_instance_id, :raw_ref, :source_type,
-               :source_published_at, :source_updated_at, :captured_at, :effective_at, :tags, :status)
+               :source_published_at, :source_updated_at, :captured_at, :effective_at, :tags, :status, :extracted_text_ref)
             ON CONFLICT (node_id) DO UPDATE SET
               source_item_id = EXCLUDED.source_item_id,
               document_instance_id = COALESCE(EXCLUDED.document_instance_id, article_nodes.document_instance_id),
@@ -126,11 +96,13 @@ async def upsert_object_node(node_id: str, object_type: str, fields: dict[str, A
               effective_at = EXCLUDED.effective_at,
               tags = EXCLUDED.tags,
               status = EXCLUDED.status,
+              extracted_text_ref = COALESCE(EXCLUDED.extracted_text_ref, article_nodes.extracted_text_ref),
               updated_at = NOW()
             """,
             {
                 "node_id": node_id,
                 "source_item_id": fields.get("source_item_id"),
+                "extracted_text_ref": fields.get("extracted_text_ref"),
                 "document_instance_id": fields.get("document_instance_id"),
                 "raw_ref": database.jsonb(fields.get("raw_ref") or {}),
                 "source_type": fields.get("source_type"),
@@ -595,188 +567,6 @@ async def upsert_fact_from_mention(
         entity_id, article_id, fact_text,
         user_id=user_id, evidence_span=evidence_span, confidence=salience,
     )
-
-
-async def backfill_entity_facts_from_mentions(user_id: str = "default") -> dict[str, int]:
-    rows = await database.database.fetch_all(
-        """
-        SELECT ke.from_node_id AS article_id, ke.to_node_id AS entity_id,
-               ke.weight, COALESCE(en.canonical_name, n.title) AS canonical_name
-        FROM knowledge_edges ke
-        JOIN knowledge_nodes article ON article.id = ke.from_node_id
-        JOIN knowledge_nodes n ON n.id = ke.to_node_id
-        LEFT JOIN entity_nodes en ON en.node_id = n.id
-        WHERE article.user_id = :user_id
-          AND article.object_type = 'article'
-          AND n.object_type = 'entity'
-          AND ke.relation_type = 'mentions'
-        """,
-        {"user_id": user_id},
-    )
-    inserted = 0
-    for row in rows:
-        created = await upsert_fact_from_mention(
-            row["entity_id"], row["article_id"],
-            canonical_name=row["canonical_name"],
-            salience=float(row["weight"] or 0.5),
-            user_id=user_id,
-        )
-        if created:
-            inserted += 1
-    return {"mentions_checked": len(rows), "facts_inserted": inserted}
-
-
-async def refresh_entity_profile(entity_id: str) -> dict[str, Any]:
-    """Regenerate entity abstract from recent facts (deterministic, no LLM call)."""
-    entity = await database.database.fetch_one(
-        """
-        SELECT n.id, COALESCE(en.canonical_name, n.title) AS canonical_name
-        FROM knowledge_nodes n
-        LEFT JOIN entity_nodes en ON en.node_id = n.id
-        WHERE n.id = :entity_id AND n.object_type = 'entity'
-        """,
-        {"entity_id": entity_id},
-    )
-    if not entity:
-        return {"entity_id": entity_id, "refreshed": False, "reason": "not_found"}
-
-    facts = await database.database.fetch_all(
-        """
-        SELECT fact_text, fact_time FROM entity_facts
-        WHERE entity_id = :entity_id
-        ORDER BY fact_time DESC NULLS LAST, updated_at DESC
-        LIMIT :facts_limit
-        """,
-        {"entity_id": entity_id, "facts_limit": settings.entity_insights.refresh_facts_limit},
-    )
-    facts_count_row = await database.database.fetch_one(
-        "SELECT COUNT(*) AS count FROM entity_facts WHERE entity_id = :entity_id",
-        {"entity_id": entity_id},
-    )
-    facts_count = int(facts_count_row["count"] if facts_count_row else 0)
-    name = entity["canonical_name"] or entity_id
-    if facts:
-        new_abstract = f"{name} appears in {facts_count} source-grounded facts. " + " ".join(
-            f["fact_text"] for f in facts[:3]
-        )
-    else:
-        new_abstract = f"{name} has no extracted source-grounded facts yet."
-
-    await database.database.execute(
-        "UPDATE knowledge_nodes SET abstract = :abstract, updated_at = NOW() WHERE id = :entity_id",
-        {"abstract": new_abstract, "entity_id": entity_id},
-    )
-    return {"entity_id": entity_id, "refreshed": True, "facts_count": facts_count}
-
-
-async def lm_refresh_entity_abstract(entity_id: str) -> dict[str, Any]:
-    """用 LLM 更新 entity abstract，同时重算 embedding。abstract_stale 置 false。"""
-    from kb.retrieval import claude_client, embed_text
-    from kb.common import vector_literal
-
-    entity = await database.database.fetch_one(
-        """
-        SELECT n.id, COALESCE(en.canonical_name, n.title) AS canonical_name,
-               en.aliases, n.abstract
-        FROM knowledge_nodes n
-        JOIN entity_nodes en ON en.node_id = n.id
-        WHERE n.id = :id AND n.object_type = 'entity'
-        """,
-        {"id": entity_id},
-    )
-    if not entity:
-        return {"entity_id": entity_id, "refreshed": False, "reason": "not_found"}
-
-    articles = await database.database.fetch_all(
-        """
-        SELECT n.title, n.abstract
-        FROM knowledge_edges ke
-        JOIN knowledge_nodes n ON n.id = ke.from_node_id
-        WHERE ke.to_node_id = :entity_id
-          AND ke.relation_type = 'mentions'
-          AND n.object_type = 'article'
-          AND n.abstract IS NOT NULL AND n.abstract != ''
-        ORDER BY n.published_at DESC NULLS LAST
-        LIMIT :limit
-        """,
-        {"entity_id": entity_id, "limit": settings.ingestion.max_entity_page_sources},
-    )
-    if not articles:
-        await database.database.execute(
-            "UPDATE entity_nodes SET abstract_stale = false, updated_at = NOW() WHERE node_id = :id",
-            {"id": entity_id},
-        )
-        return {"entity_id": entity_id, "refreshed": False, "reason": "no_mentions"}
-
-    source_abstracts = "\n\n".join(
-        f"《{a['title'] or entity_id}》: {a['abstract']}" for a in articles
-    )
-    existing_body = entity["abstract"] or ""
-
-    message = await claude_client.messages.create(
-        model=settings.models.entity_update,
-        max_tokens=settings.llm_output_tokens.entity_update,
-        messages=[{"role": "user", "content": prompts.entity_update(
-            entity_name=entity["canonical_name"],
-            existing_body=existing_body,
-            new_source_abstracts=source_abstracts,
-        )}],
-    )
-    new_abstract = message_text(message)
-    if not new_abstract:
-        return {"entity_id": entity_id, "refreshed": False, "reason": "empty_response"}
-
-    new_embedding = await embed_text(new_abstract)
-    embedding_literal = vector_literal(new_embedding)
-
-    await database.database.execute(
-        f"""
-        UPDATE knowledge_nodes
-        SET abstract = :abstract,
-            embedding = '{embedding_literal}'::vector,
-            embedding_model = :model,
-            updated_at = NOW()
-        WHERE id = :id
-        """,
-        {"abstract": new_abstract, "model": settings.embedding.model, "id": entity_id},
-    )
-    await database.database.execute(
-        "UPDATE entity_nodes SET abstract_stale = false, updated_at = NOW() WHERE node_id = :id",
-        {"id": entity_id},
-    )
-    return {"entity_id": entity_id, "refreshed": True}
-
-
-async def refresh_stale_entity_abstracts(
-    user_id: str = "default",
-    batch_size: int | None = None,
-) -> dict[str, int]:
-    """批量 LLM 刷新 abstract_stale=true 的 entity，每次处理 entity_update_batch 个。"""
-    limit = batch_size or settings.maintenance.entity_update_batch
-    rows = await database.database.fetch_all(
-        """
-        SELECT en.node_id
-        FROM entity_nodes en
-        JOIN knowledge_nodes n ON n.id = en.node_id
-        WHERE n.user_id = :user_id
-          AND en.abstract_stale = true
-          AND en.merged_into IS NULL
-        ORDER BY n.updated_at ASC
-        LIMIT :limit
-        """,
-        {"user_id": user_id, "limit": limit},
-    )
-    refreshed = 0
-    failed = 0
-    for row in rows:
-        try:
-            result = await lm_refresh_entity_abstract(row["node_id"])
-            if result.get("refreshed"):
-                refreshed += 1
-        except Exception as exc:
-            logger.warning("[entity-refresh] %s failed: %s", row["node_id"], exc)
-            failed += 1
-    return {"stale_found": len(rows), "refreshed": refreshed, "failed": failed}
 
 
 async def rebuild_entity_pair_signals(user_id: str = "default") -> dict[str, int]:

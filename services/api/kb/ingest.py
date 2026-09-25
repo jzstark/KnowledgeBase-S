@@ -26,9 +26,8 @@ from kb.common import USER_DATA_DIR, USER_ID, _vector_literal
 from kb.graph import (
     add_child,
     upsert_object_node,
-    upsert_fact_from_mention,
-    refresh_entity_profile,
 )
+from kb import entity_knowledge
 from kb.retrieval import _embed_text
 from kb.wiki import write_wiki_node
 
@@ -62,6 +61,7 @@ class IngestRequest(BaseModel):
     captured_at: datetime | None = None
     effective_at: datetime | None = None
     source_item_id: str | None = None
+    extracted_text_ref: str | None = None
     document_instance_id: str | None = None   # Phase B: 稳定身份键
     parent_index_id: str | None = None
     doc_kind: str | None = None
@@ -347,6 +347,7 @@ async def do_ingest(body: IngestRequest, *, replace_existing: bool = False) -> s
         body.object_type,
         {
             "source_item_id": body.source_item_id,
+            "extracted_text_ref": body.extracted_text_ref,
             "document_instance_id": body.document_instance_id,
             "raw_ref": body.raw_ref,
             "source_type": body.source_type,
@@ -499,23 +500,19 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
 
     for ent in body.entities:
         if ent.matches_existing_entity_id:
-            await upsert_fact_from_mention(
+            await entity_knowledge.record_contribution(
                 ent.matches_existing_entity_id,
                 body.article_id,
                 summary_hint=ent.summary_hint,
                 salience=ent.salience,
                 user_id=USER_ID,
             )
-            await database.database.execute(
-                "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() WHERE node_id = :id",
-                {"id": ent.matches_existing_entity_id},
-            )
             matched_existing.append(ent.matches_existing_entity_id)
             continue
 
         existing_cand = await database.database.fetch_one(
             """
-            SELECT id, source_article_ids
+            SELECT id, source_article_ids, promoted_entity_id
             FROM entity_candidates
             WHERE user_id = :uid AND canonical_name = :name
             """,
@@ -523,6 +520,13 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
         )
 
         if existing_cand:
+            if existing_cand["promoted_entity_id"]:
+                await entity_knowledge.record_contribution(
+                    existing_cand["promoted_entity_id"], body.article_id,
+                    summary_hint=ent.summary_hint, salience=ent.salience,
+                )
+                matched_existing.append(existing_cand["promoted_entity_id"])
+                continue
             cand_id = existing_cand["id"]
             existing_article_ids = list(existing_cand["source_article_ids"] or [])
             if body.article_id not in existing_article_ids:
@@ -606,23 +610,6 @@ async def do_process_entity_candidates(body: ProcessCandidatesRequest) -> dict:
 
 async def _reset_article_entity_derivatives(article_id: str) -> None:
     """Remove this article's prior contribution before applying fresh analysis."""
-    affected_entities = await database.database.fetch_all(
-        "SELECT DISTINCT entity_id FROM entity_facts WHERE article_id = :article_id",
-        {"article_id": article_id},
-    )
-    if affected_entities:
-        await database.database.execute(
-            """
-            UPDATE entity_nodes
-            SET abstract_stale = true, updated_at = NOW()
-            WHERE node_id = ANY(:entity_ids)
-            """,
-            {"entity_ids": [row["entity_id"] for row in affected_entities]},
-        )
-    await database.database.execute(
-        "DELETE FROM entity_facts WHERE article_id = :article_id",
-        {"article_id": article_id},
-    )
     await database.database.execute(
         """
         UPDATE entity_candidates
@@ -691,6 +678,7 @@ async def do_reingest(body: ReingestRequest) -> dict[str, Any]:
             raise ValueError("默认摘要未被更新")
         summary_id = summary_result
 
+        await entity_knowledge.remove_article(article_id, user_id=body.article.user_id)
         await _reset_article_entity_derivatives(article_id)
         candidate_result = await do_process_entity_candidates(
             ProcessCandidatesRequest(article_id=article_id, entities=body.entities)
@@ -716,7 +704,7 @@ async def do_reingest(body: ReingestRequest) -> dict[str, Any]:
 
 
 async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -> dict:
-    """Back-fill entity_facts when a candidate is promoted."""
+    """Back-fill article sources when a candidate is promoted."""
     cand = await database.database.fetch_one(
         """
         SELECT canonical_name, source_article_ids, max_salience
@@ -725,24 +713,23 @@ async def _materialize_candidate_facts(candidate_id: int, entity_node_id: str) -
         {"cid": candidate_id},
     )
     if not cand:
-        return {"facts_inserted": 0}
+        return {"sources_linked": 0}
     article_ids = list(cand["source_article_ids"] or [])
     fallback_salience = float(cand["max_salience"] or 0.5) or 0.5
-    inserted = 0
+    linked = 0
     for article_id in article_ids:
         if not article_id:
             continue
-        created = await upsert_fact_from_mention(
+        created = await entity_knowledge.record_contribution(
             entity_node_id,
             article_id,
-            canonical_name=cand["canonical_name"],
             summary_hint=None,
             salience=fallback_salience,
             user_id=USER_ID,
         )
         if created:
-            inserted += 1
-    return {"facts_inserted": inserted}
+            linked += 1
+    return {"sources_linked": linked}
 
 
 # ── Route handlers ────────────────────────────────────────────────────────────
@@ -814,12 +801,20 @@ async def mark_candidate_promoted(
     entity_node_id = body.get("entity_node_id")
     if not entity_node_id:
         raise HTTPException(400, "entity_node_id 必填")
-    await database.database.execute(
-        "UPDATE entity_candidates SET promoted_entity_id = :eid WHERE id = :cid",
-        {"eid": entity_node_id, "cid": candidate_id},
-    )
-    facts_result = await _materialize_candidate_facts(candidate_id, entity_node_id)
-    await refresh_entity_profile(entity_node_id)
+    async with database.database.transaction():
+        candidate = await database.database.fetch_one(
+            "SELECT promoted_entity_id FROM entity_candidates WHERE id = :cid FOR UPDATE",
+            {"cid": candidate_id},
+        )
+        if candidate is None:
+            raise HTTPException(404, "candidate 不存在")
+        if candidate["promoted_entity_id"] and candidate["promoted_entity_id"] != entity_node_id:
+            raise HTTPException(409, "candidate 已晋升到其他 entity")
+        await database.database.execute(
+            "UPDATE entity_candidates SET promoted_entity_id = :eid WHERE id = :cid",
+            {"eid": entity_node_id, "cid": candidate_id},
+        )
+        facts_result = await _materialize_candidate_facts(candidate_id, entity_node_id)
     return {"ok": True, **facts_result}
 
 

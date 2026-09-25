@@ -35,6 +35,7 @@ jobs:
             lifecycle:
               - 'services/api/**'
               - 'services/ingestion-worker/**'
+              - 'services/web/**'
               - 'config/**'
               - 'scripts/test_document_lifecycle.sh'
               - '.github/workflows/build.yml'
@@ -67,7 +68,7 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/kb_lifecycle_test
 
   build-web:
-    needs: changes
+    needs: [changes, lifecycle-tests]
     if: needs.changes.outputs.web == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:

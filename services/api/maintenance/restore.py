@@ -14,6 +14,7 @@ import database
 from settings import settings
 from kb.common import split_frontmatter
 from kb.graph import add_child, upsert_object_node
+from kb.entity_knowledge import import_legacy_body, record_contribution
 
 
 def _parse_rebuild_time(value: str | None):
@@ -128,6 +129,8 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
 
         if object_type == "summary":
             abstract = body
+        elif object_type == "entity":
+            abstract = str(m.get("canonical_name") or m.get("title") or "")
         else:
             abstract = body[:500] if body else (str(m.get("canonical_name") or m.get("title") or ""))
 
@@ -243,6 +246,16 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
                     "description": abstract,
                 },
             )
+            if object_type == "article" and body:
+                extracted = user_data_dir / user_id / "extracted" / "restored" / f"{node_id}.txt"
+                extracted.parent.mkdir(parents=True, exist_ok=True)
+                extracted.write_text(body, encoding="utf-8")
+                await database.database.execute(
+                    "UPDATE article_nodes SET extracted_text_ref = :ref WHERE node_id = :id",
+                    {"id": node_id, "ref": str(extracted)},
+                )
+            if object_type == "entity" and body:
+                await import_legacy_body(node_id, body, user_id=user_id)
             nodes_inserted += 1
             print(f"[restore] {object_type}: {node_id} — {m.get('title', '')}", flush=True)
         except Exception as e:
@@ -298,6 +311,18 @@ async def restore_from_wiki(user_id: str = "default") -> dict:
             for target_id in set(re.findall(r'\[\[((?:ent|nod)[_a-z0-9A-Z]+)(?:\|[^\]]+)?\]\]', body)):
                 if target_id in known_ids:
                     await _add_edge(node_id, target_id, "mentions", 0.5)
+
+    for m in all_metas:
+        if m.get("type") != "entity":
+            continue
+        source_ids = m.get("sources") or []
+        if isinstance(source_ids, str):
+            source_ids = [s.strip() for s in source_ids.strip("[]").split(",") if s.strip()]
+        for article_id in source_ids:
+            try:
+                await record_contribution(m["id"], str(article_id), user_id=user_id)
+            except Exception as exc:
+                print(f"[restore] entity source skipped {article_id}→{m['id']}: {exc}", flush=True)
 
     print(f"[restore] done: {nodes_inserted} nodes, {edges_inserted} edges", flush=True)
     return {
@@ -427,6 +452,7 @@ async def rebuild_from_raw(
         """
         SELECT DISTINCT n.id
         FROM knowledge_nodes n
+        LEFT JOIN entity_sources es ON es.entity_id = n.id
         LEFT JOIN entity_facts ef ON ef.entity_id = n.id
         LEFT JOIN knowledge_edges ke
           ON ke.to_node_id = n.id
@@ -434,7 +460,8 @@ async def rebuild_from_raw(
         WHERE n.user_id = :uid
           AND n.object_type = 'entity'
           AND (
-            ef.article_id = ANY(:base_ids)
+            es.article_id = ANY(:base_ids)
+            OR ef.article_id = ANY(:base_ids)
             OR ke.from_node_id = ANY(:base_ids)
           )
         """,

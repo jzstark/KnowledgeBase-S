@@ -46,6 +46,10 @@ async def write_wiki_node(node_id: str, user_id: str) -> None:
         return
 
     object_type = node.get("object_type") or "article"
+    if object_type == "entity":
+        from kb.entity_knowledge import render_wiki
+        await render_wiki(node_id, user_id=user_id)
+        return
     edges = await database.database.fetch_all(
         "SELECT from_node_id, to_node_id, relation_type FROM knowledge_edges "
         "WHERE from_node_id = :id OR to_node_id = :id",

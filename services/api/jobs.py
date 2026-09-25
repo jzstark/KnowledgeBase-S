@@ -170,7 +170,7 @@ async def claim_next_job() -> dict[str, Any] | None:
     return _job(row) if row else None
 
 
-async def complete_job(job_id: str, result: dict[str, Any] | None = None) -> None:
+async def complete_job(job_id: str, result: dict[str, Any] | None = None, *, attempt: int) -> None:
     await database.database.execute(
         """
         UPDATE jobs
@@ -178,22 +178,29 @@ async def complete_job(job_id: str, result: dict[str, Any] | None = None) -> Non
             result = :result,
             finished_at = NOW(),
             error = NULL
-        WHERE id = :id
+        WHERE id = :id AND attempts = :attempt AND status = 'running'
         """,
-        {"id": job_id, "result": database.jsonb(result or {})},
+        {"id": job_id, "attempt": attempt, "result": database.jsonb(result or {})},
     )
 
 
-async def fail_job(job_id: str, error: str) -> None:
+async def heartbeat_job(job_id: str, attempt: int) -> None:
+    await database.database.execute(
+        "UPDATE jobs SET started_at = NOW() WHERE id = :id AND attempts = :attempt AND status = 'running'",
+        {"id": job_id, "attempt": attempt},
+    )
+
+
+async def fail_job(job_id: str, error: str, *, attempt: int) -> None:
     await database.database.execute(
         """
         UPDATE jobs
         SET status = CASE WHEN attempts < max_attempts THEN 'retrying' ELSE 'failed' END,
             error = :error,
             finished_at = CASE WHEN attempts < max_attempts THEN NULL ELSE NOW() END
-        WHERE id = :id
+        WHERE id = :id AND attempts = :attempt AND status = 'running'
         """,
-        {"id": job_id, "error": error[:4000]},
+        {"id": job_id, "attempt": attempt, "error": error[:4000]},
     )
 
 

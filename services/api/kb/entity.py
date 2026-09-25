@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import database
-from kb.graph import lm_refresh_entity_abstract, refresh_stale_entity_abstracts
+from kb import entity_knowledge
 from auth import require_auth, require_auth_or_service_token
 from kb.common import USER_ID
 from kb.wiki import _wiki_file_path
@@ -71,6 +71,9 @@ async def do_update_entity(entity_id: str, body: UpdateEntityRequest) -> None:
             "UPDATE knowledge_nodes SET title = :name, updated_at = NOW() WHERE id = :id",
             {"name": body.canonical_name.strip(), "id": entity_id},
         )
+        await entity_knowledge.request_refresh(entity_id)
+    elif body.aliases is not None:
+        await entity_knowledge.render_wiki(entity_id)
 
 
 async def do_merge_entities(source_id: str, target_id: str) -> None:
@@ -81,58 +84,83 @@ async def do_merge_entities(source_id: str, target_id: str) -> None:
     if source_id == target_id:
         raise ValueError("source 和 target 不能相同")
 
+    users = []
     for eid in (source_id, target_id):
         row = await database.database.fetch_one(
-            "SELECT object_type FROM knowledge_nodes WHERE id = :id", {"id": eid},
+            "SELECT object_type, user_id FROM knowledge_nodes WHERE id = :id", {"id": eid},
         )
         if not row or row["object_type"] != "entity":
             raise ValueError(f"entity 不存在：{eid}")
+        users.append(row["user_id"])
+    if users[0] != users[1]:
+        raise ValueError("不能合并不同用户的 entity")
 
-    # Transfer non-conflicting edges (source as from-node)
-    await database.database.execute(
-        """
-        UPDATE knowledge_edges SET from_node_id = :target
-        WHERE from_node_id = :source
-          AND NOT EXISTS (
-            SELECT 1 FROM knowledge_edges e2
-            WHERE e2.from_node_id = :target
-              AND e2.to_node_id = knowledge_edges.to_node_id
-              AND e2.relation_type = knowledge_edges.relation_type
-          )
-        """,
-        {"source": source_id, "target": target_id},
-    )
-    # Transfer non-conflicting edges (source as to-node)
-    await database.database.execute(
-        """
-        UPDATE knowledge_edges SET to_node_id = :target
-        WHERE to_node_id = :source
-          AND NOT EXISTS (
-            SELECT 1 FROM knowledge_edges e2
-            WHERE e2.to_node_id = :target
-              AND e2.from_node_id = knowledge_edges.from_node_id
-              AND e2.relation_type = knowledge_edges.relation_type
-          )
-        """,
-        {"source": source_id, "target": target_id},
-    )
-    # Drop remaining duplicate edges still referencing source
-    await database.database.execute(
-        "DELETE FROM knowledge_edges WHERE from_node_id = :source OR to_node_id = :source",
-        {"source": source_id},
-    )
-    await database.database.execute(
-        "UPDATE entity_facts SET entity_id = :target WHERE entity_id = :source",
-        {"source": source_id, "target": target_id},
-    )
-    await database.database.execute(
-        "UPDATE entity_nodes SET merged_into = :target WHERE node_id = :source",
-        {"source": source_id, "target": target_id},
-    )
-    await database.database.execute(
-        "UPDATE entity_nodes SET abstract_stale = true, updated_at = NOW() WHERE node_id = :target",
-        {"target": target_id},
-    )
+    async with database.database.transaction():
+        for eid in sorted((source_id, target_id)):
+            await database.database.fetch_one(
+                "SELECT node_id FROM entity_nodes WHERE node_id = :id FOR UPDATE", {"id": eid},
+            )
+        await database.database.execute(
+            """INSERT INTO entity_sources (entity_id, article_id, user_id)
+               SELECT :target, article_id, user_id FROM entity_sources WHERE entity_id = :source
+               ON CONFLICT (entity_id, article_id) DO NOTHING""",
+            {"source": source_id, "target": target_id},
+        )
+        await database.database.execute(
+            "DELETE FROM entity_sources WHERE entity_id = :source", {"source": source_id},
+        )
+
+        # Transfer non-conflicting edges (source as from-node)
+        await database.database.execute(
+            """
+            UPDATE knowledge_edges SET from_node_id = :target
+            WHERE from_node_id = :source
+              AND NOT EXISTS (
+                SELECT 1 FROM knowledge_edges e2
+                WHERE e2.from_node_id = :target
+                  AND e2.to_node_id = knowledge_edges.to_node_id
+                  AND e2.relation_type = knowledge_edges.relation_type
+              )
+            """,
+            {"source": source_id, "target": target_id},
+        )
+        # Transfer non-conflicting edges (source as to-node)
+        await database.database.execute(
+            """
+            UPDATE knowledge_edges SET to_node_id = :target
+            WHERE to_node_id = :source
+              AND NOT EXISTS (
+                SELECT 1 FROM knowledge_edges e2
+                WHERE e2.to_node_id = :target
+                  AND e2.from_node_id = knowledge_edges.from_node_id
+                  AND e2.relation_type = knowledge_edges.relation_type
+              )
+            """,
+            {"source": source_id, "target": target_id},
+        )
+        # Drop remaining duplicate edges still referencing source
+        await database.database.execute(
+            "DELETE FROM knowledge_edges WHERE from_node_id = :source OR to_node_id = :source",
+            {"source": source_id},
+        )
+        await database.database.execute(
+            """INSERT INTO entity_facts
+               (user_id, entity_id, article_id, source_item_id, fact_text, fact_time,
+                source_published_at, evidence_span, confidence)
+               SELECT user_id, :target, article_id, source_item_id, fact_text, fact_time,
+                      source_published_at, evidence_span, confidence
+               FROM entity_facts WHERE entity_id = :source
+               ON CONFLICT (entity_id, article_id, fact_text) DO NOTHING""",
+            {"source": source_id, "target": target_id},
+        )
+        await database.database.execute(
+            "DELETE FROM entity_facts WHERE entity_id = :source", {"source": source_id},
+        )
+        await database.database.execute(
+            "UPDATE entity_nodes SET merged_into = :target WHERE node_id = :source",
+            {"source": source_id, "target": target_id},
+        )
+        await entity_knowledge.request_refresh(target_id, user_id=users[1])
 
 
 async def do_delete_entity(entity_id: str) -> None:
@@ -259,10 +287,11 @@ async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=1
 
 @router.post("/entities/{entity_id}/regenerate")
 async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_auth)):
-    result = await lm_refresh_entity_abstract(entity_id)
-    if result.get("reason") == "not_found":
-        raise HTTPException(404, "entity 不存在")
-    return result
+    try:
+        job = await entity_knowledge.request_refresh(entity_id)
+    except entity_knowledge.EntityKnowledgeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"status": "accepted", "job_id": job["id"], "revision": job["payload"]["revision"]}
 
 
 @router.patch("/entities/{entity_id}")
@@ -298,9 +327,7 @@ async def delete_entity(entity_id: str, _: dict = Depends(require_auth)):
 
 @router.post("/entities/refresh_stale")
 async def trigger_refresh_stale_entities(_: dict = Depends(require_auth_or_service_token)):
-    """由 ingestion-worker 在每轮 pipeline 结束后调用，批量刷新 abstract_stale=true 的 entity。"""
-    result = await refresh_stale_entity_abstracts()
-    return result
+    return await entity_knowledge.enqueue_pending()
 
 
 @router.get("/entity_candidates")

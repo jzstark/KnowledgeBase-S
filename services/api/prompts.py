@@ -11,8 +11,6 @@ except IndexError:
     _LOCAL_PATH = _DEFAULT_PATH
 
 _REQUIRED = frozenset({
-    "entity_page",
-    "entity_update",
     "summary_gen",
     "hyde_abstract",
     "index_summary",
@@ -55,12 +53,6 @@ class Prompts:
 
     def summary_gen(self, *, title: str, abstract: str, body: str, perspective_instruction: str) -> str:
         return _fill(self._raw["summary_gen"], title=title, abstract=abstract, body=body, perspective_instruction=perspective_instruction)
-
-    def entity_page(self, *, entity_name: str, aliases: str, source_abstracts: str) -> str:
-        return _fill(self._raw["entity_page"], entity_name=entity_name, aliases=aliases, source_abstracts=source_abstracts)
-
-    def entity_update(self, *, entity_name: str, existing_body: str, new_source_abstracts: str) -> str:
-        return _fill(self._raw["entity_update"], entity_name=entity_name, existing_body=existing_body, new_source_abstracts=new_source_abstracts)
 
     def index_summary(self, *, index_title: str, child_abstracts: str) -> str:
         return _fill(self._raw["index_summary"], index_title=index_title, child_abstracts=child_abstracts)

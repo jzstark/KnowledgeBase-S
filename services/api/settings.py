@@ -21,7 +21,6 @@ class IngestionSettings:
     max_text_chars: int = 12000
     chunk_trigger_words: int = 5000
     chunk_target_words: int = 1500
-    max_entity_page_sources: int = 5
     max_index_children_abstracts: int = 20
     rss_lookback_days: int = 14
     context_nearby_entities: int = 20
@@ -32,7 +31,6 @@ class IngestionSettings:
 @dataclass(frozen=True)
 class ModelsSettings:
     article_analysis: str = "claude-haiku-4-5-20251001"
-    entity_page: str = "claude-haiku-4-5-20251001"
     entity_update: str = "claude-haiku-4-5-20251001"
     summary_gen: str = "claude-haiku-4-5-20251001"
     index_summary: str = "claude-haiku-4-5-20251001"
@@ -84,20 +82,13 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class MaintenanceSettings:
-    entity_update_batch: int = 10
     rebuild_max_wait_seconds: int = 3600
     rebuild_poll_interval_seconds: int = 20
 
 
 @dataclass(frozen=True)
-class EntityInsightsSettings:
-    refresh_facts_limit: int = 12
-
-
-@dataclass(frozen=True)
 class LlmOutputTokensSettings:
     article_analysis: int = 2048
-    entity_page: int = 2048
     entity_update: int = 2048
     summary_gen: int = 1024
     index_summary: int = 512
@@ -139,7 +130,6 @@ class Settings:
     entity: EntitySettings
     retrieval: RetrievalSettings
     maintenance: MaintenanceSettings
-    entity_insights: EntityInsightsSettings
     llm_output_tokens: LlmOutputTokensSettings
     kb_public: KbPublicSettings
 
@@ -162,7 +152,6 @@ class Settings:
             entity=EntitySettings(**sub("entity")),
             retrieval=RetrievalSettings(**sub("retrieval")),
             maintenance=MaintenanceSettings(**sub("maintenance")),
-            entity_insights=EntityInsightsSettings(**sub("entity_insights")),
             llm_output_tokens=LlmOutputTokensSettings(**sub("llm_output_tokens")),
             kb_public=KbPublicSettings(**sub("kb_public")),
         )

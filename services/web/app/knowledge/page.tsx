@@ -41,6 +41,9 @@ interface KBEdge {
 interface NodeDetail extends KBNode {
   abstract: string;
   wiki_body?: string;
+  knowledge_status?: "pending" | "updating" | "failed" | "published" | "legacy" | null;
+  knowledge_error?: string | null;
+  knowledge_updated_at?: string | null;
   edges: KBEdge[];
 }
 
@@ -839,6 +842,8 @@ function WikiPanel({
   const [reviseLoading, setReviseLoading] = useState(false);
   const [reviseMsg, setReviseMsg] = useState("");
   const [entityFacts, setEntityFacts] = useState<EntityFact[]>([]);
+  const [entityRefreshing, setEntityRefreshing] = useState(false);
+  const [entityRefreshError, setEntityRefreshError] = useState("");
   const [relatedEntities, setRelatedEntities] = useState<RelatedEntity[]>([]);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeTarget, setMergeTarget] = useState("");
@@ -1237,6 +1242,36 @@ function WikiPanel({
 
       {/* Wiki 正文 */}
       <div className="flex-1 overflow-auto p-5">
+        {detail.object_type === "entity" && detail.knowledge_status && (
+          <div className="text-xs text-muted-foreground mb-3 flex items-center gap-3">
+          <span>
+            {detail.knowledge_status === "failed" ? "知识页面更新失败。" :
+             detail.knowledge_status === "updating" ? "知识页面正在更新。" :
+             detail.knowledge_status === "pending" ? "知识页面等待更新。" :
+             detail.knowledge_status === "legacy" ? "当前为旧版内容，尚未根据来源重新生成。" :
+             `知识页面已更新${detail.knowledge_updated_at ? `：${new Date(detail.knowledge_updated_at).toLocaleString()}` : ""}`}
+          </span>
+          <button className="text-primary hover:underline disabled:opacity-50" disabled={entityRefreshing}
+            onClick={async () => {
+              setEntityRefreshing(true);
+              setEntityRefreshError("");
+              try {
+                const response = await fetch(`/api/kb/entities/${detail.id}/regenerate`, {
+                  method: "POST", credentials: "include",
+                });
+                if (response.ok) {
+                  onJobQueued?.();
+                  onNodeUpdated?.(detail.id);
+                } else setEntityRefreshError("提交失败，请稍后重试。");
+              } catch {
+                setEntityRefreshError("网络错误，请稍后重试。");
+              } finally { setEntityRefreshing(false); }
+            }}>
+            {entityRefreshing ? "提交中…" : "重新生成"}
+          </button>
+          {entityRefreshError && <span className="text-destructive">{entityRefreshError}</span>}
+          </div>
+        )}
         {detail.wiki_body ? (
           <MarkdownView content={detail.wiki_body} />
         ) : (
@@ -1372,6 +1407,17 @@ export default function KnowledgePage() {
 
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  useEffect(() => {
+    if (detail?.object_type !== "entity" || !["pending", "updating"].includes(detail.knowledge_status || "")) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/kb/node/${detail.id}`, { credentials: "include" });
+        if (response.ok) setDetail(await response.json());
+      } catch { /* Retry on the next interval. */ }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [detail?.id, detail?.object_type, detail?.knowledge_status]);
 
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);

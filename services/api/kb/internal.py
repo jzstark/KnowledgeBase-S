@@ -208,8 +208,14 @@ async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token
 
     wiki_body = ""
     object_type = node.get("object_type") or "article"
+    entity_body = None
+    if object_type == "entity":
+        from kb.entity_knowledge import read_body
+        entity_body = await read_body(node_id, user_id=node.get("user_id") or USER_ID)
+        if entity_body and entity_body["body_markdown"] is not None:
+            wiki_body = entity_body["body_markdown"]
     wiki_file = _wiki_file_path(node.get("user_id") or USER_ID, node_id, object_type)
-    if wiki_file.exists():
+    if not wiki_body and wiki_file.exists():
         raw_wiki = wiki_file.read_text(encoding="utf-8")
         body_section = split_frontmatter(raw_wiki)[1].strip()
         if body_section:
@@ -222,6 +228,15 @@ async def get_node(node_id: str, _: dict = Depends(require_auth_or_service_token
     return {
         **node,
         "wiki_body": wiki_body,
+        "knowledge_status": (
+            "failed" if entity_body and entity_body["requested_revision"] > entity_body["published_revision"] and entity_body["refresh_status"] == "failed"
+            else "updating" if entity_body and entity_body["requested_revision"] > entity_body["published_revision"] and entity_body["refresh_status"] == "running"
+            else "pending" if entity_body and entity_body["requested_revision"] > entity_body["published_revision"]
+            else "published" if entity_body and entity_body["body_published_at"] is not None
+            else "legacy" if entity_body else None
+        ),
+        "knowledge_error": entity_body["refresh_error"] if entity_body else None,
+        "knowledge_updated_at": entity_body["body_published_at"].isoformat() if entity_body and entity_body["body_published_at"] else None,
         "edges": [dict(e) for e in edges if _is_visible_edge(e["relation_type"])]
         + [
             {
@@ -246,22 +261,25 @@ async def do_delete_node(node_id: str) -> bool:
     knowledge_node is a separate row and must be deleted explicitly (see the
     hard-delete path in routers/folders.py).
     """
-    row = await database.database.fetch_one(
-        "SELECT user_id, object_type FROM knowledge_nodes WHERE id = :id", {"id": node_id},
-    )
-    if not row:
-        return False
-
+    async with database.database.transaction():
+        row = await database.database.fetch_one(
+            "SELECT user_id, object_type FROM knowledge_nodes WHERE id = :id FOR UPDATE",
+            {"id": node_id},
+        )
+        if not row:
+            return False
+        if row["object_type"] == "article":
+            from kb.entity_knowledge import remove_article
+            await remove_article(node_id, user_id=row["user_id"] or USER_ID)
+        await database.database.execute(
+            "DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id", {"id": node_id},
+        )
+        await database.database.execute(
+            "DELETE FROM knowledge_nodes WHERE id = :id", {"id": node_id},
+        )
     wiki_file = _wiki_file_path(row["user_id"] or USER_ID, node_id, row["object_type"] or "article")
     if wiki_file.exists():
         wiki_file.unlink()
-
-    await database.database.execute(
-        "DELETE FROM knowledge_edges WHERE from_node_id = :id OR to_node_id = :id", {"id": node_id},
-    )
-    await database.database.execute(
-        "DELETE FROM knowledge_nodes WHERE id = :id", {"id": node_id},
-    )
     return True
 
 

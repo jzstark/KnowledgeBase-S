@@ -12,7 +12,7 @@
 import json
 
 import database
-from kb.graph import backfill_entity_facts_from_mentions, rebuild_entity_pair_signals
+from kb.graph import rebuild_entity_pair_signals
 
 from .diagnostics import (
     cleanup_legacy_llm_edges,
@@ -67,10 +67,6 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     wikilink_result = {"entities_processed": len(entity_rows), "wikilinks_added": wikilink_total}
     print(f"[maintenance] Wikilink backfill: {wikilink_result}", flush=True)
 
-    facts_result = await backfill_entity_facts_from_mentions(user_id)
-    print(f"[maintenance] Entity facts backfill: {facts_result}", flush=True)
-
-    # entity_profiles 表已删除；entity 描述统一回到 nodes.abstract（regenerate 端点按需更新）
     relatedness_result = await rebuild_entity_pair_signals(user_id)
     print(f"[maintenance] Entity relatedness refresh: {relatedness_result}", flush=True)
 

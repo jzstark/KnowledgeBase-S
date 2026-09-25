@@ -12,7 +12,6 @@ except IndexError:
 
 _REQUIRED = frozenset({
     "article_analysis",
-    "entity_page",
     "image_ocr",
     "image_cleanup",
     "pdf_cleanup",
@@ -49,9 +48,6 @@ class Prompts:
 
     def article_analysis(self, *, text: str, existing_entities: str, candidate_entities: str, existing_tags: str) -> str:
         return _fill(self._raw["article_analysis"], text=text, existing_entities=existing_entities, candidate_entities=candidate_entities, existing_tags=existing_tags)
-
-    def entity_page(self, *, entity_name: str, aliases: str, source_abstracts: str) -> str:
-        return _fill(self._raw["entity_page"], entity_name=entity_name, aliases=aliases, source_abstracts=source_abstracts)
 
     def image_ocr(self) -> str:
         return self._raw["image_ocr"]

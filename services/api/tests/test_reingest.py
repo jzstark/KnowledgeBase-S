@@ -9,6 +9,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from kb import ingest
+from kb import entity_knowledge
 
 
 class _Transaction:
@@ -145,6 +146,7 @@ class ReingestTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ingest.database, "database", fake),
             patch.object(ingest, "do_ingest", do_ingest),
             patch.object(ingest, "_reset_article_entity_derivatives", AsyncMock()),
+            patch.object(entity_knowledge, "remove_article", AsyncMock(return_value=[])),
             patch.object(
                 ingest,
                 "do_process_entity_candidates",

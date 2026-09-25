@@ -18,6 +18,7 @@ class ArticleIngestionInput:
     text: str
     raw_ref: dict
     time_payload: dict
+    extracted_text_ref: str | None = None
     parent_index_id: str | None = None
     analysis_text: str | None = None
     use_entity_context: bool = True
@@ -46,14 +47,10 @@ class ArticleIngestionAdapters:
     replace_article_and_summary: Callable[[dict, dict, list[dict]], Awaitable[dict]]
     get_analysis_context: Callable[[list[float]], Awaitable[dict]]
     process_entity_candidates: Callable[[str, list[dict]], Awaitable[dict]]
-    fetch_node: Callable[[str], Awaitable[dict | None]]
-    generate_entity_page: Callable[[str, list[str], list[str]], str]
     mark_candidate_promoted: Callable[[int, str], Awaitable[None]]
     backfill_wikilinks: Callable[[str], Awaitable[None]]
     write_wiki_article: Callable[[str, RawItem, str, list[str], dict, str, str | None, str | None], None]
     write_wiki_summary: Callable[[str, str, str, str, list[str], str, str], None]
-    write_wiki_entity: Callable[[str, str, list[str], list[str], str, list[str]], None]
-    max_entity_page_sources: int
     embedding_model: str   # 当前使用的 embedding model 名（用于写入 nodes.embedding_model）
 
 
@@ -98,6 +95,7 @@ async def process_article_like_item(
         "tags": tags,
         "object_type": "article",
         "source_item_id": data.source_item_id,
+        "extracted_text_ref": data.extracted_text_ref,
         # doc_kind cascade: API 层 ingest() 沿 document_instances → source_items → sources → default 自动填充
         **data.time_payload,
     }
@@ -196,24 +194,12 @@ async def _promote_entities(
 
     for promoted in promoted_list:
         try:
-            source_abstracts = []
             source_article_ids = promoted.get("source_article_ids", [])
-            for source_article_id in source_article_ids[: adapters.max_entity_page_sources]:
-                article = await adapters.fetch_node(source_article_id)
-                if article and article.get("abstract"):
-                    title = article.get("title") or source_article_id
-                    source_abstracts.append(f"《{title}》: {article['abstract']}")
-
-            entity_body = adapters.generate_entity_page(
-                promoted["canonical_name"],
-                promoted.get("aliases", []),
-                source_abstracts,
-            )
             entity_embedding = await adapters.embed(promoted["canonical_name"])
             entity_id = await adapters.post_ingest({
                 "user_id": data.user_id,
                 "title": promoted["canonical_name"],
-                "abstract": entity_body[:500],
+                "abstract": promoted["canonical_name"],
                 "embedding": entity_embedding,
                 "embedding_model": adapters.embedding_model,
                 "source_type": "entity",
@@ -226,14 +212,6 @@ async def _promote_entities(
                 "aliases": promoted.get("aliases", []),
             })
 
-            adapters.write_wiki_entity(
-                entity_id,
-                promoted["canonical_name"],
-                promoted.get("aliases", []),
-                source_article_ids,
-                entity_body,
-                [],
-            )
             await adapters.mark_candidate_promoted(promoted["candidate_id"], entity_id)
             promoted_entity_ids.append(entity_id)
             logger.info("[%s] entity 晋升入库: %s — %s", data.source_id, entity_id, promoted["canonical_name"])
