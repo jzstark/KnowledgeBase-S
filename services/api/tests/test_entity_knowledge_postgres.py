@@ -55,6 +55,10 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.storage.cleanup()
 
     async def test_new_article_for_existing_entity_updates_visible_page(self):
+        await database.execute(
+            "UPDATE entity_nodes SET aliases = ARRAY['India']::text[] WHERE node_id = :id",
+            {"id": self.entity_id},
+        )
         await ingest.do_process_entity_candidates(ingest.ProcessCandidatesRequest(
             article_id=self.article_id,
             entities=[ingest.EntityCandidateItem(
@@ -67,6 +71,7 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "SELECT requested_revision FROM entity_nodes WHERE node_id = :id", {"id": self.entity_id}
         )
         async def fake_generator(entity, sources):
+            self.assertEqual(entity["aliases"], ["India"])
             self.assertEqual([self.article_id], [source["id"] for source in sources])
             self.assertIn("实施时间", sources[0]["text"])
             return f"第二篇文章讲述某项政策 [[{self.article_id}]]", "第二篇文章讲述某项政策"
@@ -263,6 +268,22 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         page = await entity_knowledge.read_body(self.entity_id)
         self.assertIsNone(page["body_markdown"])
         self.assertEqual(page["published_revision"], 0)
+
+    async def test_no_relevant_facts_result_can_be_published(self):
+        await entity_knowledge.record_contribution(self.entity_id, self.article_id)
+
+        async def no_facts(*_):
+            return "暂无可用的库内事实。", "暂无可用的库内事实。"
+
+        async def no_embedding(_):
+            return None
+
+        with patch.object(wiki, "USER_DATA_DIR", Path(self.storage.name)), patch.object(entity_knowledge, "USER_DATA_DIR", Path(self.storage.name)):
+            result = await entity_knowledge.run_refresh(
+                self.entity_id, 1, generator=no_facts, embedder=no_embedding,
+            )
+        self.assertEqual(result["status"], "published")
+        self.assertEqual((await entity_knowledge.read_body(self.entity_id))["body_markdown"], "暂无可用的库内事实。")
 
     async def test_legacy_audit_is_read_only_and_repair_imports_page(self):
         await database.execute(
