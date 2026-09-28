@@ -101,7 +101,7 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground mb-3">
-              打包下载 user_data/ 目录，包含 wiki 文件、配置（选题方向、写作模板、Schema）。
+              打包下载 user_data/ 目录，包含 wiki 文件及其他用户数据。
               解压后 wiki/ 目录可直接作为 Obsidian vault 打开。
               原始文件（raw/）最多保留 512 MB，超出时自动从最旧文件开始清理。
             </p>

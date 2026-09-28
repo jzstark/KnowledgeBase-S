@@ -97,7 +97,6 @@ interface RawFile {
 interface MdFile {
   name: string;
   rel_path: string;
-  kind?: string;
 }
 
 interface WikiSection {
@@ -111,13 +110,11 @@ interface WikiSection {
 interface FileTree {
   raw: Record<string, RawFile[]>;
   wiki: WikiSection;
-  config: MdFile[];
 }
 
 interface OpenFile {
   rel_path: string;
   name: string;
-  writable: boolean;
 }
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -529,7 +526,7 @@ function ExplorerPanel({
   const [tree, setTree] = useState<FileTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(
-    new Set(["wiki", "wiki-articles", "wiki-entities", "wiki-indices", "config"])
+    new Set(["wiki", "wiki-articles", "wiki-entities", "wiki-indices"])
   );
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -581,20 +578,6 @@ function ExplorerPanel({
     }
   }
 
-  async function handleDeleteConfig(relPath: string, name: string) {
-    if (!confirm(`确认删除配置文件「${name}」？此操作不可撤销。`)) return;
-    setDeleting(relPath);
-    try {
-      const r = await fetch(
-        `/api/files/content?rel_path=${encodeURIComponent(relPath)}`,
-        { method: "DELETE", credentials: "include" },
-      );
-      if (r.ok) { await loadTree(); onDeleted(); }
-    } finally {
-      setDeleting(null);
-    }
-  }
-
   if (loading) return <div className="p-4 text-sm text-muted-foreground">加载中…</div>;
   if (!tree) return <div className="p-4 text-sm text-destructive">加载失败</div>;
 
@@ -640,7 +623,7 @@ function ExplorerPanel({
                           <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
                             <button
                               onClick={() => {
-                                onOpenFile({ rel_path: f.rel_path, name: f.name, writable: false });
+                                onOpenFile({ rel_path: f.rel_path, name: f.name });
                                 onSelectNode(nodeId);
                               }}
                               className={cn(
@@ -671,43 +654,6 @@ function ExplorerPanel({
         )}
       </div>
 
-      <div className="border-t border-border my-2" />
-
-      {/* 配置文档 */}
-      <div>
-        <button
-          onClick={() => toggle("config")}
-          className="flex items-center w-full text-left font-medium text-foreground/80 py-1 hover:text-foreground"
-        >
-          {chevron("config")} 配置文档
-          <span className="ml-1 text-xs text-muted-foreground/40">({tree.config.length})</span>
-        </button>
-        {expanded.has("config") && (
-          <div className="ml-3 space-y-0.5">
-            {tree.config.map((f) => (
-              <div key={f.rel_path} className="flex items-center group gap-1 py-0.5">
-                <button
-                  onClick={() => onOpenFile({ rel_path: f.rel_path, name: f.name, writable: true })}
-                  className="flex-1 min-w-0 text-left text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 truncate rounded px-1"
-                  title={f.name}
-                >
-                  📄 {f.kind === "topics" ? "选题方向" : f.name}
-                </button>
-                {f.kind !== "topics" && (
-                  <button
-                    onClick={() => handleDeleteConfig(f.rel_path, f.name)}
-                    disabled={deleting === f.rel_path}
-                    className="shrink-0 text-muted-foreground/30 hover:text-destructive transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
-                    title="删除配置文件"
-                  >
-                    {deleting === f.rel_path ? "…" : "✕"}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -717,15 +663,9 @@ function ExplorerPanel({
 function FilePanel({ file, onClose }: { file: OpenFile; onClose: () => void }) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState("");
 
   useEffect(() => {
     setLoading(true);
-    setEditing(false);
-    setSaveMsg("");
     fetch(`/api/files/content?rel_path=${encodeURIComponent(file.rel_path)}`, {
       credentials: "include",
     })
@@ -735,53 +675,12 @@ function FilePanel({ file, onClose }: { file: OpenFile; onClose: () => void }) {
       .finally(() => setLoading(false));
   }, [file.rel_path]);
 
-  async function handleSave() {
-    setSaving(true);
-    try {
-      const r = await fetch("/api/files/content", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rel_path: file.rel_path, content: draft }),
-      });
-      if (r.ok) {
-        setContent(draft);
-        setEditing(false);
-        setSaveMsg("已保存");
-        setTimeout(() => setSaveMsg(""), 2000);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0 bg-muted/30">
         <span className="flex-1 text-xs font-medium truncate" title={file.name}>
           {file.name}
         </span>
-        {saveMsg && <span className="text-xs text-green-500">{saveMsg}</span>}
-        {file.writable && !editing && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 text-xs"
-            onClick={() => { setDraft(content ?? ""); setEditing(true); }}
-          >
-            编辑
-          </Button>
-        )}
-        {editing && (
-          <>
-            <Button size="sm" className="h-6 text-xs" onClick={handleSave} disabled={saving}>
-              {saving ? "保存中…" : "保存"}
-            </Button>
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setEditing(false)}>
-              取消
-            </Button>
-          </>
-        )}
         <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none ml-1">
           ×
         </button>
@@ -791,13 +690,6 @@ function FilePanel({ file, onClose }: { file: OpenFile; onClose: () => void }) {
           <div className="p-4 text-sm text-muted-foreground">加载中…</div>
         ) : content === null ? (
           <div className="p-4 text-sm text-destructive">加载失败</div>
-        ) : editing ? (
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            className="w-full h-full p-4 text-xs font-mono bg-background text-foreground resize-none outline-none"
-            spellCheck={false}
-          />
         ) : (
           <MarkdownView content={content} className="p-4" />
         )}
@@ -1078,7 +970,6 @@ function WikiPanel({
                 onOpenFile({
                   rel_path: `wiki/${wikiSubdir}/${detail.id}.md`,
                   name: `${detail.title || detail.id}.md`,
-                  writable: false,
                 })
               }
             >

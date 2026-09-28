@@ -1,10 +1,9 @@
 """
 文件资源管理 API。
 
-提供对 user_data 目录下三个区域的访问：
+提供对 user_data 目录下两个区域的访问：
   - raw/   原始上传文件（只读列表 + 删除通过 kb.py 的节点删除接口）
   - wiki/  自动生成的 Markdown 笔记（只读导出）
-  - config/ 用户配置文档（可读写）
 """
 
 import os
@@ -12,7 +11,6 @@ import pathlib
 
 import database
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from auth import require_auth
 
@@ -22,8 +20,7 @@ USER_ID = "default"
 router = APIRouter(prefix="/api/files", tags=["files"], dependencies=[Depends(require_auth)])
 
 RAW_TYPES = ["pdf", "image", "wechat", "plaintext", "word"]
-READABLE_PREFIXES = ("wiki/", "config/")
-WRITABLE_PREFIXES = ("config/",)
+READABLE_PREFIXES = ("wiki/",)
 
 
 def _user_dir() -> pathlib.Path:
@@ -36,8 +33,7 @@ def _safe_path(rel_path: str, allowed_prefixes: tuple[str, ...], deny_detail: st
     an allowed area. Raises 403 otherwise.
 
     The allowed-area check runs against the *normalized* path (after resolving
-    any `..`), so a value like `config/../wiki/x` cannot slip past the writable
-    prefix and land outside the intended area.
+    any `..`).
     """
     base = _user_dir().resolve()
     resolved = (base / rel_path).resolve()
@@ -54,15 +50,11 @@ def _safe_readable(rel_path: str) -> pathlib.Path:
     return _safe_path(rel_path, READABLE_PREFIXES, "该路径不可读取")
 
 
-def _safe_writable(rel_path: str) -> pathlib.Path:
-    return _safe_path(rel_path, WRITABLE_PREFIXES, "该路径不可编辑")
-
-
 # ── 目录树 ────────────────────────────────────────────────────────────────────
 
 @router.get("/tree")
 async def get_tree():
-    """返回 user_data 目录树（raw / wiki / config 三区）。"""
+    """返回 user_data 目录树（raw / wiki 两区）。"""
     base = _user_dir()
 
     # ── raw 区：按 source type 分组，每个文件关联 node_id ──
@@ -111,50 +103,15 @@ async def get_tree():
                     if f.is_file() and f.suffix == ".md":
                         wiki[subdir].append({"name": f.name, "rel_path": f"wiki/{subdir}/{f.name}"})
 
-    # ── config 区：topics.md + templates/*.md ──
-    config: list[dict] = []
-    topics_file = base / "config" / "topics.md"
-    if topics_file.exists():
-        config.append({"name": "topics.md", "rel_path": "config/topics.md", "kind": "topics"})
-    config_dir = base / "config" / "templates"
-    if config_dir.exists():
-        for f in sorted(config_dir.iterdir()):
-            if f.is_file() and f.suffix == ".md":
-                config.append({"name": f.name, "rel_path": f"config/templates/{f.name}", "kind": "template"})
-
-    return {"raw": raw, "wiki": wiki, "config": config}
+    return {"raw": raw, "wiki": wiki}
 
 
-# ── 文件内容读写 ───────────────────────────────────────────────────────────────
+# ── 文件内容读取 ───────────────────────────────────────────────────────────────
 
 @router.get("/content")
 async def get_content(rel_path: str = Query(...)):
-    """读取 wiki/ 或 config/ 下的 Markdown 文件内容。"""
+    """读取 wiki/ 下的 Markdown 文件内容。"""
     path = _safe_readable(rel_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     return {"content": path.read_text(encoding="utf-8")}
-
-
-class WriteContentBody(BaseModel):
-    rel_path: str
-    content: str
-
-
-@router.put("/content")
-async def put_content(body: WriteContentBody):
-    """写入 config/ 下的 Markdown 文件内容。wiki/ 是只读导出。"""
-    path = _safe_writable(body.rel_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body.content, encoding="utf-8")
-    return {"ok": True}
-
-
-@router.delete("/content")
-async def delete_content(rel_path: str = Query(...)):
-    """删除 config/ 下的文件。wiki 节点删除通过 /api/kb/nodes/{id}。"""
-    path = _safe_writable(rel_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    path.unlink()
-    return {"ok": True}
