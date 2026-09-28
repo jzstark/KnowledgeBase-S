@@ -1355,15 +1355,20 @@ function WikiPanel({
 
 function JobsPanel({
   jobs,
+  showFailed,
   onRetry,
   onCancel,
 }: {
   jobs: Job[];
+  showFailed: boolean;
   onRetry: (jobId: string) => void;
   onCancel: (jobId: string) => void;
 }) {
   const visible = jobs
-    .filter((job) => job.status !== "succeeded" && job.status !== "cancelled")
+    .filter((job) =>
+      job.status === "pending" || job.status === "running" || job.status === "retrying" ||
+      (showFailed && job.status === "failed")
+    )
     .slice(0, 6);
   if (visible.length === 0) return null;
   return (
@@ -1402,6 +1407,8 @@ function JobsPanel({
 export default function KnowledgePage() {
   const [maintenanceMsg, setMaintenanceMsg] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [showFailedJobs, setShowFailedJobs] = useState(false);
+  const failedJobCount = jobs.filter((job) => job.status === "failed").length;
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
@@ -1814,11 +1821,18 @@ export default function KnowledgePage() {
       {/* 顶部工具栏 */}
       <header className="bg-muted/50 border-b border-border px-5 py-2.5 flex items-center justify-between shrink-0">
         <h1 className="text-base font-semibold">知识库</h1>
-        <Button variant="outline" size="sm" onClick={handleMaintenance}>
-          {maintenanceMsg || "立即运行维护"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {failedJobCount > 0 && (
+            <Button variant="ghost" size="sm" aria-expanded={showFailedJobs} onClick={() => setShowFailedJobs((value) => !value)}>
+              {showFailedJobs ? "收起失败任务" : `失败任务 (${failedJobCount})`}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={handleMaintenance}>
+            {maintenanceMsg || "立即运行维护"}
+          </Button>
+        </div>
       </header>
-      <JobsPanel jobs={jobs} onRetry={retryJob} onCancel={cancelJob} />
+      <JobsPanel jobs={jobs} showFailed={showFailedJobs} onRetry={retryJob} onCancel={cancelJob} />
 
       {/* 四面板主体 */}
       <div className="flex flex-1 min-h-0">
