@@ -1,0 +1,11 @@
+{
+  "bootstrap_repetitions": 400,
+  "bootstrap_seed_base": 20261015,
+  "numpy": "1.26.4",
+  "script_sha256": "6778aa4eb023e18f039fe6d930f236d3d50590f6b112103d3c253171a8c45b7a",
+  "inputs_sha256": {
+    "config.json": "d7f513689d8d15ae35804899711d9b7790a00c3f3b2638dc4d5af6f863a98864",
+    "summary.csv": "ff05b032ceeb38b0252d9f0c3ea49861edb81244f9d470c09daa6cd670ee6b1d",
+    "replicates.npz": "a00b2e3678631bb6e8389f069605ded6476ac2a499a68d46faa84d2b24bccb4d"
+  }
+}

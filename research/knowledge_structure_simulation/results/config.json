@@ -1,0 +1,100 @@
+{
+  "seed": 20261014,
+  "repetitions": 1000,
+  "target_recall": 0.9,
+  "profiles": [
+    {
+      "name": "scifact_density",
+      "n": 5183,
+      "mean_relevant": 1.1
+    },
+    {
+      "name": "nfcorpus_density",
+      "n": 3633,
+      "mean_relevant": 38.2
+    }
+  ],
+  "anchors": {
+    "density_source": "https://arxiv.org/pdf/2104.08663v4#page=4",
+    "length_source": "https://arxiv.org/html/2401.18059v1#A3",
+    "branching_source": "https://arxiv.org/html/2401.18059v1#A2.SS1",
+    "branching": 7,
+    "summary_length": 131,
+    "leaf_length": 85.6,
+    "note": "Synthetic evidence units combine document-level annotation density with chunk-level length ratios. This does not reproduce either benchmark."
+  },
+  "assumptions": {
+    "depth": 2,
+    "rho": 0.05,
+    "rank_delta": 2.0,
+    "tpr": 0.95,
+    "fpr": 0.05,
+    "upper_tpr_loss": 0.0,
+    "upper_cost_growth": 1.0,
+    "shuffle": false,
+    "correlated_errors": false,
+    "summary_cost_multiplier": 1.0
+  },
+  "variants": [
+    {
+      "name": "reference_assumptions"
+    },
+    {
+      "name": "independent",
+      "rho": 0.0
+    },
+    {
+      "name": "strong_clustering",
+      "rho": 0.2
+    },
+    {
+      "name": "shuffled_groups",
+      "shuffle": true
+    },
+    {
+      "name": "strong_flat_ranker",
+      "rank_delta": 4.0
+    },
+    {
+      "name": "weak_flat_ranker",
+      "rank_delta": 1.0
+    },
+    {
+      "name": "noisy_summaries",
+      "tpr": 0.8,
+      "fpr": 0.2
+    },
+    {
+      "name": "uninformative_summaries",
+      "tpr": 0.5,
+      "fpr": 0.5
+    },
+    {
+      "name": "one_level",
+      "depth": 1
+    },
+    {
+      "name": "three_levels",
+      "depth": 3
+    },
+    {
+      "name": "degrading_upper_levels",
+      "depth": 3,
+      "upper_tpr_loss": 0.05,
+      "upper_cost_growth": 2.0
+    },
+    {
+      "name": "correlated_errors",
+      "correlated_errors": true
+    },
+    {
+      "name": "double_summary_cost",
+      "summary_cost_multiplier": 2.0
+    },
+    {
+      "name": "perfect_signal_diagnostic",
+      "tpr": 1.0,
+      "fpr": 0.0
+    }
+  ]
+}

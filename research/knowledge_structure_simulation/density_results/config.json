@@ -1,0 +1,78 @@
+{
+  "seed": 20261014,
+  "repetitions": 1000,
+  "target_recall": 0.9,
+  "profiles": [
+    {
+      "name": "density_01_scifact",
+      "n": 10000,
+      "mean_relevant": 2.122322978969709,
+      "density_provenance": "BEIR SciFact: 1.1 / 5183"
+    },
+    {
+      "name": "density_02_interpolated",
+      "n": 10000,
+      "mean_relevant": 7.818619429281182,
+      "density_provenance": "Geometric midpoint of SciFact and TREC-COVID densities; synthetic interpolation"
+    },
+    {
+      "name": "density_03_trec_covid",
+      "n": 10000,
+      "mean_relevant": 28.80372609903579,
+      "density_provenance": "BEIR TREC-COVID: 493.5 / 171332"
+    },
+    {
+      "name": "density_04_interpolated",
+      "n": 10000,
+      "mean_relevant": 55.03301656412672,
+      "density_provenance": "Geometric midpoint of TREC-COVID and NFCorpus densities; synthetic interpolation"
+    },
+    {
+      "name": "density_05_nfcorpus",
+      "n": 10000,
+      "mean_relevant": 105.14726121662538,
+      "density_provenance": "BEIR NFCorpus: 38.2 / 3633"
+    }
+  ],
+  "anchors": {
+    "density_source": "https://arxiv.org/pdf/2104.08663v4#page=4",
+    "length_source": "https://arxiv.org/html/2401.18059v1#A3",
+    "branching_source": "https://arxiv.org/html/2401.18059v1#A2.SS1",
+    "branching": 7,
+    "summary_length": 131,
+    "leaf_length": 85.6,
+    "note": "Synthetic evidence units combine document-level annotation density with chunk-level length ratios. This does not reproduce either benchmark."
+  },
+  "assumptions": {
+    "depth": 2,
+    "rho": 0.05,
+    "rank_delta": 2.0,
+    "tpr": 0.95,
+    "fpr": 0.05,
+    "upper_tpr_loss": 0.0,
+    "upper_cost_growth": 1.0,
+    "shuffle": false,
+    "correlated_errors": false,
+    "summary_cost_multiplier": 1.0
+  },
+  "variants": [
+    {
+      "name": "reference_assumptions"
+    },
+    {
+      "name": "moderate_summaries",
+      "tpr": 0.9,
+      "fpr": 0.1
+    },
+    {
+      "name": "noisy_summaries",
+      "tpr": 0.8,
+      "fpr": 0.2
+    },
+    {
+      "name": "strong_flat_ranker",
+      "rank_delta": 4.0
+    }
+  ],
+  "sweep_note": "Five density levels fixed before running: three BEIR annotation-density anchors and two geometric interpolations; N=10000 throughout. Other settings unchanged; no selection based on improvement."
+}

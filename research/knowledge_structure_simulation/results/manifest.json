@@ -1,0 +1,8 @@
+{
+  "elapsed_seconds": 18.848956814035773,
+  "python": "3.11.7",
+  "numpy": "1.26.4",
+  "script_sha256": "ee1981000db70e4c4f69d2d1202beaa6db6db9ce73c12fb08f7cfd7128761579",
+  "config_sha256": "a9a0df46c3b8f0baf880f898100309ef18426339e0e7e241fa26b21f364b7056",
+  "note": "Monte Carlo error excludes model uncertainty. Costs are synthetic reading units; preprocessing and cheap scoring are excluded."
+}
