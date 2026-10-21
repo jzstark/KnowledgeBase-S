@@ -27,6 +27,7 @@ class ArticleIngestionInput:
     doc_kind: str | None = None
     document_instance_id: str | None = None   # Phase B: 稳定身份键
     replace_existing: bool = False
+    analysis: dict | None = None   # 预先完成的分析（书籍章节在任何写入前统一分析）
 
 
 @dataclass
@@ -41,7 +42,7 @@ class ArticleIngestionResult:
 
 @dataclass
 class ArticleIngestionAdapters:
-    analyze_article: Callable[[str, list[dict], list[dict], list[dict]], dict]
+    analyze_article: Callable[..., dict]   # (text, nearby, candidates, tags, *, source_item_id)
     embed: Callable[[str], Awaitable[list[float]]]
     post_ingest: Callable[[dict], Awaitable[str]]
     replace_article_and_summary: Callable[[dict, dict, list[dict]], Awaitable[dict]]
@@ -71,7 +72,10 @@ async def process_article_like_item(
         top_candidates = context.get("top_candidates", [])
         popular_tags = context.get("popular_tags", [])
 
-    analysis = adapters.analyze_article(analysis_text, nearby_entities, top_candidates, popular_tags)
+    analysis = data.analysis or adapters.analyze_article(
+        analysis_text, nearby_entities, top_candidates, popular_tags,
+        source_item_id=data.source_item_id,
+    )
     abstract = analysis["abstract"]
     tags = analysis["tags"]
     entities = analysis["entities"]

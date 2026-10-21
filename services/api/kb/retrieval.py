@@ -26,8 +26,7 @@ async def embed_query(text: str) -> list[float]:
         return await embed_text(text)
     try:
         hypo = await claude_client.messages.create(
-            model=settings.models.hyde_abstract,
-            max_tokens=settings.llm_output_tokens.hyde_abstract,
+            **settings.model_params("hyde_abstract"),
             messages=[{"role": "user", "content": prompts.hyde_abstract(topic=text)}],
         )
         hypo_text = message_text(hypo)

@@ -5,6 +5,7 @@ import traceback
 
 import database
 import jobs
+import llm_batch
 
 
 POLL_INTERVAL_SECONDS = float(os.environ.get("JOB_WORKER_POLL_INTERVAL", "2"))
@@ -25,10 +26,11 @@ async def run_job(job: dict) -> dict:
     job_type = job["job_type"]
     payload = job["payload"] or {}
     user_id = job["user_id"]
+    owner = jobs.job_owner(job["id"])
 
     if job_type == "refresh_entity":
         from kb.entity_knowledge import run_refresh
-        return await run_refresh(payload["entity_id"], payload["revision"], user_id=user_id)
+        return await run_refresh(payload["entity_id"], payload["revision"], user_id=user_id, owner=owner)
 
     if job_type == "generate_summary":
         from kb.summary import generate_summary_job
@@ -38,6 +40,7 @@ async def run_job(job: dict) -> dict:
             payload.get("perspective_label"),
             payload.get("perspective_instruction"),
             user_id,
+            owner=owner,
         )
     if job_type == "revise_summary":
         from kb.summary import revise_summary_job
@@ -48,14 +51,16 @@ async def run_job(job: dict) -> dict:
             payload.get("perspective_label"),
             payload.get("perspective_instruction"),
             user_id,
+            owner=owner,
         )
     if job_type == "aggregate_index_abstract":
         from maintenance import aggregate_index_abstracts
 
         return await aggregate_index_abstracts(
             user_id,
-            index_id=payload["index_id"],
+            index_id=payload.get("index_id"),
             only_stale=bool(payload.get("only_stale", False)),
+            owner=owner,
         )
     if job_type == "rebuild_wiki":
         from kb import wiki
@@ -73,14 +78,50 @@ async def run_job(job: dict) -> dict:
     raise ValueError(f"unknown job_type: {job_type}")
 
 
+async def process_job(job: dict) -> None:
+    """Run one claimed job: complete it, park it for batch results, or record the failure."""
+    print(f"[job-worker] running {job['id']} {job['job_type']}", flush=True)
+    heartbeat = asyncio.create_task(_entity_heartbeat(job["id"], job["attempts"])) if job["job_type"] == "refresh_entity" else None
+    try:
+        result = (await asyncio.wait_for(run_job(job), ENTITY_REFRESH_TIMEOUT_SECONDS)
+                  if heartbeat else await run_job(job))
+        await jobs.complete_job(job["id"], result, attempt=job["attempts"])
+        print(f"[job-worker] succeeded {job['id']}", flush=True)
+    except llm_batch.Deferred:
+        await jobs.defer_job(job["id"], attempt=job["attempts"])
+        print(f"[job-worker] waiting for batch results {job['id']}", flush=True)
+    except Exception as exc:
+        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        await jobs.fail_job(job["id"], error, attempt=job["attempts"])
+        print(f"[job-worker] failed {job['id']}: {error}", flush=True)
+    finally:
+        if heartbeat:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+
+
 async def worker_loop() -> None:
     await database.init()
     print("[job-worker] started", flush=True)
+    from settings import settings
+    skip_types = [] if settings.entity.refresh_enabled else ["refresh_entity"]
+    if skip_types:
+        print("[job-worker] entity refresh paused (entity.refresh_enabled=false)", flush=True)
     last_reclaim = 0.0
     last_entity_scan = 0.0
+    last_dispatch = 0.0
     try:
         while True:
             now = time.monotonic()
+            if now - last_dispatch >= settings.llm_batch.poll_interval_seconds:
+                try:
+                    await llm_batch.dispatch()
+                except Exception as exc:
+                    print(f"[job-worker] batch dispatch failed: {exc}", flush=True)
+                last_dispatch = now
             if now - last_entity_scan >= RECLAIM_INTERVAL_SECONDS:
                 from kb.entity_knowledge import enqueue_pending
                 await enqueue_pending()
@@ -91,29 +132,12 @@ async def worker_loop() -> None:
                     print(f"[job-worker] reclaimed {reclaimed} stuck job(s)", flush=True)
                 last_reclaim = now
 
-            job = await jobs.claim_next_job()
+            job = await jobs.claim_next_job(skip_types)
             if not job:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
-            print(f"[job-worker] running {job['id']} {job['job_type']}", flush=True)
-            heartbeat = asyncio.create_task(_entity_heartbeat(job["id"], job["attempts"])) if job["job_type"] == "refresh_entity" else None
-            try:
-                result = (await asyncio.wait_for(run_job(job), ENTITY_REFRESH_TIMEOUT_SECONDS)
-                          if heartbeat else await run_job(job))
-                await jobs.complete_job(job["id"], result, attempt=job["attempts"])
-                print(f"[job-worker] succeeded {job['id']}", flush=True)
-            except Exception as exc:
-                error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                await jobs.fail_job(job["id"], error, attempt=job["attempts"])
-                print(f"[job-worker] failed {job['id']}: {error}", flush=True)
-            finally:
-                if heartbeat:
-                    heartbeat.cancel()
-                    try:
-                        await heartbeat
-                    except asyncio.CancelledError:
-                        pass
+            await process_job(job)
     finally:
         await database.database.disconnect()
 

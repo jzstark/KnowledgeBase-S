@@ -33,6 +33,8 @@ PYTHONPATH="$PWD/services/api${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest \
   services/api/tests/test_document_lifecycle_postgres.py \
   services/api/tests/test_document_intake_postgres.py \
   services/api/tests/test_entity_knowledge_postgres.py \
-  services/api/tests/test_entity_knowledge_generation.py -q
+  services/api/tests/test_entity_knowledge_generation.py \
+  services/api/tests/test_llm_batch_postgres.py -q
 PYTHONPATH="$PWD/services/ingestion-worker${PYTHONPATH:+:$PYTHONPATH}" python3 -m pytest \
-  services/ingestion-worker/tests/test_article_ingestion.py -q
+  services/ingestion-worker/tests/test_article_ingestion.py \
+  services/ingestion-worker/tests/test_llm_deferral.py -q

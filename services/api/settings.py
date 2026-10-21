@@ -35,11 +35,11 @@ class ModelsSettings:
     summary_gen: str = "claude-haiku-4-5-20251001"
     index_summary: str = "claude-haiku-4-5-20251001"
     hyde_abstract: str = "claude-haiku-4-5-20251001"
-    compare: str = "claude-sonnet-4-6"
-    cite: str = "claude-sonnet-4-6"
-    summarize_corpus: str = "claude-sonnet-4-6"
-    image_ocr: str = "claude-sonnet-4-6"
-    image_cleanup: str = "claude-sonnet-4-6"
+    compare: str = "claude-sonnet-5-5"
+    cite: str = "claude-sonnet-5-5"
+    summarize_corpus: str = "claude-sonnet-5-5"
+    image_ocr: str = "claude-haiku-4-5-20251001"
+    image_cleanup: str = "claude-sonnet-5-5"
     pdf_cleanup: str = "claude-haiku-4-5-20251001"
 
 
@@ -56,6 +56,7 @@ class EntitySettings:
     promotion_salience: float = 0.7
     promotion_salience_mentions: int = 2
     promotion_min_mentions: int = 3
+    refresh_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,15 +90,15 @@ class MaintenanceSettings:
 @dataclass(frozen=True)
 class LlmOutputTokensSettings:
     article_analysis: int = 2048
-    entity_update: int = 2048
+    entity_update: int = 16000
     summary_gen: int = 1024
     index_summary: int = 512
     hyde_abstract: int = 200
-    compare: int = 2048
-    cite: int = 2048
-    summarize_corpus: int = 3000
+    compare: int = 8192
+    cite: int = 8192
+    summarize_corpus: int = 8192
     image_ocr: int = 4096
-    image_cleanup: int = 4096
+    image_cleanup: int = 8192
     pdf_cleanup: int = 4096
 
 
@@ -122,6 +123,28 @@ class KbPublicSettings:
 
 
 @dataclass(frozen=True)
+class LlmEffortSettings:
+    """Effort per model route; empty for models that do not accept effort (Haiku 4.5)."""
+    article_analysis: str = ""
+    entity_update: str = ""
+    summary_gen: str = ""
+    index_summary: str = ""
+    hyde_abstract: str = ""
+    compare: str = "low"
+    cite: str = "low"
+    summarize_corpus: str = "low"
+    image_ocr: str = ""
+    image_cleanup: str = "low"
+    pdf_cleanup: str = ""
+
+
+@dataclass(frozen=True)
+class LlmBatchSettings:
+    enabled: bool = True
+    poll_interval_seconds: int = 60
+
+
+@dataclass(frozen=True)
 class Settings:
     doc_kind: DocKindSettings
     ingestion: IngestionSettings
@@ -131,6 +154,8 @@ class Settings:
     retrieval: RetrievalSettings
     maintenance: MaintenanceSettings
     llm_output_tokens: LlmOutputTokensSettings
+    llm_effort: LlmEffortSettings
+    llm_batch: LlmBatchSettings
     kb_public: KbPublicSettings
 
     @classmethod
@@ -153,8 +178,21 @@ class Settings:
             retrieval=RetrievalSettings(**sub("retrieval")),
             maintenance=MaintenanceSettings(**sub("maintenance")),
             llm_output_tokens=LlmOutputTokensSettings(**sub("llm_output_tokens")),
+            llm_effort=LlmEffortSettings(**sub("llm_effort")),
+            llm_batch=LlmBatchSettings(**sub("llm_batch")),
             kb_public=KbPublicSettings(**sub("kb_public")),
         )
+
+    def model_params(self, route: str) -> dict[str, Any]:
+        """Model, output cap and effort for one configured model route."""
+        params: dict[str, Any] = {
+            "model": getattr(self.models, route),
+            "max_tokens": getattr(self.llm_output_tokens, route),
+        }
+        effort = getattr(self.llm_effort, route)
+        if effort:
+            params["output_config"] = {"effort": effort}
+        return params
 
 
 settings = Settings.load()

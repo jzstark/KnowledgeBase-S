@@ -730,8 +730,7 @@ async def compare(
     )
 
     resp = await claude_client.messages.create(
-        model=settings.models.compare,
-        max_tokens=settings.llm_output_tokens.compare,
+        **settings.model_params("compare"),
         messages=[{"role": "user", "content": prompt}],
     )
     output = message_text(resp)
@@ -859,8 +858,7 @@ async def cite(
         candidates=_docs_to_prompt_text(docs_for_prompt),
     )
     resp = await claude_client.messages.create(
-        model=settings.models.cite,
-        max_tokens=settings.llm_output_tokens.cite,
+        **settings.model_params("cite"),
         messages=[{"role": "user", "content": prompt}],
     )
     raw_text = message_text(resp)
@@ -991,8 +989,7 @@ async def summarize_corpus(
         output_format=body.output_format,
     )
     resp = await claude_client.messages.create(
-        model=settings.models.summarize_corpus,
-        max_tokens=settings.llm_output_tokens.summarize_corpus,
+        **settings.model_params("summarize_corpus"),
         messages=[{"role": "user", "content": prompt}],
     )
     summary_text = message_text(resp)

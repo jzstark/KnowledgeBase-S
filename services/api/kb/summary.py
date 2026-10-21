@@ -20,12 +20,13 @@ from pydantic import BaseModel
 
 import database
 import jobs
+import llm_batch
 from kb.graph import upsert_object_node
 from settings import settings
 from prompts import prompts
 from auth import require_auth
 from kb.common import USER_ID, _vector_literal, message_text
-from kb.retrieval import _embed_text, claude_client
+from kb.retrieval import _embed_text
 from kb.wiki import _wiki_file_path, write_wiki_node
 from kb.ingest import _summary_perspective, build_similar_edges
 
@@ -53,6 +54,8 @@ async def generate_summary_job(
     perspective_label_input: str | None,
     perspective_instruction_input: str | None,
     user_id: str = USER_ID,
+    *,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     """Generate and persist a new summary node. Called by the job runner."""
     source = await database.database.fetch_one(
@@ -80,11 +83,10 @@ async def generate_summary_job(
         body=(source["abstract"] or "")[:3000],
         perspective_instruction=prompt_perspective_instruction,
     )
-    message = await claude_client.messages.create(
-        model=settings.models.summary_gen,
-        max_tokens=settings.llm_output_tokens.summary_gen,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    message = await llm_batch.call(owner, "summary", {
+        **settings.model_params("summary_gen"),
+        "messages": [{"role": "user", "content": prompt}],
+    })
     summary_content = message_text(message)
 
     body_embedding = await _embed_text(summary_content)
@@ -152,6 +154,8 @@ async def revise_summary_job(
     perspective_label_input: str | None,
     perspective_instruction_input: str | None,
     user_id: str = USER_ID,
+    *,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     """Revise an existing summary node in place. Called by the job runner."""
     instruction = instruction.strip()
@@ -197,11 +201,10 @@ async def revise_summary_job(
         "- 输出修订后的完整 summary 正文\n"
         "- 使用 3-6 句中文，纯文本输出，不含标题行或 Markdown 格式"
     )
-    message = await claude_client.messages.create(
-        model=settings.models.summary_gen,
-        max_tokens=settings.llm_output_tokens.summary_gen,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    message = await llm_batch.call(owner, "revision", {
+        **settings.model_params("summary_gen"),
+        "messages": [{"role": "user", "content": prompt}],
+    })
     revised_content = message_text(message)
 
     body_embedding = await _embed_text(revised_content)

@@ -54,6 +54,64 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await database.disconnect()
         self.storage.cleanup()
 
+    async def test_paused_worker_leaves_entity_refresh_pending(self):
+        job = await entity_knowledge.request_refresh(self.entity_id)
+        while claimed := await jobs.claim_next_job(["refresh_entity"]):
+            self.assertNotEqual(claimed["job_type"], "refresh_entity")
+        self.assertEqual((await jobs.get_job(job["id"]))["status"], "pending")
+
+    async def test_published_page_folds_new_sources_and_rebuilds_after_removal(self):
+        second_id = f"art_{uuid4().hex[:12]}"
+        second_ref = self.text_path.with_name("second.txt")
+        second_ref.write_text("印度宣布后续政策执行情况。", encoding="utf-8")
+        await database.execute(
+            "INSERT INTO knowledge_nodes (id, user_id, title, abstract, object_type) "
+            "VALUES (:id, 'default', '后续文章', '后续执行', 'article')", {"id": second_id},
+        )
+        await database.execute(
+            "INSERT INTO article_nodes (node_id, source_type, extracted_text_ref) VALUES (:id, 'url', :ref)",
+            {"id": second_id, "ref": str(second_ref)},
+        )
+        calls = []
+
+        def generator(body, summary):
+            async def generate(entity, sources):
+                calls.append((entity["body"], [item["id"] for item in sources]))
+                return body, summary
+            return generate
+
+        async def no_embedding(_):
+            return None
+
+        async def refresh(body, summary="简介"):
+            revision = await database.fetch_val(
+                "SELECT requested_revision FROM entity_nodes WHERE node_id = :id", {"id": self.entity_id}
+            )
+            return await entity_knowledge.run_refresh(
+                self.entity_id, revision, generator=generator(body, summary), embedder=no_embedding,
+            )
+
+        first_page = f"政策 [[{self.article_id}]]"
+        try:
+            with patch.object(wiki, "USER_DATA_DIR", Path(self.storage.name)), patch.object(entity_knowledge, "USER_DATA_DIR", Path(self.storage.name)):
+                await entity_knowledge.record_contribution(self.entity_id, self.article_id)
+                self.assertEqual((await refresh(first_page))["mode"], "full")
+                await entity_knowledge.record_contribution(self.entity_id, second_id)
+                result = await refresh(f"{first_page} 后续 [[{second_id}]]")
+                self.assertEqual(result["mode"], "incremental")
+                await entity_knowledge.remove_article(second_id)
+                self.assertEqual((await refresh(first_page))["mode"], "full")
+                await entity_knowledge.request_refresh(self.entity_id, full=True)
+                self.assertEqual((await refresh(first_page))["mode"], "full")
+            self.assertEqual(calls, [
+                ("", [self.article_id]),
+                (first_page, [second_id]),
+                ("", [self.article_id]),
+                ("", [self.article_id]),
+            ])
+        finally:
+            await database.execute("DELETE FROM knowledge_nodes WHERE id = :id", {"id": second_id})
+
     async def test_new_article_for_existing_entity_updates_visible_page(self):
         await database.execute(
             "UPDATE entity_nodes SET aliases = ARRAY['India']::text[] WHERE node_id = :id",

@@ -19,12 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import httpx
 import trafilatura
 import yaml
 from openai import AsyncOpenAI
 
+import llm
 from article_ingestion import ArticleIngestionAdapters, ArticleIngestionInput, process_article_like_item
 from settings import settings
 from prompts import prompts
@@ -35,12 +35,10 @@ logger = logging.getLogger(__name__)
 
 API_BASE_URL = os.environ["API_BASE_URL"]
 KB_SERVICE_TOKEN = os.environ.get("KB_SERVICE_TOKEN", "").strip()
-CLAUDE_API_KEY = os.environ["CLAUDE_API_KEY"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 USER_DATA_DIR = Path(os.environ.get("USER_DATA_DIR", "/app/user_data"))
 USER_ID = "default"
 
-claude = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TEXT_CHARS = settings.ingestion.max_text_chars
@@ -296,9 +294,13 @@ def analyze_article(
     nearby_entities: list[dict],
     top_candidates: list[dict],
     popular_tags: list[dict] | None = None,
+    *,
+    source_item_id: str,
+    key: str = "analysis",
 ) -> dict:
     """
-    Call Claude to analyze an article.
+    Call Claude (batched via the API) to analyze an article.
+    Raises llm.Deferred while the result is still in a batch.
     Returns: {abstract, tags, entities, contradictions, structural_hints}
 
     popular_tags 用于 tag 收敛——以"标签 (频次)"形式注入 prompt，
@@ -318,10 +320,9 @@ def analyze_article(
         f"- {t['tag']} ({t['freq']})" for t in (popular_tags or [])
     ) or "（库中暂无 tag）"
 
-    message = claude.messages.create(
-        model=settings.models.article_analysis,
-        max_tokens=settings.llm_output_tokens.article_analysis,
-        messages=[
+    message = llm.call(source_item_id, key, {
+        **settings.model_params("article_analysis"),
+        "messages": [
             {
                 "role": "user",
                 "content": prompts.article_analysis(
@@ -332,7 +333,7 @@ def analyze_article(
                 ),
             }
         ],
-    )
+    })
     raw = _message_text(message)
 
     data = _extract_json_object(raw)
@@ -537,6 +538,15 @@ def _article_ingestion_adapters() -> ArticleIngestionAdapters:
     )
 
 
+async def _return_to_pending(source_id: str, item_id: str, title: str) -> None:
+    """Model results are still batching; the item replays on a later poll or batch wake-up."""
+    logger.info("[%s] 等待批处理模型结果，稍后重试: %s", source_id, title)
+    try:
+        await update_source_item_status(item_id, "pending")
+    except Exception:
+        logger.warning("[%s] source item 状态更新失败: %s", source_id, item_id)
+
+
 async def run_pipeline(source: BaseSource, source_config: dict):
     source_id = source_config["id"]
 
@@ -640,6 +650,8 @@ async def run_pipeline(source: BaseSource, source_config: dict):
                 title=item.title,
             )
 
+        except llm.Deferred:
+            await _return_to_pending(source_id, source_item["id"], item_title)
         except Exception as e:
             logger.error(f"[{source_id}] 处理失败: {item_title} — {e}", exc_info=True)
             try:
@@ -708,6 +720,21 @@ async def run_book_pipeline(
             )
 
             logger.info(f"[{source_id}] {item.title}: {len(valid_chapters)} chapters")
+
+            # Analyze every chapter in one batch round before any write, so a
+            # replay never finds a half-ingested book.
+            analyses: dict[int, dict] = {}
+            deferred = False
+            for ch in valid_chapters:
+                try:
+                    analyses[ch.order] = analyze_article(
+                        ch.text[:MAX_TEXT_CHARS], [], [], [],
+                        source_item_id=source_item["id"], key=f"analysis:chapter:{ch.order}",
+                    )
+                except llm.Deferred:
+                    deferred = True
+            if deferred:
+                raise llm.Deferred
 
             # 2. Save raw file
             file_path = save_raw(item, item_source_type)
@@ -778,6 +805,7 @@ async def run_book_pipeline(
                             wiki_source_type="book_chapter",
                             write_summary_wiki=False,
                             doc_kind=chapter_doc_kind,
+                            analysis=analyses[ch.order],
                         ),
                         _article_ingestion_adapters(),
                     )
@@ -794,6 +822,8 @@ async def run_book_pipeline(
                 title=book_title,
             )
 
+        except llm.Deferred:
+            await _return_to_pending(source_id, source_item["id"], item_title)
         except Exception as e:
             logger.error(f"[{source_id}] book failed: {item_title} — {e}", exc_info=True)
             try:

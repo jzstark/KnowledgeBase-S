@@ -7,6 +7,7 @@ Routes (called by ingestion-worker, no auth required):
   POST /api/kb/entity_candidates/process
   POST /api/kb/entity_candidates/{candidate_id}/mark_promoted
   POST /api/kb/entities/{entity_id}/backfill_wikilinks
+  POST /api/kb/llm/call
 """
 from __future__ import annotations
 
@@ -16,11 +17,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from auth import require_auth_or_service_token
 from pydantic import BaseModel
 
 import database
+import llm_batch
 from settings import settings
 from kb.common import USER_DATA_DIR, USER_ID, _vector_literal
 from kb.graph import (
@@ -780,6 +783,26 @@ async def entity_analyze_context(body: dict, _: dict = Depends(require_auth_or_s
     if not embedding:
         return {"nearby_entities": [], "top_candidates": [], "popular_tags": []}
     return await do_entity_analyze_context(embedding)
+
+
+class LlmCallRequest(BaseModel):
+    owner: str
+    key: str
+    params: dict[str, Any]
+
+
+@router.post("/llm/call")
+async def llm_call(body: LlmCallRequest, _: dict = Depends(require_auth_or_service_token)):
+    """Batched model call for the ingestion worker: the message, or 202 while it is waiting."""
+    if not body.owner.startswith("source_item:"):
+        raise HTTPException(400, "owner 必须是 source_item")
+    try:
+        message = await llm_batch.call(body.owner, body.key, body.params)
+    except llm_batch.Deferred:
+        return JSONResponse({"status": "waiting"}, status_code=202)
+    except llm_batch.LlmRequestError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "done", "message": message.model_dump(mode="json")}
 
 
 @router.post("/entity_candidates/process")

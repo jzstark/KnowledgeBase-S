@@ -1258,7 +1258,7 @@ function JobsPanel({
   const visible = jobs
     .filter((job) =>
       job.status === "pending" || job.status === "running" || job.status === "retrying" ||
-      (showFailed && job.status === "failed")
+      job.status === "waiting" || (showFailed && job.status === "failed")
     )
     .slice(0, 6);
   if (visible.length === 0) return null;
@@ -1274,15 +1274,16 @@ function JobsPanel({
             job.status === "failed" && "bg-red-100 text-red-700",
             job.status === "running" && "bg-blue-100 text-blue-700",
             (job.status === "pending" || job.status === "retrying") && "bg-amber-100 text-amber-700",
+            job.status === "waiting" && "bg-slate-100 text-slate-700",
           )}>
-            {job.status}
+            {job.status === "waiting" ? "等待批处理" : job.status}
           </span>
           {job.status === "failed" && (
             <button className="text-primary hover:underline" onClick={() => onRetry(job.id)}>
               重试
             </button>
           )}
-          {(job.status === "pending" || job.status === "retrying") && (
+          {(job.status === "pending" || job.status === "retrying" || job.status === "waiting") && (
             <button className="text-muted-foreground hover:text-foreground" onClick={() => onCancel(job.id)}>
               取消
             </button>

@@ -71,7 +71,7 @@ async def do_update_entity(entity_id: str, body: UpdateEntityRequest) -> None:
             "UPDATE knowledge_nodes SET title = :name, updated_at = NOW() WHERE id = :id",
             {"name": body.canonical_name.strip(), "id": entity_id},
         )
-        await entity_knowledge.request_refresh(entity_id)
+        await entity_knowledge.request_refresh(entity_id, full=True)
     elif body.aliases is not None:
         await entity_knowledge.render_wiki(entity_id)
 
@@ -288,7 +288,7 @@ async def get_related_entities(entity_id: str, limit: int = Query(20, ge=1, le=1
 @router.post("/entities/{entity_id}/regenerate")
 async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_auth)):
     try:
-        job = await entity_knowledge.request_refresh(entity_id)
+        job = await entity_knowledge.request_refresh(entity_id, full=True)
     except entity_knowledge.EntityKnowledgeError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"status": "accepted", "job_id": job["id"], "revision": job["payload"]["revision"]}

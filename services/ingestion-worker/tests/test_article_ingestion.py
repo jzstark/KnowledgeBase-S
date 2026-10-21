@@ -46,6 +46,7 @@ class FakeIngestion:
         nearby_entities: list[dict],
         top_candidates: list[dict],
         popular_tags: list[dict] | None = None,
+        **_,
     ) -> dict:
         self.analyze_calls.append((text, nearby_entities, top_candidates, popular_tags or []))
         return {"abstract": self.abstract, "tags": ["tag"], "entities": self.entities}

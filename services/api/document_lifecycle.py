@@ -120,6 +120,9 @@ async def report_source_item_status(
             )
             for entity in waiting:
                 await request_refresh(entity["entity_id"])
+    if status == "succeeded":
+        import llm_batch
+        await llm_batch.forget(f"source_item:{item_id}")
     return dict(row)
 
 

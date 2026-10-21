@@ -12,7 +12,9 @@
 import json
 
 import database
+import jobs
 from kb.graph import rebuild_entity_pair_signals
+from settings import settings
 
 from .diagnostics import (
     cleanup_legacy_llm_edges,
@@ -73,7 +75,13 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
     orphan_result = await cleanup_orphan_entities(user_id)
     print(f"[maintenance] Orphan entities: {orphan_result}", flush=True)
 
-    index_abstract_result = await aggregate_index_abstracts(user_id)
+    # Index rollups call the model; the job worker runs them through the Batches API.
+    index_job = await jobs.enqueue_job(
+        "aggregate_index_abstract", {"index_id": None, "only_stale": False},
+        user_id=user_id, provider="anthropic", model=settings.models.index_summary,
+        idempotency_key=f"aggregate_index_abstract:{user_id}:all",
+    )
+    index_abstract_result = {"enqueued_job_id": index_job["id"]}
     print(f"[maintenance] Index abstract aggregation: {index_abstract_result}", flush=True)
 
     drift_result = await detect_embedding_model_drift(user_id)
@@ -88,7 +96,6 @@ async def run_maintenance(user_id: str = USER_ID) -> dict:
         "wikilink_migration": migrate_result,
         "entity_promotion": promote_result,
         "wikilink_backfill": wikilink_result,
-        "entity_facts": facts_result,
         "entity_relatedness": relatedness_result,
         "orphan_entities": orphan_result,
         "index_abstract": index_abstract_result,

@@ -1,9 +1,9 @@
 import os
 
-import anthropic
 from openai import AsyncOpenAI
 
 import database
+import llm_batch
 from settings import settings
 from prompts import prompts
 from kb.common import message_text
@@ -14,6 +14,7 @@ async def aggregate_index_abstracts(
     user_id: str,
     index_id: str | None = None,
     only_stale: bool = False,
+    owner: str | None = None,
 ) -> dict:
     """
     为每个 index 节点生成聚合 abstract（底层向上）。
@@ -21,6 +22,8 @@ async def aggregate_index_abstracts(
     收集直接子节点（via index_children）的 abstract，调用 LLM 生成 3-5 句综合摘要，
     更新 DB 中的 abstract 和 embedding，并刷新 wiki 文件 frontmatter。
     幂等：每次运行都用最新子节点状态覆盖。
+    带 owner 时模型调用走批处理：结果未就绪的 index 及其上层 index 本轮跳过，
+    全部处理后抛出 Deferred，任务在批次结束后重放。
     """
     from kb.wiki import write_wiki_node
 
@@ -29,7 +32,6 @@ async def aggregate_index_abstracts(
     if not claude_api_key:
         return {"error": "CLAUDE_API_KEY not set", "processed": 0, "skipped": 0}
 
-    claude_client = anthropic.AsyncAnthropic(api_key=claude_api_key)
     openai_client = AsyncOpenAI(api_key=openai_api_key)
     max_children = settings.ingestion.max_index_children_abstracts
 
@@ -78,6 +80,7 @@ async def aggregate_index_abstracts(
     ordered = sorted(index_rows, key=lambda r: (1 if has_index_children(r["id"]) else 0))
 
     processed = skipped = 0
+    deferred: set[str] = set()
 
     for idx_row in ordered:
         idx_id = idx_row["id"]
@@ -87,6 +90,9 @@ async def aggregate_index_abstracts(
 
         if not children:
             skipped += 1
+            continue
+        if any(child_id in deferred for child_id, _ in children):
+            deferred.add(idx_id)
             continue
 
         # 4. 收集子节点 abstract（从 DB 实时读取，确保 sub-index 已更新）
@@ -112,12 +118,14 @@ async def aggregate_index_abstracts(
                     f"Rollup instruction: {rollup_instruction}\n\n" if rollup_instruction else ""
                 ) + "\n".join(child_abstracts),
             )
-            resp = await claude_client.messages.create(
-                model=settings.models.index_summary,
-                max_tokens=settings.llm_output_tokens.index_summary,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            resp = await llm_batch.call(owner, f"index:{idx_id}", {
+                **settings.model_params("index_summary"),
+                "messages": [{"role": "user", "content": prompt}],
+            })
             new_abstract = message_text(resp)
+        except llm_batch.Deferred:
+            deferred.add(idx_id)
+            continue
         except Exception as e:
             print(f"[maintenance] index_abstract LLM error for {idx_id}: {e}", flush=True)
             skipped += 1
@@ -166,4 +174,6 @@ async def aggregate_index_abstracts(
         processed += 1
         print(f"[maintenance] index_abstract updated: {idx_id} ({idx_title})", flush=True)
 
+    if deferred:
+        raise llm_batch.Deferred
     return {"processed": processed, "skipped": skipped}

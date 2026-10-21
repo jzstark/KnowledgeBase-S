@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 import database
+import llm_batch
 
 
 def _job(row) -> dict[str, Any]:
@@ -59,7 +60,7 @@ async def enqueue_job(
            :idempotency_key, :max_attempts)
         ON CONFLICT (user_id, idempotency_key)
           WHERE idempotency_key IS NOT NULL
-            AND status IN ('pending', 'running', 'retrying')
+            AND status IN ('pending', 'running', 'retrying', 'waiting')
         DO UPDATE SET idempotency_key = jobs.idempotency_key
         RETURNING *
         """,
@@ -119,7 +120,7 @@ async def cancel_job(job_id: str, user_id: str) -> dict[str, Any] | None:
             error = NULL
         WHERE id = :id
           AND user_id = :user_id
-          AND status IN ('pending', 'retrying')
+          AND status IN ('pending', 'retrying', 'waiting')
         RETURNING *
         """,
         {"id": job_id, "user_id": user_id},
@@ -144,10 +145,13 @@ async def retry_job(job_id: str, user_id: str) -> dict[str, Any] | None:
         """,
         {"id": job_id, "user_id": user_id},
     )
+    if row:
+        # A manual retry asks the model again instead of replaying stored output.
+        await llm_batch.forget(job_owner(job_id))
     return _job(row) if row else await get_job(job_id, user_id)
 
 
-async def claim_next_job() -> dict[str, Any] | None:
+async def claim_next_job(skip_types: list[str] | None = None) -> dict[str, Any] | None:
     row = await database.database.fetch_one(
         """
         UPDATE jobs
@@ -160,18 +164,20 @@ async def claim_next_job() -> dict[str, Any] | None:
             SELECT id
             FROM jobs
             WHERE status IN ('pending', 'retrying')
+              AND job_type <> ALL(CAST(:skip_types AS VARCHAR[]))
             ORDER BY priority DESC, created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
         RETURNING *
-        """
+        """,
+        {"skip_types": skip_types or []},
     )
     return _job(row) if row else None
 
 
 async def complete_job(job_id: str, result: dict[str, Any] | None = None, *, attempt: int) -> None:
-    await database.database.execute(
+    row = await database.database.fetch_one(
         """
         UPDATE jobs
         SET status = 'succeeded',
@@ -179,9 +185,28 @@ async def complete_job(job_id: str, result: dict[str, Any] | None = None, *, att
             finished_at = NOW(),
             error = NULL
         WHERE id = :id AND attempts = :attempt AND status = 'running'
+        RETURNING id
         """,
         {"id": job_id, "attempt": attempt, "result": database.jsonb(result or {})},
     )
+    if row:
+        await llm_batch.forget(job_owner(job_id))
+
+
+async def defer_job(job_id: str, *, attempt: int) -> None:
+    """Park a job until its batched model calls finish; deferral is not a failed attempt."""
+    await database.database.execute(
+        """
+        UPDATE jobs
+        SET status = 'waiting', attempts = attempts - 1, started_at = NULL
+        WHERE id = :id AND attempts = :attempt AND status = 'running'
+        """,
+        {"id": job_id, "attempt": attempt},
+    )
+
+
+def job_owner(job_id: str) -> str:
+    return f"job:{job_id}"
 
 
 async def heartbeat_job(job_id: str, attempt: int) -> None:

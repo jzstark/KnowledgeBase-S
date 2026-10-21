@@ -33,12 +33,27 @@ models:
   summary_gen:       "claude-haiku-4-5-20251001"
   index_summary:     "claude-haiku-4-5-20251001"  # 聚合子节点 abstract 生成 index abstract
   hyde_abstract:     "claude-haiku-4-5-20251001"  # HyDE 查询扩展
-  compare:           "claude-sonnet-4-6"          # MCP compare 工具
-  cite:              "claude-sonnet-4-6"          # MCP cite 工具 Stage 2
-  summarize_corpus:  "claude-sonnet-4-6"          # MCP summarize_corpus 工具
-  image_ocr:         "claude-sonnet-4-6"
-  image_cleanup:     "claude-sonnet-4-6"
+  compare:           "claude-sonnet-5-5"          # MCP compare 工具
+  cite:              "claude-sonnet-5-5"          # MCP cite 工具 Stage 2
+  summarize_corpus:  "claude-sonnet-5-5"          # MCP summarize_corpus 工具
+  image_ocr:         "claude-haiku-4-5-20251001"
+  image_cleanup:     "claude-sonnet-5-5"
   pdf_cleanup:       "claude-haiku-4-5-20251001"
+
+# 各路由的 effort（思考深度）。只对支持 effort 的模型填写（Sonnet 5.5）；
+# Haiku 4.5 不接受 effort，必须留空。Sonnet 5.5 的思考 token 计入 max_tokens。
+llm_effort:
+  compare:           low
+  cite:              low
+  summarize_corpus:  low
+  image_cleanup:     low
+
+# 后台模型调用（entity 页面、摘要、index 汇总、入库 OCR/清洗/分析）走 Message Batches API，
+# 半价，通常 1 小时内返回，最长 24 小时。MCP 查询工具始终实时调用。
+# enabled: false 时后台调用改为实时（调试用）。
+llm_batch:
+  enabled:                true
+  poll_interval_seconds:  60   # job-worker 提交待发请求、检查批次结果的间隔
 
 embedding:
   model:      "text-embedding-3-small"
@@ -50,6 +65,7 @@ entity:
   promotion_salience:           0.7   # salience >= 此值 AND mentions >= below 则晋升
   promotion_salience_mentions:  2
   promotion_min_mentions:       3     # mentions >= 此值则晋升（不论 salience）
+  refresh_enabled:              false # false 时 job-worker 不执行 refresh_entity（LLM 重写实体页面）；来源照常记录，改回 true 后自动补跑
 
 retrieval:
   use_hyde: true
@@ -77,15 +93,15 @@ maintenance:
 
 llm_output_tokens:
   article_analysis:             2048
-  entity_update:                4096
+  entity_update:                16000  # 每次输出完整页面；超出时任务失败并保留旧页面
   summary_gen:                  1024
   index_summary:                512
   hyde_abstract:                200
-  compare:                      2048
-  cite:                         2048
-  summarize_corpus:             3000
+  compare:                      8192   # Sonnet 5.5 的思考 token 也计入此上限
+  cite:                         8192
+  summarize_corpus:             8192
   image_ocr:                    4096
-  image_cleanup:                4096
+  image_cleanup:                8192
   pdf_cleanup:                  4096
 
 # MCP Public 工具参数（/api/kb/v1/）

@@ -1,6 +1,6 @@
 """
-Image Source — 使用 Claude Vision 进行 OCR，两步处理：
-  1. _call_claude()：用 image_ocr 提示词转录图片文字
+Image Source — 使用 Claude Vision 进行 OCR，两步处理（均经 API 批处理）：
+  1. _ocr_params()：用 image_ocr 提示词转录图片文字
   2. _cleanup()：用 image_cleanup 提示词清洗界面噪音，保留正文
 
 尺寸处理（参数见 config/image_processing.toml）：
@@ -12,13 +12,12 @@ Image Source — 使用 Claude Vision 进行 OCR，两步处理：
 import base64
 import io
 import logging
-import os
 import tomllib
 from pathlib import Path
 
-import anthropic
 from PIL import Image
 
+import llm
 from sources.base import RawItem, message_text
 from settings import settings
 from prompts import prompts
@@ -43,9 +42,6 @@ TILE_H     = int(_cfg.get("tile_h",    7000))
 OVERLAP    = int(_cfg.get("overlap",    200))
 TILE_SCALE = float(_cfg.get("tile_scale", 0.5))
 
-_claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_API_KEY"])
-
-
 def _scale_for_api(img: Image.Image) -> Image.Image:
     """发送前等比缩放，降低 token 消耗。TILE_SCALE=1.0 时跳过。"""
     if TILE_SCALE >= 1.0:
@@ -62,34 +58,31 @@ def _image_to_b64(img: Image.Image, media_type: str) -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
 
-def _call_claude(b64: str, media_type: str, tile_info: str = "") -> str:
+def _ocr_params(b64: str, media_type: str, tile_info: str = "") -> dict:
     prompt = prompts.image_ocr()
     if tile_info:
         prompt += f"（{tile_info}）"
-    msg = _claude.messages.create(
-        model=settings.models.image_ocr,
-        max_tokens=settings.llm_output_tokens.image_ocr,
-        messages=[{
+    return {
+        **settings.model_params("image_ocr"),
+        "messages": [{
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
                 {"type": "text", "text": prompt},
             ],
         }],
-    )
-    return message_text(msg)
+    }
 
 
-def _cleanup(raw_text: str) -> str:
+def _cleanup(source_item_id: str, raw_text: str) -> str:
     """第二步：用 LLM 清洗 OCR 原文，去除界面噪音，保留正文。"""
-    msg = _claude.messages.create(
-        model=settings.models.image_cleanup,
-        max_tokens=settings.llm_output_tokens.image_cleanup,
-        messages=[{
+    msg = llm.call(source_item_id, "image_cleanup", {
+        **settings.model_params("image_cleanup"),
+        "messages": [{
             "role": "user",
             "content": f"{prompts.image_cleanup()}\n\n---\n\n{raw_text}",
         }],
-    )
+    })
     return message_text(msg)
 
 
@@ -118,22 +111,24 @@ class ImageSource(FileSourceMixin):
             # 图片足够小，直接发送
             if h <= MAX_DIM:
                 b64 = _image_to_b64(_scale_for_api(img), media_type)
-                raw_text = _call_claude(b64, media_type)
+                calls = [("ocr:0", _ocr_params(b64, media_type))]
             else:
-                # 高图切片处理
+                # 高图切片处理：所有切片在同一批次识别
                 starts = list(range(0, h, TILE_H - OVERLAP))
                 total = len(starts)
-                parts = []
+                calls = []
                 for i, y0 in enumerate(starts):
                     y1 = min(y0 + TILE_H, h)
                     tile = img.crop((0, y0, w, y1))
                     b64 = _image_to_b64(_scale_for_api(tile), media_type)
-                    text = _call_claude(b64, media_type, f"第{i+1}段，共{total}段")
-                    parts.append(text)
-                raw_text = "\n\n".join(parts)
+                    calls.append((f"ocr:{i}", _ocr_params(b64, media_type, f"第{i+1}段，共{total}段")))
+            parts = llm.call_many(raw.source_item_id, calls)
+            raw_text = "\n\n".join(message_text(msg) for msg in parts)
 
-            return _cleanup(raw_text)
+            return _cleanup(raw.source_item_id, raw_text)
 
+        except llm.Deferred:
+            raise
         except Exception:
             logging.getLogger(__name__).exception(f"[image] extract_text failed: {path}")
             return ""
