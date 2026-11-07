@@ -65,7 +65,7 @@ entity:
   promotion_salience:           0.7   # salience >= 此值 AND mentions >= below 则晋升
   promotion_salience_mentions:  2
   promotion_min_mentions:       3     # mentions >= 此值则晋升（不论 salience）
-  refresh_enabled:              false  # false 时 job-worker 不执行 refresh_entity（LLM 重写实体页面）；来源照常记录，改回 true 后自动补跑
+  refresh_enabled:              false  # false 时不入队也不执行 refresh_entity（LLM 重写实体页面）；来源与待更新版本照常记录，改回 true 并重启 api/job-worker 后自动补跑
 
 retrieval:
   use_hyde: true

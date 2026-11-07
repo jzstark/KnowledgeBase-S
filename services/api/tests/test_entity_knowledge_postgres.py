@@ -56,9 +56,23 @@ class EntityKnowledgeDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_paused_worker_leaves_entity_refresh_pending(self):
         job = await entity_knowledge.request_refresh(self.entity_id)
+        assert job is not None
         while claimed := await jobs.claim_next_job(["refresh_entity"]):
             self.assertNotEqual(claimed["job_type"], "refresh_entity")
         self.assertEqual((await jobs.get_job(job["id"]))["status"], "pending")
+
+    async def test_paused_refresh_records_revision_and_queues_after_resume(self):
+        key = f"entity:{self.entity_id}:1"
+        count_jobs = "SELECT count(*) FROM jobs WHERE idempotency_key = :key"
+        with patch.object(entity_knowledge, "_refresh_enabled", return_value=False):
+            self.assertIsNone(await entity_knowledge.request_refresh(self.entity_id))
+            self.assertEqual(await entity_knowledge.enqueue_pending(limit=10_000), {"enqueued": 0})
+        self.assertEqual(await database.fetch_val(count_jobs, {"key": key}), 0)
+        self.assertEqual(await database.fetch_val(
+            "SELECT requested_revision FROM entity_nodes WHERE node_id = :id", {"id": self.entity_id}
+        ), 1)
+        await entity_knowledge.enqueue_pending(limit=10_000)
+        self.assertEqual(await database.fetch_val(count_jobs, {"key": key}), 1)
 
     async def test_published_page_folds_new_sources_and_rebuilds_after_removal(self):
         second_id = f"art_{uuid4().hex[:12]}"

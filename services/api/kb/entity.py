@@ -291,6 +291,8 @@ async def regenerate_entity_profile(entity_id: str, _: dict = Depends(require_au
         job = await entity_knowledge.request_refresh(entity_id, full=True)
     except entity_knowledge.EntityKnowledgeError as exc:
         raise HTTPException(404, str(exc)) from exc
+    if job is None:
+        raise HTTPException(409, "实体更新已暂停，恢复后会自动重新生成")
     return {"status": "accepted", "job_id": job["id"], "revision": job["payload"]["revision"]}
 
 

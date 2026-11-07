@@ -35,14 +35,22 @@ class EntityKnowledgeError(Exception):
     pass
 
 
-async def _enqueue(entity_id: str, user_id: str, revision: int) -> dict[str, Any]:
+def _refresh_enabled() -> bool:
+    from settings import settings
+    return settings.entity.refresh_enabled
+
+
+async def _enqueue(entity_id: str, user_id: str, revision: int) -> dict[str, Any] | None:
+    # While paused only the revision is recorded; enqueue_pending queues it after resume.
+    if not _refresh_enabled():
+        return None
     return await jobs.enqueue_job(
         "refresh_entity", {"entity_id": entity_id, "revision": revision},
         user_id=user_id, idempotency_key=f"entity:{entity_id}:{revision}",
     )
 
 
-async def _request_locked(entity_id: str, user_id: str, *, full: bool = False) -> dict[str, Any]:
+async def _request_locked(entity_id: str, user_id: str, *, full: bool = False) -> dict[str, Any] | None:
     row = await database.database.fetch_one(
         """
         UPDATE entity_nodes SET requested_revision = requested_revision + 1,
@@ -58,8 +66,11 @@ async def _request_locked(entity_id: str, user_id: str, *, full: bool = False) -
     return await _enqueue(entity_id, user_id, row["requested_revision"])
 
 
-async def request_refresh(entity_id: str, *, user_id: str = "default", full: bool = False) -> dict[str, Any]:
-    """Queue a page update; ``full`` rebuilds from all sources instead of folding in new ones."""
+async def request_refresh(entity_id: str, *, user_id: str = "default", full: bool = False) -> dict[str, Any] | None:
+    """Queue a page update; ``full`` rebuilds from all sources instead of folding in new ones.
+
+    Returns None while entity refresh is paused.
+    """
     async with database.database.transaction():
         entity = await database.database.fetch_one(
             """
@@ -92,7 +103,9 @@ async def import_legacy_body(entity_id: str, body: str, *, user_id: str = "defau
 
 
 async def enqueue_pending(*, user_id: str = "default", limit: int = 100) -> dict[str, int]:
-    """Recover revisions whose enqueue was interrupted; leave exhausted jobs alone."""
+    """Recover revisions whose enqueue was interrupted or paused; leave exhausted jobs alone."""
+    if not _refresh_enabled():
+        return {"enqueued": 0}
     rows = await database.database.fetch_all(
         """
         SELECT en.node_id, en.requested_revision FROM entity_nodes en

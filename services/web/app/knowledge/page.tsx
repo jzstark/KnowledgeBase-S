@@ -1153,7 +1153,7 @@ function WikiPanel({
                 if (response.ok) {
                   onJobQueued?.();
                   onNodeUpdated?.(detail.id);
-                } else setEntityRefreshError("提交失败，请稍后重试。");
+                } else setEntityRefreshError(response.status === 409 ? "实体更新已暂停，恢复后会自动重新生成。" : "提交失败，请稍后重试。");
               } catch {
                 setEntityRefreshError("网络错误，请稍后重试。");
               } finally { setEntityRefreshing(false); }
