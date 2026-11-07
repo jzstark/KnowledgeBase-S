@@ -55,6 +55,7 @@ interface Connector {
   config: Record<string, unknown>;
   status: "active" | "inactive";
   last_fetched_at: string | null;
+  title_exclude_keywords: string[];
 }
 
 interface FolderContents {
@@ -320,12 +321,82 @@ function DocKindChangeDialog({
   );
 }
 
+const DELETE_PREVIEW_LIMIT = 50;
+
+function TitleFilterDialog({
+  open, connector, onClose, onSaved,
+}: {
+  open: boolean;
+  connector: Connector;
+  onClose: () => void;
+  onSaved: (keywords: string[], matchedIds: string[]) => void | Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setText((connector.title_exclude_keywords ?? []).join("\n"));
+    setError("");
+  }, [open, connector]);
+
+  async function submit() {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/connectors/${connector.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title_exclude_keywords: text.split("\n") }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "保存过滤关键词失败");
+      await onSaved(body.title_exclude_keywords ?? [], body.keyword_matched_ids ?? []);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "保存过滤关键词失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && !saving && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>标题关键词过滤</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            每行一个关键词，不区分大小写。以后同步到的文章，标题包含任一关键词就不会入库，也不会调用模型。
+            保存后如有已入库的文章命中，会提示是否永久删除。
+          </p>
+          <Textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            rows={6}
+            placeholder={"例：\n广告\n招聘"}
+            aria-label="过滤关键词"
+            autoFocus
+          />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose} disabled={saving}>取消</Button>
+            <Button onClick={submit} disabled={saving}>{saving ? "保存中…" : "保存"}</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function PermanentDeleteDialog({
-  open, folderId, ids, onClose, onDone, onUnknown,
+  open, folderId, ids, title = "永久删除所选文档", onClose, onDone, onUnknown,
 }: {
   open: boolean;
   folderId: string;
   ids: string[];
+  title?: string;
   onClose: () => void;
   onDone: (result: BatchDeleteResponse) => void | Promise<void>;
   onUnknown: () => void | Promise<void>;
@@ -463,7 +534,7 @@ function PermanentDeleteDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => !next && !submitting && onClose()}>
       <DialogContent>
-        <DialogHeader><DialogTitle>永久删除所选文档</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
         {loading && <p className="text-sm text-muted-foreground">正在检查删除范围…</p>}
         {preview && (
           <div className="space-y-3 text-sm">
@@ -902,6 +973,8 @@ function FolderContentsPanel({
   const [batchPollingExpired, setBatchPollingExpired] = useState(false);
   const [showDocKindDialog, setShowDocKindDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showFilterDialog, setShowFilterDialog] = useState(false);
+  const [keywordDeleteIds, setKeywordDeleteIds] = useState<string[]>([]);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -915,6 +988,8 @@ function FolderContentsPanel({
     setBatchPollingExpired(false);
     setShowDocKindDialog(false);
     setShowDeleteDialog(false);
+    setShowFilterDialog(false);
+    setKeywordDeleteIds([]);
   }, [folder.id]);
 
   const searchTerms = useMemo(
@@ -1193,6 +1268,18 @@ function FolderContentsPanel({
     await onRefresh();
   }
 
+  async function handleTitleFilterSaved(keywords: string[], matchedIds: string[]) {
+    const summary = [keywords.length > 0 ? `已保存 ${keywords.length} 个过滤关键词` : "已清空过滤关键词"];
+    if (matchedIds.length > DELETE_PREVIEW_LIMIT) {
+      summary.push(`已有 ${matchedIds.length} 篇命中，本次先处理前 ${DELETE_PREVIEW_LIMIT} 篇，删除后再保存一次可继续`);
+    } else if (matchedIds.length > 0) {
+      summary.push(`已有 ${matchedIds.length} 篇命中`);
+    }
+    setBatchNotice({ text: summary.join("，"), error: false });
+    setKeywordDeleteIds(matchedIds.slice(0, DELETE_PREVIEW_LIMIT));
+    await onRefresh();
+  }
+
   async function handleDocKindChanged(result: BatchDocKindResponse) {
     const completed = new Set(
       result.results
@@ -1235,14 +1322,24 @@ function FolderContentsPanel({
           </>
         )}
         {folder.kind === "stream" && connector && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs"
-            onClick={() => onSync(folder.id, connector.id)}
-          >
-            立即同步
-          </Button>
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => setShowFilterDialog(true)}
+            >
+              关键词过滤{connector.title_exclude_keywords?.length ? `（${connector.title_exclude_keywords.length}）` : ""}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => onSync(folder.id, connector.id)}
+            >
+              立即同步
+            </Button>
+          </>
         )}
         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onRefresh}>
           刷新
@@ -1404,6 +1501,23 @@ function FolderContentsPanel({
         folderId={folder.id}
         ids={[...selectedIds]}
         onClose={() => setShowDeleteDialog(false)}
+        onDone={handlePermanentDeleteDone}
+        onUnknown={onRefresh}
+      />
+      {connector && (
+        <TitleFilterDialog
+          open={showFilterDialog}
+          connector={connector}
+          onClose={() => setShowFilterDialog(false)}
+          onSaved={handleTitleFilterSaved}
+        />
+      )}
+      <PermanentDeleteDialog
+        open={keywordDeleteIds.length > 0}
+        folderId={folder.id}
+        ids={keywordDeleteIds}
+        title="删除命中过滤关键词的已有文章"
+        onClose={() => setKeywordDeleteIds([])}
         onDone={handlePermanentDeleteDone}
         onUnknown={onRefresh}
       />

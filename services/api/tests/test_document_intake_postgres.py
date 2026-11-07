@@ -1,6 +1,7 @@
 """Document intake behavior against an isolated PostgreSQL database."""
 
 import asyncio
+import json
 import io
 import os
 import tempfile
@@ -766,3 +767,79 @@ class DocumentIntakeDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deletion["status"], "deleted")
         self.assertEqual(deletion["file_warnings"], [])
         self.assertEqual(list(Path(self.storage.name).rglob("*delete.txt")), [])
+
+    async def _use_rss_connector(self, config: dict) -> str:
+        await database.execute(
+            "UPDATE sources SET type = 'rss', fetch_mode = 'subscription' WHERE id = :id",
+            {"id": self.source_id},
+        )
+        connector_id = "con_" + self.source_id[4:]
+        await database.execute(
+            "INSERT INTO connectors (id, user_id, folder_id, type, config) "
+            "VALUES (:id, 'default', :folder, 'rss', :config)",
+            {"id": connector_id, "folder": self.folder_id, "config": json.dumps(config)},
+        )
+        return connector_id
+
+    async def _sync(self, *items: tuple[str, str]) -> list[dict]:
+        body = sources.SourceItemsCreate(items=[
+            sources.SourceItemCreate(origin_ref=origin, origin_ref_type="rss", title=title)
+            for origin, title in items
+        ])
+        return (await sources.create_source_items(self.source_id, body, _={}))["items"]
+
+    async def test_title_filter_skips_new_connector_item_on_every_sync(self):
+        await self._use_rss_connector({"title_exclude_keywords": ["广告"]})
+        blocked = (f"https://example.test/{uuid4().hex}", "今日广告推送")
+        kept = (f"https://example.test/{uuid4().hex}", "正常新闻")
+
+        for _ in range(2):
+            filtered, normal = await self._sync(blocked, kept)
+            self.assertEqual((filtered["status"], filtered["document_instance_id"]), ("filtered", None))
+            self.assertEqual(normal["status"], "pending")
+            self.assertIsNotNone(normal["document_instance_id"])
+
+        self.assertEqual(await database.fetch_val(
+            "SELECT COUNT(*) FROM source_items WHERE source_id = :source", {"source": self.source_id}
+        ), 2)
+        self.assertEqual(await database.fetch_val(
+            "SELECT COUNT(*) FROM document_instances WHERE folder_id = :folder", {"folder": self.folder_id}
+        ), 1)
+        self.assertEqual(await database.fetch_val(
+            "SELECT COUNT(*) FROM raw_assets WHERE id = :id", {"id": f"ra_{filtered['id'][3:]}"}
+        ), 0)
+
+    async def test_deleted_connector_item_is_not_reingested(self):
+        await self._use_rss_connector({})
+        entry = (f"https://example.test/{uuid4().hex}", "Deleted later")
+        first = (await self._sync(entry))[0]
+        with patch.object(document_lifecycle, "USER_DATA_DIR", Path(self.storage.name)):
+            deletion = await document_lifecycle.delete_document(first["document_instance_id"])
+        self.assertEqual(deletion["status"], "deleted")
+
+        again = (await self._sync(entry))[0]
+
+        self.assertEqual((again["id"], again["status"]), (first["id"], "deleted"))
+        self.assertEqual(await database.fetch_val(
+            "SELECT COUNT(*) FROM document_instances WHERE folder_id = :folder AND status <> 'deleted'",
+            {"folder": self.folder_id},
+        ), 0)
+
+    async def test_saving_title_keywords_reports_matching_documents(self):
+        connector_id = await self._use_rss_connector({"url": "https://example.test/feed.xml"})
+        matched, other = await self._sync(
+            (f"https://example.test/{uuid4().hex}", "Weekly AD roundup"),
+            (f"https://example.test/{uuid4().hex}", "Plain news"),
+        )
+
+        result = await folders.update_connector(
+            connector_id, folders.ConnectorUpdate(title_exclude_keywords=[" ad ", "", "ad"]), _={},
+        )
+
+        self.assertEqual(result["title_exclude_keywords"], ["ad"])
+        self.assertEqual(result["keyword_matched_ids"], [matched["document_instance_id"]])
+        config = json.loads(await database.fetch_val(
+            "SELECT config FROM connectors WHERE id = :id", {"id": connector_id}
+        ))
+        self.assertEqual(config, {"url": "https://example.test/feed.xml", "title_exclude_keywords": ["ad"]})
+        self.assertEqual(other["status"], "pending")

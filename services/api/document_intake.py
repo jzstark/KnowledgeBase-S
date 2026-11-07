@@ -1,6 +1,7 @@
 """Create and link raw assets, document instances, and source items."""
 
 import hashlib
+import json
 import logging
 import secrets
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
@@ -43,6 +44,27 @@ def _mapped_folder_id(source_id: str) -> str | None:
 
 def _mapped_connector_id(source_id: str) -> str | None:
     return "con_" + source_id[4:] if source_id.startswith("src_") else None
+
+
+def title_exclude_keywords(connector_config: Any) -> list[str]:
+    config = json.loads(connector_config) if isinstance(connector_config, str) else connector_config
+    return list((config or {}).get("title_exclude_keywords") or [])
+
+
+def title_matches_keywords(title: str | None, keywords: list[str]) -> bool:
+    """Case-insensitive substring match against any keyword."""
+    text = (title or "").casefold()
+    return any(keyword.casefold() in text for keyword in keywords)
+
+
+async def _title_filtered(source: dict[str, Any], title: str | None) -> bool:
+    if source.get("type") not in ("rss", "wechat") or source.get("fetch_mode") != "subscription":
+        return False
+    config = await database.database.fetch_val(
+        "SELECT config FROM connectors WHERE id = :id AND user_id = :uid",
+        {"id": _mapped_connector_id(source["id"]), "uid": source["user_id"]},
+    )
+    return title_matches_keywords(title, title_exclude_keywords(config))
 
 
 async def _lock_existing_item(source: dict[str, Any], item: dict[str, Any]) -> dict[str, Any] | None:
@@ -156,6 +178,8 @@ async def _receive_source_item(
         was_existing = existing is not None
         if existing is None:
             new_id = f"si_{secrets.token_hex(8)}"
+            # A filtered item keeps only this row so later syncs skip it without a document.
+            status = "filtered" if await _title_filtered(source, item.get("title")) else item.get("status", "pending")
             existing_row = await database.database.fetch_one(
                 """
                 INSERT INTO source_items
@@ -182,7 +206,7 @@ async def _receive_source_item(
                  "captured_at": item.get("captured_at"), "effective_at": item.get("effective_at"),
                  "doc_kind": item.get("doc_kind"),
                  "raw_retention_policy": item.get("raw_retention_policy", "keep_extracted_only"),
-                 "status": item.get("status", "pending")},
+                 "status": status},
             )
             if existing_row is None:
                 existing = await _lock_existing_item(source, item)
@@ -206,6 +230,8 @@ async def _receive_source_item(
                     raise IntakeError(409, "URL 对应的文档已移出此资料夹")
                 if document and document["status"] in ("ignored", "deleted"):
                     raise IntakeError(409, "URL 对应的文档已归档或删除，请使用已有文档的明确操作")
+        if existing["status"] == "filtered":
+            return existing, False
         if existing["document_instance_id"] or (was_existing and existing["status"] in ("ignored", "deleted")):
             return existing, not was_existing
         materialized = await _materialize_source_document(source, existing)

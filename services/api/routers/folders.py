@@ -15,6 +15,7 @@ ID 映射约定：
   ra_{hex}  <-> si_{hex}
 """
 
+import json
 import logging
 import os
 import secrets
@@ -108,6 +109,32 @@ def _serialize_timestamps(d: dict, *keys: str) -> dict:
         if v and not isinstance(v, str):
             d[k] = v.isoformat()
     return d
+
+
+def _serialize_connector(row: Any) -> dict:
+    connector = _serialize_timestamps(dict(row), "last_fetched_at", "created_at", "updated_at")
+    connector["title_exclude_keywords"] = document_intake.title_exclude_keywords(row["config"])
+    return connector
+
+
+async def _keyword_matched_document_ids(folder_id: str, keywords: list[str]) -> list[str]:
+    if not keywords:
+        return []
+    rows = await database.database.fetch_all(
+        """
+        SELECT di.id, di.display_name, si.title
+        FROM document_instances di
+        LEFT JOIN source_items si ON si.document_instance_id = di.id
+        WHERE di.folder_id = :fid AND di.user_id = :uid AND di.status <> 'deleted'
+        ORDER BY di.created_at, di.id
+        """,
+        {"fid": folder_id, "uid": USER_ID},
+    )
+    return list(dict.fromkeys(
+        row["id"] for row in rows
+        if any(document_intake.title_matches_keywords(title, keywords)
+               for title in (row["display_name"], row["title"]))
+    ))
 
 
 async def _current_document_count(folder_id: str) -> int:
@@ -336,7 +363,7 @@ async def get_folder_contents(
             "SELECT * FROM connectors WHERE folder_id = :fid", {"fid": folder_id}
         )
         if con_row:
-            connector = _serialize_timestamps(dict(con_row), "last_fetched_at", "created_at", "updated_at")
+            connector = _serialize_connector(con_row)
 
     return {
         "folder": _serialize_timestamps(dict(folder), "created_at", "updated_at"),
@@ -709,6 +736,7 @@ class ConnectorCreate(BaseModel):
 class ConnectorUpdate(BaseModel):
     config: dict[str, Any] | None = None
     status: str | None = None    # active | inactive
+    title_exclude_keywords: list[str] | None = None
 
 
 @connector_router.get("")
@@ -779,13 +807,23 @@ async def update_connector(
     updates = ["updated_at = NOW()"]
     params: dict[str, Any] = {"id": connector_id}
 
+    config = None
     if body.config is not None:
-        updates.append("config = :config")
-        params["config"] = database.jsonb(body.config)
+        config = dict(body.config)
         await database.database.execute(
             "UPDATE sources SET config = :config WHERE id = :sid",
             {"config": database.jsonb(body.config), "sid": _source_id(row["folder_id"])},
         )
+    keywords = None
+    if body.title_exclude_keywords is not None:
+        keywords = list(dict.fromkeys(k.strip() for k in body.title_exclude_keywords if k.strip()))
+        if config is None:
+            stored = row["config"]
+            config = dict((json.loads(stored) if isinstance(stored, str) else stored) or {})
+        config["title_exclude_keywords"] = keywords
+    if config is not None:
+        updates.append("config = :config")
+        params["config"] = database.jsonb(config)
     if body.status in ("active", "inactive"):
         updates.append("status = :status")
         params["status"] = body.status
@@ -798,7 +836,11 @@ async def update_connector(
         {"id": connector_id},
     )
     assert updated is not None
-    return _serialize_timestamps(dict(updated), "last_fetched_at", "created_at", "updated_at")
+    result = _serialize_connector(updated)
+    if keywords is not None:
+        # Existing documents are only reported; deleting them goes through the normal confirmed delete.
+        result["keyword_matched_ids"] = await _keyword_matched_document_ids(row["folder_id"], keywords)
+    return result
 
 
 @connector_router.delete("/{connector_id}", status_code=204)
